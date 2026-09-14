@@ -23,6 +23,7 @@ struct RenderConfig {
     bool            vsync           = false;
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
+    float           renderScale     = 1.f;
 };
 
 
@@ -80,9 +81,9 @@ public:
         m_cfg.vsync = vsync; 
         SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync); 
     }
-
-
     bool getVsync() const { return m_cfg.vsync; }
+    void setRenderScale(const float scale) { m_cfg.renderScale = scale; }
+    bool getRenderScale() const { return m_cfg.renderScale; }
 
 
     void shutdown() { 
@@ -150,14 +151,14 @@ inline bool Renderer::init(const RenderConfig& cfg) {
 
     int w, h;
     SDL_GetWindowSizeInPixels(cfg.sdlWindow, &w, &h);
-    m_targets.push_back(std::make_unique<RenderTarget>(w, h));
+    m_targets.push_back(std::make_unique<RenderTarget>(w * m_cfg.renderScale, h * m_cfg.renderScale));
 
     if (!m_sdlRenderer) {
         std::cout << "Renderer: " << SDL_GetError() << std::endl;
         return false;
     }
 
-    if (!recreateTexture(w, h)) return false;
+    if (!recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale)) return false;
 
     SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync);
 
@@ -209,10 +210,9 @@ inline void Renderer::resize(
 ) {
     for (auto& tgt : m_targets)
         if (tgt && tgt->tracksWindow()) // destroyed slots are null
-            tgt->resize(w, h);
+            tgt->resize(w * m_cfg.renderScale, h * m_cfg.renderScale);
 
-    SDL_DestroyTexture(m_sdlTexture);
-    recreateTexture(w, h);
+    recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale);
 }
 
 

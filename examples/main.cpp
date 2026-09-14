@@ -46,8 +46,9 @@ int main() {
 
     VALO valo;
     RenderConfig cfg;
-    cfg.sdlWindow = window;
-    cfg.vsync     = true;
+    cfg.sdlWindow       = window;
+    cfg.vsync           = false;
+    cfg.renderScale     = 1.f;
     if (!valo.init(cfg)) return 1;
 
     // unit cube, 4 verts per face so each face gets a full 0..1 uv square.
@@ -116,6 +117,10 @@ int main() {
         if (keys[SDL_SCANCODE_A]) camPos -= camRight * speed;
         if (keys[SDL_SCANCODE_E]) camPos.y += speed;
         if (keys[SDL_SCANCODE_Q]) camPos.y -= speed;
+        if (keys[SDL_SCANCODE_1]) valo.setRenderScale(1.00f);
+        if (keys[SDL_SCANCODE_2]) valo.setRenderScale(0.75f);
+        if (keys[SDL_SCANCODE_3]) valo.setRenderScale(0.50f);
+        if (keys[SDL_SCANCODE_4]) valo.setRenderScale(0.25f);
         const Mat4f view = Mat4f::lookAt(camPos, camPos + camFwd, {0.f, 1.f, 0.f});
 
         int w, h;

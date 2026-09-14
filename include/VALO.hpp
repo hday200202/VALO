@@ -67,6 +67,12 @@ public:
     void destroyProgram(const ProgramID program);
     void destroyTexture(const TextureID texture);
 
+    void setRenderScale(const float scale) { 
+        m_renderer.setRenderScale(scale);
+        if (m_cfg.sdlWindow) resize();
+    }
+    bool getRenderScale() const { return m_renderer.getRenderScale(); }
+
     void resize();
     void shutdown();
 
