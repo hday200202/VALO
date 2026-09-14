@@ -27,6 +27,7 @@ RenderTarget RenderTarget::loadFromMemory(
     tex.m_width = w;
     tex.m_height = h;
     tex.m_pixels.resize(w * h);
+    tex.m_trackWindow = false;
     std::memcpy(
         tex.m_pixels.data(), 
         data, 
@@ -54,6 +55,8 @@ RenderTarget RenderTarget::loadImageFromPath(
         static_cast<uint32_t>(h),
         reinterpret_cast<uint32_t*>(data)
     );
+
+    tex.m_trackWindow = false;
     stbi_image_free(data);
     return tex;
 }

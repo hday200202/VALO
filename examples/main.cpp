@@ -1,21 +1,41 @@
 #include <VALO.hpp>
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 using namespace valo;
 
 // ---- what a dev writes: their own vertex / uniform / varying types ----
-struct Vertex   { Vec3f pos; Vec3f color; };
-struct Uniforms { Mat4f mvp; };
-struct Varyings { Vec3f color; };
+struct Vertex   { Vec3f pos; Vec2f uv; };
+struct Uniforms { Mat4f mvp; TextureID albedo; };
+struct Varyings { Vec2f uv; };
 
 Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    out.color = in.color;
+    out.uv = in.uv;
     return u.mvp * Vec4f(in.pos, 1.f);
 }
 
-Color fs(const Varyings& in, const Uniforms&) {
-    return Color(in.color, 1.f);
+Color fs(const Varyings& in, const Uniforms& u) {
+    return texture(u.albedo, in.uv);
+}
+
+// 8x8 checkerboard with a red cell at uv (0,0) and a green one at uv (1,1),
+// so a flipped or rotated UV mapping is obvious at a glance.
+static std::vector<uint32_t> makeChecker(uint32_t size, uint32_t cells) {
+    std::vector<uint32_t> px(size * size);
+    const uint32_t cell = size / cells;
+    for (uint32_t y = 0; y < size; ++y)
+        for (uint32_t x = 0; x < size; ++x) {
+            bool dark = ((x / cell) + (y / cell)) & 1;
+            px[y * size + x] = colorToABGR32(dark ? Color(0.15f, 0.15f, 0.18f, 1.f)
+                                                  : Color(0.9f,  0.9f,  0.85f, 1.f));
+        }
+    for (uint32_t i = 0; i < cell; ++i)
+        for (uint32_t j = 0; j < cell; ++j) {
+            px[j * size + i]                           = colorToABGR32({1.f, 0.f, 0.f, 1.f}); // top-left
+            px[(size - 1 - j) * size + (size - 1 - i)] = colorToABGR32({0.f, 1.f, 0.f, 1.f}); // bottom-right
+        }
+    return px;
 }
 
 int main() {
@@ -30,30 +50,30 @@ int main() {
     cfg.vsync     = true;
     if (!valo.init(cfg)) return 1;
 
-    // unit cube, one color per corner
-    Vertex verts[8] = {
-        {{-1, -1, -1}, {0, 0, 0}},  // 0
-        {{ 1, -1, -1}, {1, 0, 0}},  // 1
-        {{ 1,  1, -1}, {1, 1, 0}},  // 2
-        {{-1,  1, -1}, {0, 1, 0}},  // 3
-        {{-1, -1,  1}, {0, 0, 1}},  // 4
-        {{ 1, -1,  1}, {1, 0, 1}},  // 5
-        {{ 1,  1,  1}, {1, 1, 1}},  // 6
-        {{-1,  1,  1}, {0, 1, 1}},  // 7
+    // unit cube, 4 verts per face so each face gets a full 0..1 uv square.
+    // uv (0,0) = image top-left. Faces are CCW from outside.
+    Vertex verts[24] = {
+        {{-1,-1, 1},{0,1}}, {{ 1,-1, 1},{1,1}}, {{ 1, 1, 1},{1,0}}, {{-1, 1, 1},{0,0}},  // +z
+        {{ 1,-1,-1},{0,1}}, {{-1,-1,-1},{1,1}}, {{-1, 1,-1},{1,0}}, {{ 1, 1,-1},{0,0}},  // -z
+        {{ 1,-1, 1},{0,1}}, {{ 1,-1,-1},{1,1}}, {{ 1, 1,-1},{1,0}}, {{ 1, 1, 1},{0,0}},  // +x
+        {{-1,-1,-1},{0,1}}, {{-1,-1, 1},{1,1}}, {{-1, 1, 1},{1,0}}, {{-1, 1,-1},{0,0}},  // -x
+        {{-1, 1, 1},{0,1}}, {{ 1, 1, 1},{1,1}}, {{ 1, 1,-1},{1,0}}, {{-1, 1,-1},{0,0}},  // +y
+        {{-1,-1,-1},{0,1}}, {{ 1,-1,-1},{1,1}}, {{ 1,-1, 1},{1,0}}, {{-1,-1, 1},{0,0}},  // -y
     };
 
-    // counter-clockwise as seen from outside = front face (Vulkan/OpenGL default)
-    uint32_t indices[36] = {
-        4, 5, 6,  4, 6, 7,   // front  (+z)
-        1, 0, 3,  1, 3, 2,   // back   (-z)
-        5, 1, 2,  5, 2, 6,   // right  (+x)
-        0, 4, 7,  0, 7, 3,   // left   (-x)
-        7, 6, 2,  7, 2, 3,   // top    (+y)
-        0, 1, 5,  0, 5, 4,   // bottom (-y)
-    };
+    uint32_t indices[36];
+    for (uint32_t f = 0; f < 6; ++f) {
+        const uint32_t b = f * 4;
+        uint32_t* i = indices + f * 6;
+        i[0] = b; i[1] = b + 1; i[2] = b + 2;
+        i[3] = b; i[4] = b + 2; i[5] = b + 3;
+    }
 
-    VtxLayout      layout({VtxAttrib::Vec3f, VtxAttrib::Vec3f});
-    VertexBufferID vb   = valo.createVertexBuffer(verts, 8, layout);
+    std::vector<uint32_t> checker = makeChecker(256, 8);
+    TextureID      tex  = valo.createTexture(256, 256, checker.data());
+
+    VtxLayout      layout({VtxAttrib::Vec3f, VtxAttrib::Vec2f});
+    VertexBufferID vb   = valo.createVertexBuffer(verts, 24, layout);
     IndexBufferID  ib   = valo.createIndexBuffer(indices, 36);
     ProgramID      prog = valo.createProgram(vs, fs);
 
@@ -108,7 +128,7 @@ int main() {
 
         // spinning cube at the origin
         Mat4f model = Mat4f::rotationY(t) * Mat4f::rotationX(t * 0.6f);
-        cube.setUniforms(Uniforms{proj * view * model});
+        cube.setUniforms(Uniforms{proj * view * model, tex});
         valo.submit(cube);
 
         // second cube: smaller, orbiting behind/around the first.
@@ -117,7 +137,7 @@ int main() {
             Mat4f::translation({2.5f * std::cos(t * 0.8f), 0.f, 2.5f * std::sin(t * 0.8f)}) * 
             Mat4f::rotationZ(-t) * 
             Mat4f::scale({0.5f, 0.5f, 0.5f});
-        cube.setUniforms(Uniforms{proj * view * model2});
+        cube.setUniforms(Uniforms{proj * view * model2, tex});
         valo.submit(cube);
 
         valo.endFrame();

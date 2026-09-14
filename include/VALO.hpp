@@ -44,6 +44,17 @@ public:
         const size_t count
     );
 
+    TextureID createTexture(
+        const uint32_t w, 
+        const uint32_t h,
+        uint32_t* data
+    );
+
+
+    TextureID createTexture(
+        const std::string& path
+    );
+
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(
         Vec4f (*vs)(const V&, const U&, Vy&), 
@@ -54,6 +65,7 @@ public:
     void destroyVertexBuffer(const VertexBufferID buffer);
     void destroyIndexBuffer(const IndexBufferID buffer);
     void destroyProgram(const ProgramID program);
+    void destroyTexture(const TextureID texture);
 
     void resize();
     void shutdown();
@@ -195,6 +207,18 @@ inline IndexBufferID VALO::createIndexBuffer(
 ) { return m_renderer.createIndexBuffer(data, count); }
 
 
+inline TextureID VALO::createTexture(
+    const uint32_t w, 
+    const uint32_t h,
+    uint32_t* data
+) { return m_renderer.createTexture(w, h, data); }
+
+
+inline TextureID VALO::createTexture(
+    const std::string& path
+) { return m_renderer.createTexture(path); }
+
+
 inline void VALO::destroyTarget(const RenderTargetID target) 
 { m_renderer.destroyTarget(target); }
 
@@ -208,6 +232,9 @@ inline void VALO::destroyIndexBuffer(const IndexBufferID buffer)
 
 inline void VALO::destroyProgram(const ProgramID program) 
 { m_renderer.destroyProgram(program); }
+
+inline void VALO::destroyTexture(const TextureID texture)
+{ m_renderer.destroyTexture(texture); }
 
 
 inline void VALO::resize() {

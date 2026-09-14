@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Sampling.hpp"
 #include "common/Math.hpp"
 
 namespace valo {

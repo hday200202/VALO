@@ -8,10 +8,11 @@ namespace valo {
 #define EMPTY_BUFFER    UINT32_MAX
 #define DEFAULT_PROGRAM UINT32_MAX
 
-using RenderTargetID    = uint8_t;
+using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
 using IndexBufferID     = uint32_t;
 using ProgramID         = uint32_t;
+using TextureID         = uint32_t;
 
 enum class Topology     { Points, Lines, Triangles };
 enum class CullMode     { None, Back, Front };

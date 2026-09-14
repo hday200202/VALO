@@ -13,6 +13,7 @@
 #include "IndexBuffer.hpp"
 #include "ShaderProgram.hpp"
 #include "DrawFuncs.hpp"
+#include "Sampling.hpp"
 #include "common/Math.hpp"
 
 namespace valo {
@@ -46,6 +47,8 @@ public:
     RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true);
     VertexBufferID createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
     IndexBufferID createIndexBuffer(const uint32_t* data, const size_t count);
+    TextureID createTexture(const uint32_t w, const uint32_t h, uint32_t* data);
+    TextureID createTexture(const std::string& path);
     
 
     template <typename V, typename U, typename Vy>
@@ -70,6 +73,7 @@ public:
     void destroyTarget(const RenderTargetID target);
     void destroyVertexBuffer(const VertexBufferID buffer);
     void destroyIndexBuffer(const IndexBufferID buffer);
+    void destroyTexture(const TextureID texture);
 
 
     void setVsync(const bool vsync) { 
@@ -115,6 +119,9 @@ protected:
 
     uint32_t m_texW, m_texH;
 
+
+    // takes ownership of a target/texture, reusing a freed slot if there is one
+    RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
 
     bool recreateTexture(const uint32_t w, const uint32_t h) {
         SDL_DestroyTexture(m_sdlTexture);
@@ -171,6 +178,7 @@ inline void Renderer::draw(
     const RenderCommand& cmd, 
     const RenderTargetID target
 ) {
+    detail::boundTargets = &m_targets;
     drawTriangles(
         m_targets[target].get(), 
         m_vertexBuffers[cmd.verts], 
@@ -208,21 +216,24 @@ inline void Renderer::resize(
 }
 
 
+inline RenderTargetID Renderer::pushTarget(std::unique_ptr<RenderTarget> target) {
+    if (!m_freeTargets.empty()) {
+        RenderTargetID id = m_freeTargets.back();
+        m_freeTargets.pop_back();
+        m_targets[id] = std::move(target);
+        return id;
+    }
+
+    m_targets.push_back(std::move(target));
+    return m_targets.size() - 1;
+}
+
+
 inline RenderTargetID Renderer::createTarget(
     const uint32_t w,
     const uint32_t h,
     const bool tracksWindow
-) {
-    if (!m_freeTargets.empty()) {
-        RenderTargetID id = m_freeTargets.back();
-        m_freeTargets.pop_back();
-        m_targets[id] = std::make_unique<RenderTarget>(w, h, tracksWindow);
-        return id;
-    }
-
-    m_targets.push_back(std::make_unique<RenderTarget>(w, h, tracksWindow));
-    return m_targets.size() - 1;
-}
+) { return pushTarget(std::make_unique<RenderTarget>(w, h, tracksWindow)); }
 
 
 inline VertexBufferID Renderer::createVertexBuffer(
@@ -269,6 +280,26 @@ inline IndexBufferID Renderer::createIndexBuffer(
 }
 
 
+inline TextureID Renderer::createTexture(
+    const uint32_t w, 
+    const uint32_t h,
+    uint32_t* data
+) {
+    return pushTarget(std::make_unique<RenderTarget>(
+        RenderTarget::loadFromMemory(w, h, data)
+    ));
+}
+
+
+inline TextureID Renderer::createTexture(
+    const std::string& path
+) {
+    return pushTarget(std::make_unique<RenderTarget>(
+        RenderTarget::loadImageFromPath(path)
+    ));
+}
+
+
 inline void Renderer::destroyTarget(const RenderTargetID target) {
     assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
     assert(target < m_targets.size() && m_targets[target] && "Renderer: invalid or already destroyed target");
@@ -299,6 +330,15 @@ inline void Renderer::destroyProgram(const ProgramID program) {
 
     m_programs[program] = Program{}; // null out the function pointers
     m_freePrograms.push_back(program);
+}
+
+
+inline void Renderer::destroyTexture(const TextureID texture) {
+    assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
+    assert(texture < m_targets.size() && m_targets[texture] && "Renderer: invalid or already destroyed texture");
+
+    m_targets[texture].reset();
+    m_freeTargets.push_back(texture);
 }
 
 } // namespace valo

@@ -50,7 +50,7 @@ public:
     
     Color getPixel(
         const Vec2u& xy
-    ) {
+    ) const {
         assert(xy.x < m_width && xy.y < m_height);
         uint32_t pixel = m_pixels[(xy.y * m_width) + xy.x];
         return ABGR32ToColor(pixel);
@@ -60,7 +60,7 @@ public:
     Color getPixel(
         const uint32_t x,
         const uint32_t y
-    ) {
+    ) const {
         assert(x < m_width && y < m_height);
         uint32_t pixel = m_pixels[(y * m_width) + x];
         return ABGR32ToColor(pixel);
@@ -88,7 +88,7 @@ public:
 
     float getDepth(
         const Vec2u& xy
-    ) {
+    ) const {
         assert(xy.x < m_width && xy.y < m_height);
         return m_depth[(xy.y * m_width) + xy.x];
     }
@@ -97,7 +97,7 @@ public:
     float getDepth(
         const uint32_t x,
         const uint32_t y
-    ) {
+    ) const {
         assert(x < m_width && y < m_height);
         return m_depth[(y * m_width) + x];
     }
@@ -130,6 +130,7 @@ public:
     const uint32_t* data() const { return m_pixels.data(); }
     const float* depthData() const { return m_depth.data(); }
     bool tracksWindow() const { return m_trackWindow; }
+    void setTrackWindow(const bool trackWindow) { m_trackWindow = trackWindow; }
 
 
 private:
