@@ -40,6 +40,16 @@ list(APPEND CMAKE_PREFIX_PATH "${VALO_SDL3_PREFIX}")
 find_package(SDL3 REQUIRED CONFIG COMPONENTS SDL3-static)
 
 # ---------------------------------------------------------------------------
+# stb (vendored header-only, fetched by build.sh into ext/stb)
+# ---------------------------------------------------------------------------
+# SYSTEM so stb's own warnings don't show up under -Wall -Wextra -Wpedantic.
+# Exactly one .cpp must #define STB_IMAGE_IMPLEMENTATION before including it.
+set(VALO_STB_DIR "${CMAKE_SOURCE_DIR}/ext/stb")
+if(NOT EXISTS "${VALO_STB_DIR}/stb_image.h")
+    message(FATAL_ERROR "ext/stb/stb_image.h not found - run ./build.sh (it fetches vendored headers)")
+endif()
+
+# ---------------------------------------------------------------------------
 # VALO library: everything under include/ is the library
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE VALO_SOURCES CONFIGURE_DEPENDS
@@ -60,6 +70,7 @@ if(VALO_SOURCES)
         add_library(VALO STATIC ${VALO_SOURCES} ${VALO_HEADERS})
     endif()
     target_include_directories(VALO PUBLIC "${CMAKE_SOURCE_DIR}/include")
+    target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}")
     target_link_libraries(VALO PUBLIC SDL3::SDL3-static)
     target_compile_options(VALO PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
@@ -79,6 +90,7 @@ else()
     message(STATUS "VALO: no source files under include/, building as header-only INTERFACE target")
     add_library(VALO INTERFACE ${VALO_HEADERS})
     target_include_directories(VALO INTERFACE "${CMAKE_SOURCE_DIR}/include")
+    target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}")
     target_link_libraries(VALO INTERFACE SDL3::SDL3-static)
 endif()
 

@@ -16,6 +16,10 @@
 #                                     copy libSDL3.a to lib/
 #   3. otherwise                   -> SDL3 step is skipped entirely
 #
+# stb handling (vendored, header-only):
+#   ext/stb/stb_image.h missing    -> download it (pinned to STB_COMMIT) into ext/stb
+#   otherwise                      -> skipped
+#
 # Outputs:
 #   lib/                      libSDL3.a + libVALO.{a,dylib}
 #   examples/bin/             one executable per examples/*.cpp
@@ -33,6 +37,12 @@ SDL_SRC_DIR="ext/SDL3"
 SDL_BUILD_DIR="build/sdl3"
 SDL_INSTALL_DIR="ext/SDL3-install"
 SDL_CONFIG_FILE="$SDL_INSTALL_DIR/lib/cmake/SDL3/SDL3Config.cmake"
+
+# stb: header-only, so we just fetch the single file (pinned commit)
+STB_COMMIT="${STB_COMMIT:-2c980bb59875b0d32144a71867fbdebb2f77cd20}"
+STB_BASE_URL="https://raw.githubusercontent.com/nothings/stb/$STB_COMMIT"
+STB_DIR="ext/stb"
+STB_HEADERS=(stb_image.h)
 
 BUILD_TYPE="Release"
 LINKAGE="static"
@@ -76,6 +86,19 @@ if [[ ! -f "$SDL_SRC_DIR/CMakeLists.txt" ]]; then
 else
     echo "==> SDL3 source present in $SDL_SRC_DIR"
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. Vendor stb headers
+# ---------------------------------------------------------------------------
+mkdir -p "$STB_DIR"
+for hdr in "${STB_HEADERS[@]}"; do
+    if [[ ! -f "$STB_DIR/$hdr" ]]; then
+        echo "==> $hdr not found in $STB_DIR, downloading (stb @ ${STB_COMMIT:0:12})"
+        curl -fsSL "$STB_BASE_URL/$hdr" -o "$STB_DIR/$hdr"
+    else
+        echo "==> $hdr present in $STB_DIR"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # 2. Build SDL3 once (static, PIC so a dynamic VALO can link it)
