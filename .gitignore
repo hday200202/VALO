@@ -1,0 +1,12 @@
+build/
+ext/SDL3/
+ext/SDL3-install/
+lib/*
+!lib/.gitkeep
+bin/*
+!bin/.gitkeep
+examples/bin/*
+!examples/bin/.gitkeep
+compile_commands.json
+.cache/
+.DS_Store

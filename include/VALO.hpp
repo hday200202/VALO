@@ -1,0 +1,232 @@
+#pragma once
+
+#include "render/Renderer.hpp"
+
+namespace valo {
+
+using LayerID = uint32_t;
+
+class VALO {
+public:
+    VALO() = default;
+    VALO(const VALO&) = delete;
+    VALO& operator=(const VALO&) = delete;
+    ~VALO() { shutdown(); }
+
+    // if sdlWindow is null, create a window.
+    bool init(const RenderConfig& cfg = {});
+
+    void beginFrame();
+    void submit(const RenderCommand& cmd, LayerID layer = 0);
+    void endFrame(const RenderTargetID displayTarget = Renderer::BACKBUFFER);
+
+    void setLayerOrder(const std::vector<LayerID>& order);
+    LayerID addLayer(
+        const RenderTargetID target = Renderer::BACKBUFFER,
+        const Color& clearColor = {0.f, 0.f, 0.f, 1.f}
+    );
+    void removeLayer(const LayerID layer);
+
+    // if no args passed in, target is same size as window.
+    RenderTargetID createTarget(
+        const uint32_t w = 0,
+        const uint32_t h = 0
+    );
+
+    VertexBufferID createVertexBuffer(
+        const void* data,
+        const size_t count,
+        const VtxLayout& layout
+    );
+
+    IndexBufferID createIndexBuffer(
+        const uint32_t* data,
+        const size_t count
+    );
+
+    template <typename V, typename U, typename Vy>
+    ProgramID createProgram(
+        Vec4f (*vs)(const V&, const U&, Vy&), 
+        Color (*fs)(const Vy&, const U&)
+    ) { return m_renderer.createProgram(vs, fs); }
+
+    void destroyTarget(const RenderTargetID target);
+    void destroyVertexBuffer(const VertexBufferID buffer);
+    void destroyIndexBuffer(const IndexBufferID buffer);
+    void destroyProgram(const ProgramID program);
+
+    void resize();
+    void shutdown();
+
+private:
+    RenderConfig m_cfg;
+    bool m_createdWindow = false;
+    
+    struct Layer {
+        std::vector<RenderCommand> cmdQueue;
+        RenderTargetID target = Renderer::BACKBUFFER;
+        Color clearColor = {0.f, 0.f, 0.f, 1.f};
+        bool dead = false;
+    };
+
+    std::vector<Layer> m_layers;
+    std::vector<LayerID> m_layerOrder;
+    Renderer m_renderer;
+
+    bool recreateWindow(const uint32_t w, const uint32_t h) {
+        m_cfg.sdlWindow = SDL_CreateWindow("", w, h, SDL_WINDOW_RESIZABLE);
+
+        if (!m_cfg.sdlWindow) {
+            std::cout << "VALO: " << SDL_GetError() << std::endl;
+            return false;
+        }
+
+        return true;
+    }
+};
+
+
+
+inline bool VALO::init(const RenderConfig& cfg) {
+    bool initialized = true;
+    m_cfg = cfg;
+
+    m_layers.clear();
+    m_layerOrder.clear();
+    m_createdWindow = (!m_cfg.sdlWindow);
+
+    if (!m_cfg.sdlWindow) {
+        if (SDL_Init(SDL_INIT_VIDEO)) {
+            initialized &= recreateWindow(1280, 720); // default window
+            m_createdWindow = true;
+        } else return false;
+    }
+
+    initialized &= m_renderer.init(m_cfg);
+    m_layers.push_back(Layer()); // default layer, renders to backbuffer
+    m_layerOrder.push_back(0);
+
+    return initialized;
+}
+
+
+// clears each target once, using the clear color of the first layer (in draw order) that uses it
+inline void VALO::beginFrame() {
+    std::vector<RenderTargetID> cleared;
+
+    for (auto& layer : m_layerOrder) {
+        const RenderTargetID target = m_layers[layer].target;
+        if (std::find(cleared.begin(), cleared.end(), target) != cleared.end()) continue;
+
+        m_renderer.clear(m_layers[layer].clearColor, target);
+        cleared.push_back(target);
+    }
+}
+
+
+inline void VALO::submit(
+    const RenderCommand& cmd,
+    const LayerID layer
+) { m_layers[layer].cmdQueue.push_back(cmd); }
+
+
+inline void VALO::endFrame(const RenderTargetID displayTarget) {
+    for (auto& layer : m_layerOrder) {
+        auto& currLayer = m_layers[layer];
+        for (auto& cmd : currLayer.cmdQueue)
+            m_renderer.draw(cmd, currLayer.target);
+        currLayer.cmdQueue.clear();
+    }
+
+    m_renderer.show(displayTarget);
+}
+
+
+inline void VALO::setLayerOrder(const std::vector<LayerID>& order) {
+    m_layerOrder = order;
+}
+
+inline LayerID VALO::addLayer(
+    const RenderTargetID target,
+    const Color& clearColor
+) {
+    m_layers.push_back({{}, target, clearColor});
+    LayerID layer = m_layers.size() - 1;
+    m_layerOrder.push_back(layer);
+    return layer;
+}
+
+
+inline void VALO::removeLayer(const LayerID layer) {
+    m_layers[layer].dead = true;
+
+    auto it = std::find(m_layerOrder.begin(), m_layerOrder.end(), layer);
+    if (it != m_layerOrder.end()) m_layerOrder.erase(it);
+}
+
+
+inline RenderTargetID VALO::createTarget(
+    const uint32_t w, 
+    const uint32_t h
+) {
+    uint32_t width = w; uint32_t height = h;
+    bool tracksWindow = false;
+
+    if (w == 0 || h == 0) {
+        width = m_renderer.width();
+        height = m_renderer.height();
+        tracksWindow = true;
+    }
+
+    return m_renderer.createTarget(width, height, tracksWindow);
+}
+
+
+inline VertexBufferID VALO::createVertexBuffer(
+    const void* data,
+    const size_t count,
+    const VtxLayout& layout
+) { return m_renderer.createVertexBuffer(data, count, layout); }
+
+
+inline IndexBufferID VALO::createIndexBuffer(
+    const uint32_t* data,
+    const size_t count
+) { return m_renderer.createIndexBuffer(data, count); }
+
+
+inline void VALO::destroyTarget(const RenderTargetID target) 
+{ m_renderer.destroyTarget(target); }
+
+
+inline void VALO::destroyVertexBuffer(const VertexBufferID buffer) 
+{ m_renderer.destroyVertexBuffer(buffer); }
+
+
+inline void VALO::destroyIndexBuffer(const IndexBufferID buffer) 
+{ m_renderer.destroyIndexBuffer(buffer); }
+
+inline void VALO::destroyProgram(const ProgramID program) 
+{ m_renderer.destroyProgram(program); }
+
+
+inline void VALO::resize() {
+    int w, h;
+    SDL_GetWindowSizeInPixels(m_cfg.sdlWindow, &w, &h);
+    m_renderer.resize(w, h);
+}
+
+
+inline void VALO::shutdown() {
+    m_renderer.shutdown();
+
+    if (m_createdWindow) {
+        SDL_DestroyWindow(m_cfg.sdlWindow);
+        SDL_Quit();
+
+        m_cfg.sdlWindow = nullptr;
+        m_createdWindow = false;
+    }
+}
+
+}
