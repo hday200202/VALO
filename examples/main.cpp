@@ -1,5 +1,6 @@
 #include <VALO.hpp>
 #include <cmath>
+#include <numbers>
 
 using namespace valo;
 
@@ -100,7 +101,7 @@ int main() {
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         const float aspect = float(w) / float(h);
-        const Mat4f proj   = Mat4f::perspective(float(M_PI) / 3.f, aspect, 0.1f, 100.f);
+        const Mat4f proj   = Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, 100.f);
         const float t      = SDL_GetTicks() / 1000.f;
 
         valo.beginFrame();

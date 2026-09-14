@@ -80,7 +80,7 @@ inline void rasterizeTriangle(
                 float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
 
                 float interp[MAX_VARYINGS];
-                for (int k = 0; k < program.varyingCount; ++k) {
+                for (uint32_t k = 0; k < program.varyingCount; ++k) {
                     interp[k] = 
                         (b1*varys[0][k]*s1.w + 
                          b2*varys[1][k]*s2.w + 
@@ -114,7 +114,7 @@ inline int clipNear(
         if ((da >= 0) != (db >= 0)) {
             float t = da / (da - db);
             out[n].pos = lerp(a.pos, b.pos, t);
-            for (int k = 0; k < varyingCount; ++k)
+            for (uint32_t k = 0; k < varyingCount; ++k)
                 out[n].vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
             ++n;
         }

@@ -5,6 +5,20 @@
 #include <cstdlib>
 #include <algorithm>
 
+// Anonymous structs inside a union are a compiler extension (every compiler we
+// target supports them, ISO C++ does not). The swizzle unions below are wrapped
+// so -Wpedantic / /W4 stay clean for anyone including this header.
+#if defined(__clang__) || defined(__GNUC__)
+    #define VALO_SWIZZLE_BEGIN         _Pragma("GCC diagnostic push")         _Pragma("GCC diagnostic ignored \"-Wpedantic\"")
+    #define VALO_SWIZZLE_END _Pragma("GCC diagnostic pop")
+#elif defined(_MSC_VER)
+    #define VALO_SWIZZLE_BEGIN __pragma(warning(push)) __pragma(warning(disable : 4201))
+    #define VALO_SWIZZLE_END   __pragma(warning(pop))
+#else
+    #define VALO_SWIZZLE_BEGIN
+    #define VALO_SWIZZLE_END
+#endif
+
 namespace valo {
 
 /* ========================================================================= //
@@ -88,11 +102,13 @@ template <typename T> Vec2<T> lerp(const Vec2<T>& a, const Vec2<T>& b, const T t
     Vec3
 // ========================================================================= */
 template <typename T> struct Vec3 {
+    VALO_SWIZZLE_BEGIN
     union {
         struct { T x = T(0), y = T(0), z = T(0); };
         Vec2<T> xy;
         struct { T _sx; Vec2<T> yz; };
     };
+    VALO_SWIZZLE_END
 
     constexpr Vec3() {}
     constexpr Vec3(const T x, const T y, const T z) : x(x), y(y), z(z) {}
@@ -170,6 +186,7 @@ template <typename T> Vec3<T> lerp(const Vec3<T>& a, const Vec3<T>& b, const T t
     Vec4
 // ========================================================================= */
 template <typename T> struct Vec4 {
+    VALO_SWIZZLE_BEGIN
     union {
         struct { T x = T(0), y = T(0), z = T(0), w = T(0); };
         Vec2<T> xy;
@@ -178,6 +195,7 @@ template <typename T> struct Vec4 {
         struct { T _ssx; T _ssy; Vec2<T> zw; };
         struct { T _sssx; Vec3<T> yzw; };
     };
+    VALO_SWIZZLE_END
 
     constexpr Vec4() {}
     constexpr Vec4(const T x, const T y, const T z, const T w) : x(x), y(y), z(z), w(w) {}
