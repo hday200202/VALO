@@ -10,11 +10,11 @@ struct Varyings { Vec3f color; };
 
 Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.color = in.color;
-    return u.mvp * Vec4f{in.pos, 1.f};
+    return u.mvp * Vec4f(in.pos, 1.f);
 }
 
 Color fs(const Varyings& in, const Uniforms&) {
-    return {in.color, 1.f};
+    return Color(in.color, 1.f);
 }
 
 int main() {

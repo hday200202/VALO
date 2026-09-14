@@ -13,7 +13,7 @@ namespace valo {
 template <typename T> struct Vec2 {
     T x = T(0), y = T(0);
 
-    constexpr Vec2() = default;
+    constexpr Vec2() {}
     constexpr Vec2(const T x, const T y) : x(x), y(y) {}
 
     T* data() { return &x; }
@@ -94,7 +94,7 @@ template <typename T> struct Vec3 {
         struct { T _sx; Vec2<T> yz; };
     };
 
-    constexpr Vec3() = default;
+    constexpr Vec3() {}
     constexpr Vec3(const T x, const T y, const T z) : x(x), y(y), z(z) {}
     constexpr Vec3(const Vec2<T>& xy, const T z) : x(xy.x), y(xy.y), z(z) {}
     constexpr Vec3(const T x, const Vec2<T>& yz) : x(x), y(yz.x), z(yz.y) {}
@@ -179,7 +179,7 @@ template <typename T> struct Vec4 {
         struct { T _sssx; Vec3<T> yzw; };
     };
 
-    constexpr Vec4() = default;
+    constexpr Vec4() {}
     constexpr Vec4(const T x, const T y, const T z, const T w) : x(x), y(y), z(z), w(w) {}
     constexpr Vec4(const Vec2<T>& xy, const T z, const T w) : x(xy.x), y(xy.y), z(z), w(w) {}
     constexpr Vec4(const T x, const Vec2<T>& yz, const T w) : x(x), y(yz.x), z(yz.y), w(w) {}

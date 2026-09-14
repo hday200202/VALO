@@ -120,7 +120,7 @@ protected:
         SDL_DestroyTexture(m_sdlTexture);
         m_sdlTexture = SDL_CreateTexture(
             m_sdlRenderer, 
-            SDL_PIXELFORMAT_RGBA8888, 
+            SDL_PIXELFORMAT_ABGR8888, 
             SDL_TEXTUREACCESS_STREAMING, 
             w, h
         );
