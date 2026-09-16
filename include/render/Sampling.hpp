@@ -13,6 +13,8 @@ namespace detail {
     inline thread_local const std::vector<std::unique_ptr<RenderTarget>>* boundTargets = nullptr;
 }
 
+inline thread_local float valo_PointSize = 1.f;
+
 inline Color texture(const TextureID tex, const Vec2f& uv) {
     assert(detail::boundTargets && "texture() called outside of a draw");
     const RenderTarget& t = *(*detail::boundTargets)[tex];

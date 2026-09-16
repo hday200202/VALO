@@ -13,6 +13,88 @@
 
 namespace valo {
 
+inline void rasterizePoint(
+    RenderTarget* target,
+    const Program& program,
+    const RenderCommand& cmd,
+    const Vec4f clip,
+    const float* varys,
+    const float size
+) {
+    Vec4f ndc = {clip.xyz / clip.w, clip.w};
+    
+    Vec4f screen = {
+        (ndc.x + 1) * 0.5f * target->width(),
+        (1 - ndc.y) * 0.5f * target->height(),
+        ndc.z, ndc.w
+    };
+
+    int px = int(screen.x), py = int(screen.y);
+    if (px < 0 || py < 0 || px >= target->width() - 1 || py >= target->height() - 1) return;
+    if (cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
+    else if (cmd.depthWrite) target->setDepth(px, py, screen.z);
+
+    int n = std::max(1, int(size + 0.5f));
+    int half = int(n / 2);
+    Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
+
+    for (int y = py - half; y < py - half + n; ++y) {
+        for (int x = px - half; x < px - half + n; ++x) {
+            if (x < 0 || y < 0 || x >= target->width() - 1 || y >= target->height() - 1) continue;
+            target->setPixel(x, y, color);
+        }
+    }
+}
+
+inline void rasterizeLine(
+    RenderTarget* target,
+    const Program& program,
+    const RenderCommand& cmd,
+    const Vec4f clip[2],
+    const float* varys[2]
+) {
+    Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
+    Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
+
+    Vec4f s1 = {
+        (ndc1.x + 1) * 0.5f * target->width(),
+        (1 - ndc1.y) * 0.5f * target->height(),
+        ndc1.z, ndc1.w
+    };
+
+    Vec4f s2 = {
+        (ndc2.x + 1) * 0.5f * target->width(),
+        (1 - ndc2.y) * 0.5f * target->height(),
+        ndc2.z, ndc2.w
+    };
+
+    float dx = s2.x - s1.x;
+    float dy = s2.y - s1.y;
+
+    int steps = int(std::max(std::abs(dx), std::abs(dy)));
+    
+    for (int i = 0; i <= steps; ++i) {
+        float t = float(i) / std::max(steps, 1);
+        float x = s1.x + dx * t;
+        float y = s1.y + dy * t;
+        int px = int(x), py = int(y);
+        if (px < 0 || py < 0 || px > target->width() - 1 || py > target->height() - 1) continue;
+        float z = s1.z + (s2.z - s1.z) * t;
+        float invW = s1.w + (s2.w - s1.w) * t;
+
+        float interp[MAX_VARYINGS];
+        for (uint32_t k = 0; k < program.varyingCount; ++k) {
+            interp[k] = (varys[0][k]*s1.w*(1-t) + varys[1][k]*s2.w*t) / invW;
+        }
+
+        if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
+        else if (cmd.depthWrite) target->setDepth(px, py, z);
+
+        Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
+        target->setPixel(px, py, color);
+    }
+}
+
 inline void rasterizeTriangle(
     RenderTarget* target,
     const Program& program,
@@ -134,7 +216,7 @@ inline void drawTriangles(
     const size_t stride = vb.layout.stride();
 
     for (size_t i = 0; i < ib.indices.size(); i += 3) {
-        // collect thre verts
+        // collect three verts
         const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
         const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
         const uint8_t* v3 = vb.verts.data() + ib.indices[i + 2] * stride;
@@ -151,8 +233,77 @@ inline void drawTriangles(
         for (int t = 1; t + 1 < n; ++t) {
             Vec4f pos[3] = { clipped[0].pos,  clipped[t].pos,  clipped[t + 1].pos  };
             const float* varys[3] = { clipped[0].vary, clipped[t].vary, clipped[t + 1].vary };
-            rasterizeTriangle(target, program, cmd, pos, varys);
+
+            if (cmd.fillmode == FillMode::Wireframe) {
+                Vec4f line1[2] = {pos[0], pos[1]};
+                Vec4f line2[2] = {pos[1], pos[2]};
+                Vec4f line3[2] = {pos[2], pos[0]};
+                const float* varys1[2] = {varys[0], varys[1]};
+                const float* varys2[2] = {varys[1], varys[2]};
+                const float* varys3[2] = {varys[2], varys[0]};
+                rasterizeLine(target, program, cmd, line1, varys1);
+                rasterizeLine(target, program, cmd, line2, varys2);
+                rasterizeLine(target, program, cmd, line3, varys3);
+            }
+            else rasterizeTriangle(target, program, cmd, pos, varys);
         }
+    }
+}
+
+
+inline void drawLines(
+    RenderTarget* target,
+    const VertexBuffer& vb,
+    const IndexBuffer& ib,
+    const Program& program,
+    const RenderCommand& cmd
+) {
+    const size_t stride = vb.layout.stride();
+
+    for (size_t i = 0; i + 1 < ib.indices.size(); i += 2) {
+        const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
+        const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
+
+        ClipVert a, b;
+        a.pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, a.vary);
+        b.pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, b.vary);
+
+        if (a.pos.z < 0 && b.pos.z < 0) continue;
+        if ((a.pos.z < 0) != (b.pos.z < 0)) {
+            float t = a.pos.z / (a.pos.z - b.pos.z);
+            ClipVert& out = (a.pos.z < 0) ? a : b;
+            out.pos = lerp(a.pos, b.pos, t);
+
+            for (int k = 0; k < program.varyingCount; ++k)
+                out.vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
+        }
+
+        Vec4f pos[2]            = {a.pos, b.pos};
+        const float* varys[2]   = {a.vary, b.vary};
+        rasterizeLine(target, program, cmd, pos, varys);
+    }
+}
+
+
+inline void drawPoints(
+    RenderTarget* target,
+    const VertexBuffer& vb,
+    const IndexBuffer& ib,
+    const Program& program,
+    const RenderCommand& cmd
+) {
+    size_t stride = vb.layout.stride();
+
+    for (size_t i = 0; i < ib.indices.size(); ++i) {
+        const uint8_t* v = vb.verts.data() + ib.indices[i] * stride;
+        ClipVert a;
+
+        valo_PointSize = 1.f;
+        a.pos = program.vsThunk(program.vsFn, v, cmd.uniforms, a.vary);
+        const float size = valo_PointSize;
+
+        if (a.pos.z < 0) continue;
+        rasterizePoint(target, program, cmd, a.pos, a.vary, size);
     }
 }
 

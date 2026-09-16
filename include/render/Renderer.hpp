@@ -180,13 +180,40 @@ inline void Renderer::draw(
     const RenderTargetID target
 ) {
     detail::boundTargets = &m_targets;
-    drawTriangles(
-        m_targets[target].get(), 
-        m_vertexBuffers[cmd.verts], 
-        m_indexBuffers[cmd.indices], 
-        m_programs[cmd.program], 
-        cmd
-    );
+
+    switch (cmd.topology) {
+        case Topology::Triangles:
+            drawTriangles(
+                m_targets[target].get(), 
+                m_vertexBuffers[cmd.verts], 
+                m_indexBuffers[cmd.indices], 
+                m_programs[cmd.program], 
+                cmd
+            );
+            break;
+        
+        case Topology::Lines:
+            drawLines(
+                m_targets[target].get(), 
+                m_vertexBuffers[cmd.verts], 
+                m_indexBuffers[cmd.indices], 
+                m_programs[cmd.program], 
+                cmd
+            );
+            break;
+        
+        case Topology::Points:
+            drawPoints(
+                m_targets[target].get(), 
+                m_vertexBuffers[cmd.verts], 
+                m_indexBuffers[cmd.indices], 
+                m_programs[cmd.program], 
+                cmd
+            );
+            break;
+
+        default: break;
+    }
 }
 
 

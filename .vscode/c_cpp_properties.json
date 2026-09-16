@@ -2,14 +2,26 @@
     "configurations": [
         {
             "name": "default",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/ext/stb",
+                "${workspaceFolder}/ext/SDL3-install/include"
             ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/include",
+                    "${workspaceFolder}/examples",
+                    "${workspaceFolder}/ext/stb",
+                    "${workspaceFolder}/ext/SDL3-install/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
             "defines": [],
-            "compilerPath": null,
-            "cStandard": "c23",
-            "cppStandard": "c++26",
-            "intelliSenseMode": "${default}"
+            "compilerPath": "/usr/bin/clang++",
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "macos-clang-arm64"
         }
     ],
     "version": 4
