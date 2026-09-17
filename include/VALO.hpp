@@ -26,6 +26,10 @@ public:
         const Color& clearColor = {0.f, 0.f, 0.f, 1.f}
     );
     void removeLayer(const LayerID layer);
+    void setLayerClearColor(const LayerID layer, const Color& color) {
+        Color clearColor = clamp(color, 0.f, 1.f);
+        m_layers[layer].clearColor = clearColor;
+    }
 
     // if no args passed in, target is same size as window.
     RenderTargetID createTarget(
@@ -75,6 +79,8 @@ public:
 
     void resize();
     void shutdown();
+
+    static const LayerID BASE_LAYER = 0;
 
 private:
     RenderConfig m_cfg;

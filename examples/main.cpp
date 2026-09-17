@@ -21,13 +21,14 @@ Color fs(const Varyings& in, const Uniforms& u) {
 
 // 8x8 checkerboard with a red cell at uv (0,0) and a green one at uv (1,1),
 // so a flipped or rotated UV mapping is obvious at a glance.
+// Dark cells are 35% opaque so whatever is behind the cube shows through them.
 static std::vector<uint32_t> makeChecker(uint32_t size, uint32_t cells) {
     std::vector<uint32_t> px(size * size);
     const uint32_t cell = size / cells;
     for (uint32_t y = 0; y < size; ++y)
         for (uint32_t x = 0; x < size; ++x) {
             bool dark = ((x / cell) + (y / cell)) & 1;
-            px[y * size + x] = colorToABGR32(dark ? Color(0.15f, 0.15f, 0.18f, 1.f)
+            px[y * size + x] = colorToABGR32(dark ? Color(0.15f, 0.15f, 0.18f, 0.35f)
                                                   : Color(0.9f,  0.9f,  0.85f, 1.f));
         }
     for (uint32_t i = 0; i < cell; ++i)
@@ -38,59 +39,16 @@ static std::vector<uint32_t> makeChecker(uint32_t size, uint32_t cells) {
     return px;
 }
 
-// ---- particles: a spiral galaxy, fully animated in the vertex shader ----
-// Each star is static data: orbit radius, base angle, height, and a seed.
-// The vertex shader computes its position from `time`, so the vertex buffer
-// is uploaded once and never touched again.
-struct Star      { float radius; float angle; float height; float seed; };
-struct GUniforms { Mat4f viewProj; Mat4f model; float time; };
-struct GVaryings { Vec3f color; float glow; };
-
-static constexpr float kGalaxyRadius = 3.5f;
-
-Vec4f galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
-    const float r = in.radius;
-    // inner stars orbit faster (roughly Keplerian) -> arms wind up over time
-    const float a = in.angle + u.time * 0.9f / std::sqrt(r + 0.25f);
-    // thin disk, puffier toward the core
-    const float y = in.height * (0.35f - 0.25f * (r / kGalaxyRadius));
-
-    Vec3f pos  = {r * std::cos(a), y, r * std::sin(a)};
-    Vec4f clip = u.viewProj * u.model * Vec4f(pos, 1.f);
-
-    // color by radius: white-yellow core -> orange -> blue-violet rim
-    const float f = r / kGalaxyRadius;
-    Vec3f core = {1.0f, 0.95f, 0.8f};
-    Vec3f mid  = {1.0f, 0.55f, 0.25f};
-    Vec3f rim  = {0.35f, 0.45f, 1.0f};
-    out.color  = f < 0.35f ? lerp(core, mid, f / 0.35f) : lerp(mid, rim, (f - 0.35f) / 0.65f);
-
-    // twinkle: each star has its own phase
-    out.glow = 0.55f + 0.45f * std::sin(u.time * 2.5f + in.seed * 6.2831853f);
-
-    // point size shrinks with distance (clip.w == view depth), bigger near the core
-    valo_PointSize = std::clamp((5.f + 4.f * (1.f - f)) / clip.w * 2.5f, 1.f, 14.f);
-    return clip;
-}
-Color galaxyFS(const GVaryings& in, const GUniforms&) {
-    return Color(in.color * in.glow, 1.f);
-}
-
-static float frand(uint32_t& seed) {                         // cheap LCG, 0..1
-    seed = seed * 1664525u + 1013904223u;
-    return (seed >> 8) * (1.f / 16777216.f);
-}
-
 int main() {
     // dev-owned window so we can query its size for the aspect ratio
     if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
-    SDL_Window* window = SDL_CreateWindow("VALO - cube", 320 * 4, 240 * 4, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    SDL_Window* window = SDL_CreateWindow("VALO - cube", 320 * 2, 240 * 2, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!window) return 1;
 
     VALO valo;
     RenderConfig cfg;
     cfg.sdlWindow       = window;
-    cfg.vsync           = false;
+    cfg.vsync           = true;
     cfg.renderScale     = 1.f;
     if (!valo.init(cfg)) return 1;
 
@@ -105,13 +63,15 @@ int main() {
         {{-1,-1,-1},{0,1}}, {{ 1,-1,-1},{1,1}}, {{ 1,-1, 1},{1,0}}, {{-1,-1, 1},{0,0}},  // -y
     };
 
-    uint32_t indices[36];
-    for (uint32_t f = 0; f < 6; ++f) {
-        const uint32_t b = f * 4;
-        uint32_t* i = indices + f * 6;
-        i[0] = b; i[1] = b + 1; i[2] = b + 2;
-        i[3] = b; i[4] = b + 2; i[5] = b + 3;
-    }
+    // two triangles per face, indexing the 4 verts of that face above
+    uint32_t indices[36] = {
+         0,  1,  2,   0,  2,  3,   // +z
+         4,  5,  6,   4,  6,  7,   // -z
+         8,  9, 10,   8, 10, 11,   // +x
+        12, 13, 14,  12, 14, 15,   // -x
+        16, 17, 18,  16, 18, 19,   // +y
+        20, 21, 22,  20, 22, 23,   // -y
+    };
 
     std::vector<uint32_t> checker = makeChecker(256, 8);
     TextureID      tex  = valo.createTexture(256, 256, checker.data());
@@ -121,42 +81,21 @@ int main() {
     IndexBufferID  ib   = valo.createIndexBuffer(indices, 36);
     ProgramID      prog = valo.createProgram(vs, fs);
 
-    RenderCommand cube;
-    cube.verts   = vb;
-    cube.indices = ib;
-    cube.program = prog;
-    cube.cullmode = CullMode::Back;
-    // cube.fillmode = FillMode::Wireframe;
-    // cube.topology = Topology::Lines;
+    valo.setLayerClearColor(VALO::BASE_LAYER, {0.7f, 0.7f, 1.f, 1.f});
 
-    // --- galaxy particle system ---
-    constexpr uint32_t kStars = 8000;
-    constexpr int      kArms  = 3;
-    std::vector<Star>     stars(kStars);
-    std::vector<uint32_t> sidx(kStars);
-    uint32_t seed = 12345;
-    for (uint32_t i = 0; i < kStars; ++i) {
-        const float r    = std::sqrt(frand(seed)) * kGalaxyRadius;       // uniform over the disk
-        const int   arm  = int(frand(seed) * kArms);
-        const float armA = arm * 6.2831853f / kArms + r * 1.6f;           // logarithmic-ish twist
-        const float scat = (frand(seed) - 0.5f) * (0.35f + 0.9f * (1.f - r / kGalaxyRadius));
-        stars[i] = {r, armA + scat, (frand(seed) - 0.5f) * 2.f, frand(seed)};
-        sidx[i]  = i;
-    }
+    // Transparent convex mesh: draw it in two passes so blending happens
+    // back-to-front - first the back faces only, then the front faces only.
+    RenderCommand cubeBack;
+    cubeBack.verts     = vb;
+    cubeBack.indices   = ib;
+    cubeBack.program   = prog;
+    cubeBack.blendmode = BlendMode::Alpha;
+    cubeBack.cullmode  = CullMode::Front;     // keep only faces pointing away from the camera
 
-    VtxLayout      slayout({VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float});
-    VertexBufferID svb   = valo.createVertexBuffer(stars.data(), kStars, slayout);
-    IndexBufferID  sib   = valo.createIndexBuffer(sidx.data(), kStars);
-    ProgramID      sprog = valo.createProgram(galaxyVS, galaxyFS);
+    RenderCommand cubeFront = cubeBack;
+    cubeFront.cullmode = CullMode::Back;      // keep only faces pointing at the camera
 
-    RenderCommand galaxy;
-    galaxy.verts      = svb;
-    galaxy.indices    = sib;
-    galaxy.program    = sprog;
-    galaxy.topology   = Topology::Points;
-    galaxy.depthWrite = false;                              // stars test against the cubes but not each other
-
-    // simple fly camera: W/S forward/back, A/D strafe, Q/E down/up, ESC quit
+    // simple fly camera: W/S forward/back, A/D strafe, Q/E down/up, L wireframe, ESC quit
     Vec3f camPos = {0.f, 1.5f, 6.f};
     const Vec3f camFwd = Vec3f{0.f, -0.25f, -1.f}.normalized();
     const Vec3f camRight = camFwd.cross({0.f, 1.f, 0.f}).normalized();
@@ -172,6 +111,10 @@ int main() {
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: valo.resize(); break;
                 case SDL_EVENT_KEY_DOWN:
                     if (event.key.key == SDLK_ESCAPE) running = false;
+                    if (event.key.key == SDLK_L) {
+                        FillMode fm = cubeFront.fillmode == FillMode::Solid ? FillMode::Wireframe : FillMode::Solid;
+                        cubeFront.fillmode = cubeBack.fillmode = fm;
+                    }
                     break;
                 default: break;
             }
@@ -189,15 +132,6 @@ int main() {
         if (keys[SDL_SCANCODE_A]) camPos -= camRight * speed;
         if (keys[SDL_SCANCODE_E]) camPos.y += speed;
         if (keys[SDL_SCANCODE_Q]) camPos.y -= speed;
-
-        static bool prevFM = false;
-        bool fm = keys[SDL_SCANCODE_L];
-        if (fm && !prevFM) {
-            if (cube.fillmode == FillMode::Wireframe)
-                cube.fillmode = FillMode::Solid;
-            else cube.fillmode = FillMode::Wireframe;
-        }
-        prevFM = fm;
         const Mat4f view = Mat4f::lookAt(camPos, camPos + camFwd, {0.f, 1.f, 0.f});
 
         int w, h;
@@ -210,22 +144,21 @@ int main() {
 
         // spinning cube at the origin
         Mat4f model = Mat4f::rotationY(t) * Mat4f::rotationX(t * 0.6f);
-        cube.setUniforms(Uniforms{proj * view * model, tex});
-        valo.submit(cube);
+        cubeBack.setUniforms(Uniforms{proj * view * model, tex});
+        cubeFront.setUniforms(Uniforms{proj * view * model, tex});
+        valo.submit(cubeBack);
+        valo.submit(cubeFront);
 
-        // second cube: smaller, orbiting behind/around the first.
+        // second cube: smaller, orbiting the first.
         // depth test + perspective decide who's in front as it passes.
-        Mat4f model2 = 
-            Mat4f::translation({2.5f * std::cos(t * 0.8f), 0.f, 2.5f * std::sin(t * 0.8f)}) * 
-            Mat4f::rotationZ(-t) * 
+        Mat4f model2 =
+            Mat4f::translation({2.5f * std::cos(t * 0.8f), 0.f, 2.5f * std::sin(t * 0.8f)}) *
+            Mat4f::rotationZ(-t) *
             Mat4f::scale({0.5f, 0.5f, 0.5f});
-        cube.setUniforms(Uniforms{proj * view * model2, tex});
-        valo.submit(cube);
-
-        // galaxy: tilted disk above the cubes, everything else happens in the shader
-        Mat4f galaxyModel = Mat4f::translation({0.f, 2.6f, 0.f}) * Mat4f::rotationX(0.55f);
-        galaxy.setUniforms(GUniforms{proj * view, galaxyModel, t});
-        valo.submit(galaxy);
+        cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
+        cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
+        valo.submit(cubeBack);
+        valo.submit(cubeFront);
 
         valo.endFrame();
     }

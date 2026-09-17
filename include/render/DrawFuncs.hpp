@@ -13,6 +13,42 @@
 
 namespace valo {
 
+inline void writePixel(
+    RenderTarget* target, 
+    const int x, 
+    const int y, 
+    const Color& src, 
+    const BlendMode mode
+) {
+    switch (mode) {
+        case BlendMode::Opaque: {
+            target->setPixel(x, y, src); 
+            break;
+        }
+
+        case BlendMode::Alpha: {
+            const Color dst = target->getPixel(x, y);
+            const float alpha = src.w;
+            Color out = src * alpha + dst * (1.f - alpha);
+            out.w = 1.f;
+            target->setPixel(x, y, out);
+            break;
+        }
+
+        case BlendMode::Additive: {
+            const Color dst = target->getPixel(x, y);
+            const float alpha = src.w;
+            Color out = dst + src * alpha;
+            out.w = 1.f;
+            target->setPixel(x, y, out);
+            break;
+        }
+
+        default: break;
+    }
+}
+
+
 inline void rasterizePoint(
     RenderTarget* target,
     const Program& program,
@@ -41,7 +77,7 @@ inline void rasterizePoint(
     for (int y = py - half; y < py - half + n; ++y) {
         for (int x = px - half; x < px - half + n; ++x) {
             if (x < 0 || y < 0 || x >= target->width() - 1 || y >= target->height() - 1) continue;
-            target->setPixel(x, y, color);
+            writePixel(target, x, y, color, cmd.blendmode);
         }
     }
 }
@@ -91,7 +127,7 @@ inline void rasterizeLine(
         else if (cmd.depthWrite) target->setDepth(px, py, z);
 
         Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
-        target->setPixel(px, py, color);
+        writePixel(target, x, y, color, cmd.blendmode);
     }
 }
 
@@ -173,7 +209,7 @@ inline void rasterizeTriangle(
                 else if (cmd.depthWrite) target->setDepth(x, y, z);
 
                 Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
-                target->setPixel(x, y, color);
+                writePixel(target, x, y, color, cmd.blendmode);
             }
         }
     }
