@@ -73,8 +73,8 @@ int main() {
         20, 21, 22,  20, 22, 23,   // -y
     };
 
-    std::vector<uint32_t> checker = makeChecker(256, 8);
-    TextureID      tex  = valo.createTexture(256, 256, checker.data());
+    std::vector<uint32_t> checker = makeChecker(128, 4);
+    TextureID      tex  = valo.createTexture(128, 128, checker.data());
 
     VtxLayout      layout({VtxAttrib::Vec3f, VtxAttrib::Vec2f});
     VertexBufferID vb   = valo.createVertexBuffer(verts, 24, layout);
@@ -95,11 +95,20 @@ int main() {
     RenderCommand cubeFront = cubeBack;
     cubeFront.cullmode = CullMode::Back;      // keep only faces pointing at the camera
 
-    // simple fly camera: W/S forward/back, A/D strafe, Q/E down/up, L wireframe, ESC quit
+    // simple fly camera: W/S forward/back, A/D strafe, Q/E down/up, L wireframe,
+    // P pause animation, . step one frame while paused, UP/DOWN orbit speed, ESC quit
     Vec3f camPos = {0.f, 1.5f, 6.f};
     const Vec3f camFwd = Vec3f{0.f, -0.25f, -1.f}.normalized();
     const Vec3f camRight = camFwd.cross({0.f, 1.f, 0.f}).normalized();
     uint64_t lastTicks = SDL_GetTicks();
+
+    // Animation runs off its own accumulated clock, not SDL_GetTicks(), so that
+    // pausing simply stops accumulating and resuming picks up where it left off.
+    float animTime = 0.f;
+    bool  paused   = false;
+
+    float cube2RotSpeed = 2.f;   // rad/s
+    float cube2Angle    = 0.f;   // integrated, so a speed change never jumps the position
 
     bool running = true;
     SDL_Event event;
@@ -115,6 +124,11 @@ int main() {
                         FillMode fm = cubeFront.fillmode == FillMode::Solid ? FillMode::Wireframe : FillMode::Solid;
                         cubeFront.fillmode = cubeBack.fillmode = fm;
                     }
+                    if (event.key.key == SDLK_P && !event.key.repeat) paused = !paused;
+                    if (event.key.key == SDLK_PERIOD && !event.key.repeat) {
+                        animTime   += 1.f / 60.f;
+                        cube2Angle += cube2RotSpeed * (1.f / 60.f);
+                    }
                     break;
                 default: break;
             }
@@ -124,6 +138,11 @@ int main() {
         const uint64_t now = SDL_GetTicks();
         const float dt = (now - lastTicks) / 1000.f;
         lastTicks = now;
+        if (!paused) {
+            animTime   += dt;
+            cube2Angle += cube2RotSpeed * dt;
+        }
+
         const bool* keys = SDL_GetKeyboardState(nullptr);
         const float speed = 3.f * dt;
         if (keys[SDL_SCANCODE_W]) camPos += camFwd   * speed;
@@ -132,33 +151,64 @@ int main() {
         if (keys[SDL_SCANCODE_A]) camPos -= camRight * speed;
         if (keys[SDL_SCANCODE_E]) camPos.y += speed;
         if (keys[SDL_SCANCODE_Q]) camPos.y -= speed;
+        if (keys[SDL_SCANCODE_1]) valo.setRenderScale(1.00f);
+        if (keys[SDL_SCANCODE_2]) valo.setRenderScale(0.75f);
+        if (keys[SDL_SCANCODE_3]) valo.setRenderScale(0.50f);
+        if (keys[SDL_SCANCODE_4]) valo.setRenderScale(0.25f);
+
+
+        static bool prevUp = false;
+        static bool prevDown = false;
+        bool up = keys[SDL_SCANCODE_UP];
+        bool down = keys[SDL_SCANCODE_DOWN];
+        if (up && !prevUp) cube2RotSpeed += 0.5f;
+        if (down && !prevDown) cube2RotSpeed -= 0.5f;
+        prevUp = up;
+        prevDown = down;
+
+
         const Mat4f view = Mat4f::lookAt(camPos, camPos + camFwd, {0.f, 1.f, 0.f});
 
         int w, h;
         SDL_GetWindowSizeInPixels(window, &w, &h);
         const float aspect = float(w) / float(h);
         const Mat4f proj   = Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, 100.f);
-        const float t      = SDL_GetTicks() / 1000.f;
 
         valo.beginFrame();
 
         // spinning cube at the origin
-        Mat4f model = Mat4f::rotationY(t) * Mat4f::rotationX(t * 0.6f);
-        cubeBack.setUniforms(Uniforms{proj * view * model, tex});
-        cubeFront.setUniforms(Uniforms{proj * view * model, tex});
-        valo.submit(cubeBack);
-        valo.submit(cubeFront);
-
-        // second cube: smaller, orbiting the first.
-        // depth test + perspective decide who's in front as it passes.
+        Mat4f model1 = Mat4f::rotationY(animTime) * Mat4f::rotationX(animTime * 0.6f);
         Mat4f model2 =
-            Mat4f::translation({2.5f * std::cos(t * 0.8f), 0.f, 2.5f * std::sin(t * 0.8f)}) *
-            Mat4f::rotationZ(-t) *
+            Mat4f::translation({2.5f * std::cos(cube2Angle), 0.f, 2.5f * std::sin(cube2Angle)}) *
+            Mat4f::rotationZ(-animTime) *
             Mat4f::scale({0.5f, 0.5f, 0.5f});
-        cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
-        cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
-        valo.submit(cubeBack);
-        valo.submit(cubeFront);
+
+        float z1 = model1.getZ();
+        float z2 = model2.getZ();
+
+        if (z2 < z1) {
+            cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
+            cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
+            valo.submit(cubeBack);
+            valo.submit(cubeFront);
+
+            cubeBack.setUniforms(Uniforms{proj * view * model1, tex});
+            cubeFront.setUniforms(Uniforms{proj * view * model1, tex});
+            valo.submit(cubeBack);
+            valo.submit(cubeFront);
+        }
+
+        else {
+            cubeBack.setUniforms(Uniforms{proj * view * model1, tex});
+            cubeFront.setUniforms(Uniforms{proj * view * model1, tex});
+            valo.submit(cubeBack);
+            valo.submit(cubeFront);
+            
+            cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
+            cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
+            valo.submit(cubeBack);
+            valo.submit(cubeFront);
+        }
 
         valo.endFrame();
     }

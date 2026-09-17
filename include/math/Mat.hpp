@@ -231,6 +231,11 @@ template <typename T> struct Mat4 {
     }
 
 
+    const T getX() const { return cols[3].x; }
+    const T getY() const { return cols[3].y; }
+    const T getZ() const { return cols[3].z; }
+
+
     constexpr Vec4<T> operator*(const Vec4<T>& v) const {
         return v.x * cols[0] + v.y * cols[1] + v.z * cols[2] + v.w * cols[3];
     }
