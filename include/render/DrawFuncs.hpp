@@ -114,17 +114,20 @@ inline void rasterizeLine(
         float x = s1.x + dx * t;
         float y = s1.y + dy * t;
         int px = int(x), py = int(y);
-        if (px < 0 || py < 0 || px > target->width() - 1 || py > target->height() - 1) continue;
+        if (px < 0 || py < 0 || px >= target->width() - 1 || py >= target->height() - 1) continue;
+
+        // early z-test
         float z = s1.z + (s2.z - s1.z) * t;
+        if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
+        if (cmd.depthWrite) target->setDepth(px, py, z);
+
         float invW = s1.w + (s2.w - s1.w) * t;
+        const float w = 1.f / invW;
 
         float interp[MAX_VARYINGS];
         for (uint32_t k = 0; k < program.varyingCount; ++k) {
-            interp[k] = (varys[0][k]*s1.w*(1-t) + varys[1][k]*s2.w*t) / invW;
+            interp[k] = (varys[0][k]*s1.w*(1-t) + varys[1][k]*s2.w*t) * w;
         }
-
-        if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
-        else if (cmd.depthWrite) target->setDepth(px, py, z);
 
         Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
         writePixel(target, x, y, color, cmd.blendmode);
@@ -179,35 +182,43 @@ inline void rasterizeTriangle(
     uint32_t xmax = std::ceil(std::clamp<float>(maxScr.x, 0, target->width() - 1));
     uint32_t ymax = std::ceil(std::clamp<float>(maxScr.y, 0, target->height() - 1));
 
+    const float d1 = -(s2.y - s1.y) * sign;
+    const float d2 = -(s3.y - s2.y) * sign;
+    const float d3 = -(s1.y - s3.y) * sign;
+
     for (uint32_t y = ymin; y <= ymax; ++y) {
-        for (uint32_t x = xmin; x <= xmax; ++x) {
-            Vec2f p = {x + 0.5f, y +0.5f};
-            float e1 = (s2.xy-s1.xy).cross(p-s1.xy) * sign;
-            float e2 = (s3.xy-s2.xy).cross(p-s2.xy) * sign;
-            float e3 = (s1.xy-s3.xy).cross(p-s3.xy) * sign;
-            
+        Vec2f p0 = { xmin + 0.5f, y + 0.5f };
+        float e1 = (s2.xy-s1.xy).cross(p0-s1.xy) * sign;
+        float e2 = (s3.xy-s2.xy).cross(p0-s2.xy) * sign;
+        float e3 = (s1.xy-s3.xy).cross(p0-s3.xy) * sign;
+        
+        for (uint32_t x = xmin; x <= xmax; ++x, e1 += d1, e2 += d2, e3 += d3) {            
             if (e1 >= 0 && e2 >= 0 && e3 >= 0) {
                 // pixel is inside triangle
+
+                // barycentrics
                 float b1 = e2 / area;
                 float b2 = e3 / area;
                 float b3 = e1 / area;
 
+                // early z-test
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
                 if (z > 1.f) continue;
+                if (cmd.depthTest && z >= target->getDepth(x, y)) continue;
+                if (cmd.depthWrite) target->setDepth(x, y, z);
 
+                // interpolate varyings
                 float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
-
+                const float w = 1.f / invW;
                 float interp[MAX_VARYINGS];
                 for (uint32_t k = 0; k < program.varyingCount; ++k) {
                     interp[k] = 
                         (b1*varys[0][k]*s1.w + 
                          b2*varys[1][k]*s2.w + 
-                         b3*varys[2][k]*s3.w) / invW;
+                         b3*varys[2][k]*s3.w) * w;
                 }
 
-                if (cmd.depthTest && z >= target->getDepth(x, y)) continue;
-                else if (cmd.depthWrite) target->setDepth(x, y, z);
-
+                // execute fragment shader for this pixel, and write it into the backbuffer
                 Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
                 writePixel(target, x, y, color, cmd.blendmode);
             }
