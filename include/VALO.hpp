@@ -73,6 +73,10 @@ public:
         Color (*fs)(const Vy&, const U&)
     ) { return m_renderer.createProgram(vs, fs); }
 
+    template <typename V, typename U, typename Vy>
+    ProgramID createProgram(Vec4f (*vs)(const V&, const U&, Vy&))
+    { return m_renderer.createProgram(vs); }
+
     void destroyTarget(const RenderTargetID target);
     void destroyVertexBuffer(const VertexBufferID buffer);
     void destroyIndexBuffer(const IndexBufferID buffer);
@@ -86,6 +90,9 @@ public:
     
     void setVsync(const bool vsync);
     bool getVsync() const;
+
+    void pushClip(const RenderCommand& shape, const LayerID layer = BASE_LAYER);
+    void popClip(const LayerID layer = BASE_LAYER);
 
     void resize();
     void shutdown();
@@ -104,6 +111,7 @@ private:
 
     std::vector<Layer> m_layers;
     std::vector<LayerID> m_layerOrder;
+    std::vector<RenderCommand> m_clipStack;
     Renderer m_renderer;
 
     Window* m_window = nullptr;

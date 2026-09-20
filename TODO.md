@@ -3,6 +3,30 @@
 Software renderer feature work, roughly in order of payoff. Optimization comes
 after all of this is done.
 
+## State (2026-09-20)
+
+~3.3k lines of library, 7 examples, 16/24 feature items done. Every feature has
+a sanitizer-verified harness. The dev-facing API (Window -> VALO -> create* ->
+RenderCommand -> submit, typed shader callbacks) is settled and Vulkan-shaped;
+the backend should slot under it without dev code changing.
+
+## Cleanup before the backend (from the 2026-09-20 review)
+
+- [ ] **Shared pixel path** — the three rasterizers duplicate the per-pixel
+      sequence (depth test -> stencil test -> shade -> discard -> depth write ->
+      stencil op -> blend). Pull it into one `shadePixel()` helper so sRGB/MRT
+      land in one place. DrawFuncs.hpp is 558 lines; a stage map comment at the
+      top would help too.
+- [ ] **Renderer.hpp -> Renderer.cpp** — 18 inline definitions still in the
+      header (VALO, Window, ThreadPool, RenderTarget are done).
+- [ ] **Sentinel macros -> constexpr** — `EMPTY_BUFFER`, `DEFAULT_PROGRAM`,
+      `ALL_INDICES`, `MAX_INSTANCES` in RenderCommand.hpp.
+- [ ] **Logging hook** — 8 `std::cout` sites; one `valo::log(level, msg)` the
+      dev can redirect.
+- [ ] **Uniform limit** — `MAX_UNIFORM_BYTES = 256`; gltf.cpp is at ~200. Bump
+      to 512 or make it a template parameter before someone hits it.
+- [ ] **Quat.hpp** is empty — needed for glTF animation / camera code.
+
 ## Features
 
 - [x] **OBJ loading** — tinyobjloader vendored via `build.sh`; wrapper in
@@ -35,14 +59,18 @@ after all of this is done.
 - [x] **Depth-only passes** — `colorWrite` on `RenderCommand`: depth is
       tested/written, fragment shader and color write are skipped. Shadow maps
       are now entirely dev-side (target + layer + `textureDepth`).
-- [ ] **Fragment discard** — a way for the fragment shader to reject the pixel
-      (alpha-tested cutouts, foliage).
+- [x] **Fragment discard** — `discard;` in a fragment shader drops the pixel;
+      discarded pixels write no depth/stencil. `colorWrite = false` still runs
+      the shader (so SDF clips work); a program created with `createProgram(vs)`
+      has no fragment stage at all (the cheap depth-only path).
 - [x] **Far-plane reject** — fragments with `z > 1` are skipped. Note: geometry
       placed at exactly `z = 1` (sky quads) gets rounding-dropped; use `0.9999`.
 - [ ] **Point coverage / anti-aliased points** — disc coverage per edge pixel,
       blended via alpha. Removes the last of the point-size stepping.
-- [ ] **Stencil buffer** — low priority; most classic uses are doable with
-      depth tricks or FS masks.
+- [x] **Stencil buffer** — 8-bit per pixel; `stencilTest` (Always/Equal/
+      NotEqual/Less/Greater) + `stencilOp` (Keep/Zero/Replace/Incr/Decr) +
+      `stencilRef` on `RenderCommand`. Test is early, op applies only to pixels
+      that survive depth/discard. Demo: `stencil.cpp` (outline + SDF circle clip).
 - [ ] **Other GLSL built-ins** — `valo_FragCoord`, `valo_FrontFacing`,
       `valo_VertexID`, etc. Same pattern as `valo_PointSize`.
 
@@ -55,17 +83,19 @@ after all of this is done.
   sky/sun environment (port of cool-pbr-test; 1680 -> 330 lines).
 - `gltf.cpp` — DamagedHelmet / Box through a full glTF PBR shader (base color,
   packed metal-rough, normal map with load-time tangents, AO, emissive).
+- `stencil.cpp` — helmet with a stencil outline (Replace + NotEqual extruded
+  shell along smoothed normals) and an SDF circle clip (discard + Incr).
+- `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
+  scrolling list with three nested `pushClip`s. `C` toggles clipping.
 
 ## API / ergonomics
 
-- [ ] **Scissor / clip stack** — REQUIRED for UILO. A per-command pixel-space
-      scissor rect on `RenderCommand` (Vulkan `VkRect2D` scissor, dynamic state)
-      is the primitive: the rasterizer clamps the bbox to it (triangles) / skips
-      pixels outside it (lines, points). On top of that, `VALO::pushClip(rect)` /
-      `popClip()` keep a stack, intersect the new rect with the current top, and
-      stamp the result onto every command `submit()`ed while it's active. Nested
-      UI containers are just nested pushes. Empty intersection = command is
-      dropped at submit.
+- [x] **Clip stack** — `VALO::pushClip(shape)` / `popClip()` on the stencil
+      buffer: any shape (SDF rounded rects, meshes), unbounded nesting, nested
+      pushes intersect. Content submitted inside gets `Equal(depth)` + `Keep`.
+      Stack is cleared at `beginFrame`. Demo: `clipstack.cpp` (nested UI panels).
+- [ ] **Scissor rect** — optional fast path for axis-aligned clips (bbox clamp
+      instead of a per-pixel stencil compare). Vulkan dynamic scissor.
 - [ ] **2D / 3D quick-config presets** — a 2D preset = pixel-space orthographic
       projection tracking resize, no depth test/write, alpha blend, no cull;
       3D preset = current defaults. Plus a sprite/quad helper (shared unit quad

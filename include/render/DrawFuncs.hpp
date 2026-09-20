@@ -26,6 +26,31 @@ struct ScreenTri {
     float invArea;
 };
 
+inline bool stencilTest(const RenderTarget* target, const RenderCommand& cmd, int x, int y) {
+    if (cmd.stencilTest == StencilTest::Always) return true;
+    const uint8_t s = target->getStencil(x, y);
+    switch (cmd.stencilTest) {
+        case StencilTest::Equal:    return s == cmd.stencilRef;
+        case StencilTest::NotEqual: return s != cmd.stencilRef;
+        case StencilTest::Less:     return s <  cmd.stencilRef;
+        case StencilTest::Greater:  return s >  cmd.stencilRef;
+        default:                    return true;
+    }
+}
+
+inline void stencilApply(RenderTarget* target, const RenderCommand& cmd, int x, int y) {
+    if (cmd.stencilOp == StencilOp::Keep) return;
+    const uint8_t s = target->getStencil(x, y);
+    switch (cmd.stencilOp) {
+        case StencilOp::Zero:    target->setStencil(x, y, 0);              break;
+        case StencilOp::Replace: target->setStencil(x, y, cmd.stencilRef); break;
+        case StencilOp::Incr:    target->setStencil(x, y, uint8_t(s + 1)); break;
+        case StencilOp::Decr:    target->setStencil(x, y, uint8_t(s - 1)); break;
+        default: break;
+    }
+}
+
+
 inline bool setupTriangle(
     const RenderTarget* target,
     const RenderCommand& cmd,
@@ -174,15 +199,23 @@ inline void rasterizePoint(
     if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
 
     if (cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
+    if (!stencilTest(target, cmd, px, py)) return;
 
     const bool ownsCenter = (py >= bandY0 && py < bandY1);
+
+    Color color;
+    if (program.fsThunk) {
+        valo_Discard = false;
+        color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
+        if (valo_Discard) return;
+    }
+
     if (cmd.depthWrite && ownsCenter) target->setDepth(px, py, screen.z);
-    if (!cmd.colorWrite) return;
+    if (ownsCenter) stencilApply(target, cmd, px, py);
+    if (!cmd.colorWrite || !program.fsThunk) return;
 
     int n = std::max(1, int(size + 0.5f));
     int half = int(n / 2);
-    Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
-
     for (int y = py - half; y < py - half + n; ++y) {
         if (y < bandY0 || y >= bandY1) continue;
         for (int x = px - half; x < px - half + n; ++x) {
@@ -232,19 +265,26 @@ inline void rasterizeLine(
         // early z-test
         float z = s1.z + (s2.z - s1.z) * t;
         if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
-        if (cmd.depthWrite) target->setDepth(px, py, z);
-        if (!cmd.colorWrite) continue;
+        if (!stencilTest(target, cmd, px, py)) continue;
 
-        float invW = s1.w + (s2.w - s1.w) * t;
-        const float w = 1.f / invW;
+        Color color;
+        if (program.fsThunk) {
+            float invW = s1.w + (s2.w - s1.w) * t;
+            const float w = 1.f / invW;
 
-        float interp[MAX_VARYINGS];
-        for (uint32_t k = 0; k < program.varyingCount; ++k) {
-            interp[k] = (varys[0][k]*s1.w*(1-t) + varys[1][k]*s2.w*t) * w;
+            float interp[MAX_VARYINGS];
+            for (uint32_t k = 0; k < program.varyingCount; ++k) {
+                interp[k] = (varys[0][k]*s1.w*(1-t) + varys[1][k]*s2.w*t) * w;
+            }
+
+            valo_Discard = false;
+            color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
+            if (valo_Discard) continue;
         }
 
-        Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
-        writePixel(target, x, y, color, cmd.blendmode);
+        if (cmd.depthWrite) target->setDepth(px, py, z);
+        stencilApply(target, cmd, px, py);
+        if (cmd.colorWrite && program.fsThunk) writePixel(target, px, py, color, cmd.blendmode);
     }
 }
 
@@ -257,7 +297,7 @@ inline void rasterizeTriangle(
 ) {
     const int ymin = std::max(tri.ymin, bandY0);
     const int ymax = std::min(tri.ymax, bandY1 - 1);
-    if (ymin > ymax) return;                          // the whole point: two compares and out
+    if (ymin > ymax) return;
 
     const Vec4f& s1 = tri.s[0]; const Vec4f& s2 = tri.s[1]; const Vec4f& s3 = tri.s[2];
     const float sign = tri.sign;
@@ -268,13 +308,13 @@ inline void rasterizeTriangle(
     const float d2 = -(s3.y - s2.y) * sign;
     const float d3 = -(s1.y - s3.y) * sign;
 
-    for (uint32_t y = ymin; y <= ymax; ++y) {
+    for (int y = ymin; y <= ymax; ++y) {
         Vec2f p0 = { xmin + 0.5f, y + 0.5f };
         float e1 = (s2.xy-s1.xy).cross(p0-s1.xy) * sign;
         float e2 = (s3.xy-s2.xy).cross(p0-s2.xy) * sign;
         float e3 = (s1.xy-s3.xy).cross(p0-s3.xy) * sign;
         
-        for (uint32_t x = xmin; x <= xmax; ++x, e1 += d1, e2 += d2, e3 += d3) {            
+        for (int x = xmin; x <= xmax; ++x, e1 += d1, e2 += d2, e3 += d3) {            
             if (e1 >= 0 && e2 >= 0 && e3 >= 0) {
                 // pixel is inside triangle
 
@@ -287,23 +327,29 @@ inline void rasterizeTriangle(
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
                 if (z > 1.f) continue;
                 if (cmd.depthTest && z >= target->getDepth(x, y)) continue;
-                if (cmd.depthWrite) target->setDepth(x, y, z);
-                if (!cmd.colorWrite) continue;
+                if (!stencilTest(target, cmd, x, y)) continue;
 
-                // interpolate varyings
-                float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
-                const float w = 1.f / invW;
-                float interp[MAX_VARYINGS];
-                for (uint32_t k = 0; k < program.varyingCount; ++k) {
-                    interp[k] = 
-                        (b1*varys[0][k]*s1.w + 
-                         b2*varys[1][k]*s2.w + 
-                         b3*varys[2][k]*s3.w) * w;
+                // fragment stage (if the program has one): interpolate, shade, honor discard
+                Color color;
+                if (program.fsThunk) {
+                    float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
+                    const float w = 1.f / invW;
+                    float interp[MAX_VARYINGS];
+                    for (uint32_t k = 0; k < program.varyingCount; ++k) {
+                        interp[k] = 
+                            (b1*varys[0][k]*s1.w + 
+                             b2*varys[1][k]*s2.w + 
+                             b3*varys[2][k]*s3.w) * w;
+                    }
+
+                    valo_Discard = false;
+                    color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
+                    if (valo_Discard) continue;
                 }
 
-                // execute fragment shader for this pixel, and write it into the backbuffer
-                Color color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
-                writePixel(target, x, y, color, cmd.blendmode);
+                if (cmd.depthWrite) target->setDepth(x, y, z);
+                stencilApply(target, cmd, x, y);
+                if (cmd.colorWrite && program.fsThunk) writePixel(target, x, y, color, cmd.blendmode);
             }
         }
     }

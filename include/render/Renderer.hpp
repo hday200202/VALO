@@ -71,6 +71,27 @@ public:
         return m_programs.size() - 1;
     }
 
+    // depth/stencil-only program: no fragment stage at all (shadow maps, rect clips)
+    template <typename V, typename U, typename Vy>
+    ProgramID createProgram(Vec4f (*vs)(const V&, const U&, Vy&)) {
+        Program p;
+        p.vsThunk = &vsThunk<V, U, Vy>;
+        p.vsFn    = reinterpret_cast<RawFn>(vs);
+        p.fsThunk = nullptr;
+        p.fsFn    = nullptr;
+        p.varyingCount = sizeof(Vy) / sizeof(float);
+
+        if (!m_freePrograms.empty()) {
+            ProgramID id = m_freePrograms.back();
+            m_freePrograms.pop_back();
+            m_programs[id] = p;
+            return id;
+        }
+
+        m_programs.push_back(p);
+        return m_programs.size() - 1;
+    }
+
     void destroyProgram(const ProgramID program);
 
 
@@ -109,23 +130,18 @@ protected:
     SDL_Renderer* m_sdlRenderer = nullptr;
     SDL_Texture* m_sdlTexture = nullptr;
 
-
     std::vector<VertexBuffer> m_vertexBuffers;
     std::vector<IndexBuffer> m_indexBuffers;
     std::vector<Program> m_programs;
-
 
     std::vector<RenderTargetID> m_freeTargets;
     std::vector<VertexBufferID> m_freeVertexBuffers;
     std::vector<IndexBufferID> m_freeIndexBuffers;
     std::vector<ProgramID> m_freePrograms;
 
-
     uint32_t m_texW, m_texH;
 
-
     ThreadPool m_pool;
-
 
     // takes ownership of a target/texture, reusing a freed slot if there is one
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
@@ -177,11 +193,11 @@ inline void Renderer::clear(
     const RenderTargetID target
 ) { 
     assert(m_targets[target] && "Renderer: clear on destroyed target");
-    // RenderTarget* tgt = m_targets[target].get();
-    // forEachBand(m_pool, tgt->height(), &m_targets, [&](int y0, int y1) {
-    //     tgt->clearRows(clearColor, uint32_t(y0), uint32_t(y1));
-    // });
-    m_targets[target]->clear(clearColor);
+    RenderTarget* tgt = m_targets[target].get();
+    forEachBand(m_pool, tgt->height(), &m_targets, [&](int y0, int y1) {
+        tgt->clearRows(clearColor, uint32_t(y0), uint32_t(y1));
+    });
+    // m_targets[target]->clear(clearColor);
 }
 
 

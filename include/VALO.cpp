@@ -29,6 +29,7 @@ bool VALO::init(Window& window, const RenderConfig& cfg) {
 void VALO::beginFrame() {
     if (m_window && m_window->resized()) resize();
 
+    m_clipStack.clear();
     std::vector<RenderTargetID> cleared;
 
     for (auto& layer : m_layerOrder) {
@@ -44,7 +45,14 @@ void VALO::beginFrame() {
 void VALO::submit(
     const RenderCommand& cmd,
     const LayerID layer
-) { m_layers[layer].cmdQueue.push_back(cmd); }
+) {
+    if (m_clipStack.empty()) { m_layers[layer].cmdQueue.push_back(cmd); return; }
+    RenderCommand c = cmd;
+    c.stencilTest   = StencilTest::Equal;
+    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilOp     = StencilOp::Keep;
+    m_layers[layer].cmdQueue.push_back(c);
+}
 
 
 void VALO::endFrame(const RenderTargetID displayTarget) {
@@ -190,6 +198,33 @@ void VALO::setVsync(const bool vsync) {
 
 bool VALO::getVsync() const {
     return m_renderer.getVsync();
+}
+
+void VALO::pushClip(
+    const RenderCommand& shape, 
+    const LayerID layer
+) {
+    RenderCommand c = shape;
+    c.colorWrite    = false;
+    c.depthTest     = false;
+    c.depthWrite    = false;
+    c.stencilTest   = m_clipStack.empty() ? StencilTest::Always : StencilTest::Equal;
+    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilOp     = StencilOp::Incr;
+    m_layers[layer].cmdQueue.push_back(c);
+    m_clipStack.push_back(c);
+}
+
+void VALO::popClip(
+    const LayerID layer
+) {
+    if (m_clipStack.empty()) return;
+    RenderCommand c = m_clipStack.back();
+    c.stencilTest   = StencilTest::Equal;
+    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilOp     = StencilOp::Decr;
+    m_layers[layer].cmdQueue.push_back(c);
+    m_clipStack.pop_back();
 }
 
 }

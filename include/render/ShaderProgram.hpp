@@ -5,7 +5,7 @@
 
 namespace valo {
 
-constexpr uint32_t MAX_VARYINGS = 32;
+inline constexpr uint32_t MAX_VARYINGS = 32;
 
 
 using RawFn = void (*)();

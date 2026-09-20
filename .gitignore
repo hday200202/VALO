@@ -15,3 +15,5 @@ compile_commands.json
 .DS_Store
 .vscode/
 .vscode/ipch/
+ext/swiftshader/
+bench/

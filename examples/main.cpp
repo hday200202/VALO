@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <render/Sampling.hpp>
 
 // N x N x N cubes from ONE submit: the vertex shader places each instance
 // on the grid from valo_InstanceIndex.
@@ -28,6 +29,7 @@ valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
 }
 
 valo::Color fs(const Varyings& in, const Uniforms& u) {
+    discard;
     return texture(
         u.tex, in.uv, 
         valo::Sampler(

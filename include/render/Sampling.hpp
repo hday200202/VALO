@@ -15,7 +15,8 @@ namespace detail {
 
 inline thread_local float valo_PointSize = 1.f;
 inline thread_local uint32_t valo_InstanceIndex = 0.f;
-
+inline thread_local bool valo_Discard = false;
+inline void vDiscard() { valo_Discard = true; }
 
 enum class Wrap     { Repeat, Clamp, Mirror };
 enum class Filter   { Nearest, Linear };
@@ -117,5 +118,7 @@ inline float textureDepth(const TextureID tex, const Vec2f& uv) {
 
     return t.getDepth(x, y);
 }
+
+#define discard valo::vDiscard()
 
 }

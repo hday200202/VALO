@@ -5,10 +5,10 @@
 
 namespace valo {
 
-#define EMPTY_BUFFER    UINT32_MAX
-#define DEFAULT_PROGRAM UINT32_MAX
-#define ALL_INDICES     UINT32_MAX
-#define MAX_INSTANCES   UINT32_MAX  // Essentially unlimited for now
+inline constexpr uint32_t EMPTY_BUFFER      = UINT32_MAX;
+inline constexpr uint32_t DEFAULT_PROGRAM   = UINT32_MAX;
+inline constexpr uint32_t ALL_INDICES       = UINT32_MAX;
+inline constexpr uint32_t MAX_INSTANCES     = UINT32_MAX; // Essentially unlimited for now
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
@@ -21,6 +21,8 @@ enum class CullMode     { None, Back, Front };
 enum class VtxWinding   { CCW, CW };
 enum class BlendMode    { Opaque, Alpha, Additive };
 enum class FillMode     { Solid, Wireframe };
+enum class StencilTest  { Always, Equal, NotEqual, Less, Greater };
+enum class StencilOp    { Keep, Zero, Replace, Incr, Decr };
 
 struct RenderCommand {
     VertexBufferID      verts           = EMPTY_BUFFER;
@@ -34,6 +36,10 @@ struct RenderCommand {
     CullMode            cullmode        = CullMode::Back;
     VtxWinding          winding         = VtxWinding::CCW;
     BlendMode           blendmode       = BlendMode::Opaque;
+    StencilTest         stencilTest     = StencilTest::Always;
+    StencilOp           stencilOp       = StencilOp::Keep;
+    uint8_t             stencilRef      = 0;
+
     bool                depthTest       = true;
     bool                depthWrite      = true;
     bool                colorWrite      = true;
@@ -41,7 +47,7 @@ struct RenderCommand {
 
     uint32_t            instanceCount   = 1;
 
-    static constexpr size_t MAX_UNIFORM_BYTES = 256;
+    static constexpr size_t MAX_UNIFORM_BYTES = 512;
     uint8_t uniforms[MAX_UNIFORM_BYTES];
     size_t uniformSize = 0;
 
