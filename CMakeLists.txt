@@ -56,6 +56,12 @@ if(NOT EXISTS "${VALO_TINYOBJ_DIR}/tiny_obj_loader.h")
     message(FATAL_ERROR "ext/tinyobjloader/tiny_obj_loader.h not found - run ./build.sh")
 endif()
 
+# cgltf: same treatment. One .cpp must #define CGLTF_IMPLEMENTATION.
+set(VALO_CGLTF_DIR "${CMAKE_SOURCE_DIR}/ext/cgltf")
+if(NOT EXISTS "${VALO_CGLTF_DIR}/cgltf.h")
+    message(FATAL_ERROR "ext/cgltf/cgltf.h not found - run ./build.sh")
+endif()
+
 # ---------------------------------------------------------------------------
 # VALO library: everything under include/ is the library
 # ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ if(VALO_SOURCES)
         add_library(VALO STATIC ${VALO_SOURCES} ${VALO_HEADERS})
     endif()
     target_include_directories(VALO PUBLIC "${CMAKE_SOURCE_DIR}/include")
-    target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}")
+    target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}" "${VALO_CGLTF_DIR}")
     target_link_libraries(VALO PUBLIC SDL3::SDL3-static)
     target_compile_options(VALO PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
@@ -97,7 +103,7 @@ else()
     message(STATUS "VALO: no source files under include/, building as header-only INTERFACE target")
     add_library(VALO INTERFACE ${VALO_HEADERS})
     target_include_directories(VALO INTERFACE "${CMAKE_SOURCE_DIR}/include")
-    target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}")
+    target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}" "${VALO_CGLTF_DIR}")
     target_link_libraries(VALO INTERFACE SDL3::SDL3-static)
 endif()
 

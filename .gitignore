@@ -3,6 +3,7 @@ ext/SDL3/
 ext/SDL3-install/
 ext/stb/
 ext/tinyobjloader/
+ext/cgltf/
 lib/*
 !lib/.gitkeep
 bin/*

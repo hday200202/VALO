@@ -19,6 +19,7 @@
 # header-only libs (vendored):
 #   ext/stb/stb_image.h missing               -> download (pinned STB_COMMIT) into ext/stb
 #   ext/tinyobjloader/tiny_obj_loader.h missing -> download (pinned TINYOBJ_TAG)
+#   ext/cgltf/cgltf.h missing                 -> download (pinned CGLTF_TAG)
 #   otherwise                                 -> skipped
 #
 # Outputs:
@@ -49,6 +50,11 @@ STB_HEADERS=(stb_image.h)
 TINYOBJ_TAG="${TINYOBJ_TAG:-v1.0.6}"
 TINYOBJ_URL="https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/$TINYOBJ_TAG/tiny_obj_loader.h"
 TINYOBJ_DIR="ext/tinyobjloader"
+
+# cgltf: single-header glTF 2.0 loader, pinned release tag
+CGLTF_TAG="${CGLTF_TAG:-v1.15}"
+CGLTF_URL="https://raw.githubusercontent.com/jkuhlmann/cgltf/$CGLTF_TAG/cgltf.h"
+CGLTF_DIR="ext/cgltf"
 
 BUILD_TYPE="Release"
 LINKAGE="static"
@@ -112,6 +118,14 @@ if [[ ! -f "$TINYOBJ_DIR/tiny_obj_loader.h" ]]; then
     curl -fsSL "$TINYOBJ_URL" -o "$TINYOBJ_DIR/tiny_obj_loader.h"
 else
     echo "==> tiny_obj_loader.h present in $TINYOBJ_DIR"
+fi
+
+mkdir -p "$CGLTF_DIR"
+if [[ ! -f "$CGLTF_DIR/cgltf.h" ]]; then
+    echo "==> cgltf.h not found in $CGLTF_DIR, downloading ($CGLTF_TAG)"
+    curl -fsSL "$CGLTF_URL" -o "$CGLTF_DIR/cgltf.h"
+else
+    echo "==> cgltf.h present in $CGLTF_DIR"
 fi
 
 # ---------------------------------------------------------------------------

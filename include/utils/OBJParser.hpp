@@ -13,7 +13,7 @@ namespace valo {
 
 struct FaceVert { int v = -1, vt = -1, vn = -1; };  // -1 -> absent
 
-struct Material {
+struct MTLMaterial {
     std::string name;
     Vec3f diffuse, specular, emission;
     float shininess, opacity;
@@ -29,8 +29,8 @@ struct OBJ {
     std::vector<Vec2f>      uvs;
     std::vector<Vec3f>      normals;
     std::vector<FaceVert>   faces;
-    std::vector<Material>   materials;
-    std::vector<int>        faceMaterials;
+    std::vector<MTLMaterial>   materials;
+    std::vector<int>        faceMTLMaterials;
 };
 
 
@@ -119,11 +119,11 @@ inline OBJ parseOBJ(const std::string& path) {
         }
 
         for (int id : shape.mesh.material_ids)
-            obj.faceMaterials.push_back(id);
+            obj.faceMTLMaterials.push_back(id);
     }
 
     for (auto& material : materials) {
-        auto mat = Material{
+        auto mat = MTLMaterial{
             .name = material.name,
 
             .diffuse = {

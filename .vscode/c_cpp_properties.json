@@ -6,14 +6,18 @@
             "includePath": [
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/ext/stb",
-                "${workspaceFolder}/ext/SDL3-install/include"
+                "${workspaceFolder}/ext/SDL3-install/include",
+                "${workspaceFolder}/ext/tinyobjloader",
+                "${workspaceFolder}/ext/cgltf"
             ],
             "browse": {
                 "path": [
                     "${workspaceFolder}/include",
                     "${workspaceFolder}/examples",
                     "${workspaceFolder}/ext/stb",
-                    "${workspaceFolder}/ext/SDL3-install/include"
+                    "${workspaceFolder}/ext/SDL3-install/include",
+                    "${workspaceFolder}/ext/tinyobjloader",
+                    "${workspaceFolder}/ext/cgltf"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             },

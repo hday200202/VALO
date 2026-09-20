@@ -2,9 +2,11 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define TINYOBJLOADER_IMPLEMENTATION
+#define CGLTF_IMPLEMENTATION
 
 #include <stb_image.h>
 #include <tiny_obj_loader.h>
+#include <cgltf.h>
 #include <cstring>
 #include <string>
 #include <iostream>

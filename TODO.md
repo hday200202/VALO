@@ -8,8 +8,11 @@ after all of this is done.
 - [x] **OBJ loading** — tinyobjloader vendored via `build.sh`; wrapper in
       `utils/OBJParser.hpp` gives positions/uvs/normals, face triples, materials,
       and per-face material ids. Mesh/vertex-buffer assembly is dev-side.
-- [ ] **glTF loading** — vendor cgltf the same way. Its primitives/materials map
-      onto draw ranges + sampler state + instancing, so those come first.
+- [x] **glTF loading** — cgltf vendored (`ext/cgltf`, v1.15); wrapper in
+      `utils/GLTFParser.hpp`: one interleaved vertex array + one index array,
+      meshes → primitives as draw ranges, PBR materials with resolved texture
+      paths, nodes with flattened world transforms. Verified on Khronos Box
+      and DamagedHelmet.
 - [x] **Draw ranges** — `firstIndex` / `indexCount` on `RenderCommand`
       (`ALL_INDICES` default). One vertex+index buffer, many materials.
 - [x] **Bilinear filtering** — 2x2 tap in `texture()`, `Filter::Linear`.
@@ -34,7 +37,8 @@ after all of this is done.
       are now entirely dev-side (target + layer + `textureDepth`).
 - [ ] **Fragment discard** — a way for the fragment shader to reject the pixel
       (alpha-tested cutouts, foliage).
-- [ ] **Far-plane reject** — skip fragments with `z > 1` in the depth test.
+- [x] **Far-plane reject** — fragments with `z > 1` are skipped. Note: geometry
+      placed at exactly `z = 1` (sky quads) gets rounding-dropped; use `0.9999`.
 - [ ] **Point coverage / anti-aliased points** — disc coverage per edge pixel,
       blended via alpha. Removes the last of the point-size stepping.
 - [ ] **Stencil buffer** — low priority; most classic uses are doable with
@@ -42,8 +46,26 @@ after all of this is done.
 - [ ] **Other GLSL built-ins** — `valo_FragCoord`, `valo_FrontFacing`,
       `valo_VertexID`, etc. Same pattern as `valo_PointSize`.
 
+## Examples
+
+- `main.cpp` — instanced N^3 textured cube lattice, orbit camera, fps title.
+- `particles.cpp` — galaxy point-particle shader.
+- `sdf.cpp` — iq's raymarched primitives, fullscreen fragment shader, FPS camera.
+- `pbr.cpp` — 62-material Cook-Torrance viewer with fbm bump/displacement and
+  sky/sun environment (port of cool-pbr-test; 1680 -> 330 lines).
+- `gltf.cpp` — DamagedHelmet / Box through a full glTF PBR shader (base color,
+  packed metal-rough, normal map with load-time tangents, AO, emissive).
+
 ## API / ergonomics
 
+- [ ] **Scissor / clip stack** — REQUIRED for UILO. A per-command pixel-space
+      scissor rect on `RenderCommand` (Vulkan `VkRect2D` scissor, dynamic state)
+      is the primitive: the rasterizer clamps the bbox to it (triangles) / skips
+      pixels outside it (lines, points). On top of that, `VALO::pushClip(rect)` /
+      `popClip()` keep a stack, intersect the new rect with the current top, and
+      stamp the result onto every command `submit()`ed while it's active. Nested
+      UI containers are just nested pushes. Empty intersection = command is
+      dropped at submit.
 - [ ] **2D / 3D quick-config presets** — a 2D preset = pixel-space orthographic
       projection tracking resize, no depth test/write, alpha blend, no cull;
       3D preset = current defaults. Plus a sprite/quad helper (shared unit quad
