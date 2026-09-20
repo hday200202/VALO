@@ -65,8 +65,10 @@ inline void rasterizePoint(
         ndc.z, ndc.w
     };
 
+    const int w = int(target->width()), h = int(target->height());
+
     int px = int(screen.x), py = int(screen.y);
-    if (px < 0 || py < 0 || px >= target->width() - 1 || py >= target->height() - 1) return;
+    if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
     if (cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
     else if (cmd.depthWrite) target->setDepth(px, py, screen.z);
 
@@ -76,7 +78,7 @@ inline void rasterizePoint(
 
     for (int y = py - half; y < py - half + n; ++y) {
         for (int x = px - half; x < px - half + n; ++x) {
-            if (x < 0 || y < 0 || x >= target->width() - 1 || y >= target->height() - 1) continue;
+            if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) continue;
             writePixel(target, x, y, color, cmd.blendmode);
         }
     }
@@ -108,13 +110,15 @@ inline void rasterizeLine(
     float dy = s2.y - s1.y;
 
     int steps = int(std::max(std::abs(dx), std::abs(dy)));
+
+    const int w = int(target->width()), h = int(target->height());
     
     for (int i = 0; i <= steps; ++i) {
         float t = float(i) / std::max(steps, 1);
         float x = s1.x + dx * t;
         float y = s1.y + dy * t;
         int px = int(x), py = int(y);
-        if (px < 0 || py < 0 || px >= target->width() - 1 || py >= target->height() - 1) continue;
+        if (px < 0 || py < 0 || px >= w - 1 || h - 1) continue;
 
         // early z-test
         float z = s1.z + (s2.z - s1.z) * t;
@@ -321,7 +325,7 @@ inline void drawLines(
             ClipVert& out = (a.pos.z < 0) ? a : b;
             out.pos = lerp(a.pos, b.pos, t);
 
-            for (int k = 0; k < program.varyingCount; ++k)
+            for (uint32_t k = 0; k < program.varyingCount; ++k)
                 out.vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
         }
 

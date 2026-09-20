@@ -18,6 +18,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_COLOR_DIAGNOSTICS ON)   # keep clang/gcc colors when output is piped through ninja
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -49,6 +50,12 @@ if(NOT EXISTS "${VALO_STB_DIR}/stb_image.h")
     message(FATAL_ERROR "ext/stb/stb_image.h not found - run ./build.sh (it fetches vendored headers)")
 endif()
 
+# tinyobjloader: same treatment. One .cpp must #define TINYOBJLOADER_IMPLEMENTATION.
+set(VALO_TINYOBJ_DIR "${CMAKE_SOURCE_DIR}/ext/tinyobjloader")
+if(NOT EXISTS "${VALO_TINYOBJ_DIR}/tiny_obj_loader.h")
+    message(FATAL_ERROR "ext/tinyobjloader/tiny_obj_loader.h not found - run ./build.sh")
+endif()
+
 # ---------------------------------------------------------------------------
 # VALO library: everything under include/ is the library
 # ---------------------------------------------------------------------------
@@ -70,7 +77,7 @@ if(VALO_SOURCES)
         add_library(VALO STATIC ${VALO_SOURCES} ${VALO_HEADERS})
     endif()
     target_include_directories(VALO PUBLIC "${CMAKE_SOURCE_DIR}/include")
-    target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}")
+    target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}")
     target_link_libraries(VALO PUBLIC SDL3::SDL3-static)
     target_compile_options(VALO PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
@@ -90,7 +97,7 @@ else()
     message(STATUS "VALO: no source files under include/, building as header-only INTERFACE target")
     add_library(VALO INTERFACE ${VALO_HEADERS})
     target_include_directories(VALO INTERFACE "${CMAKE_SOURCE_DIR}/include")
-    target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}")
+    target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}")
     target_link_libraries(VALO INTERFACE SDL3::SDL3-static)
 endif()
 

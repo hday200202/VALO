@@ -50,16 +50,13 @@ static float frand(uint32_t& seed) {                         // cheap LCG, 0..1
 }
 
 int main() {
-    if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
-    SDL_Window* window = SDL_CreateWindow("VALO - particles", 320 * 2, 240 * 2, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!window) return 1;
+    Window window("VALO - particles", {1280, 960});
 
     VALO valo;
     RenderConfig cfg;
-    cfg.sdlWindow   = window;
     cfg.vsync       = true;
     cfg.renderScale = 1.f;
-    if (!valo.init(cfg)) return 1;
+    if (!valo.init(window, cfg)) return 1;
 
     constexpr uint32_t kStars = 8000;
     constexpr int      kArms  = 3;
@@ -94,37 +91,23 @@ int main() {
     const Vec3f camRight = camFwd.cross({0.f, 1.f, 0.f}).normalized();
     uint64_t lastTicks = SDL_GetTicks();
 
-    bool running = true;
-    SDL_Event event;
-
-    while (running) {
-        while (SDL_PollEvent(&event)) {
-            switch (event.type) {
-                case SDL_EVENT_QUIT: running = false; break;
-                case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: valo.resize(); break;
-                case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_ESCAPE) running = false;
-                    break;
-                default: break;
-            }
-        }
-
+    while (window.pollEvents()) {
         const uint64_t now = SDL_GetTicks();
         const float dt = (now - lastTicks) / 1000.f;
         lastTicks = now;
-        const bool* keys = SDL_GetKeyboardState(nullptr);
+        if (window.wasKeyPressed(Key::Escape)) window.close();
+
         const float speed = 3.f * dt;
-        if (keys[SDL_SCANCODE_W]) camPos += camFwd   * speed;
-        if (keys[SDL_SCANCODE_S]) camPos -= camFwd   * speed;
-        if (keys[SDL_SCANCODE_D]) camPos += camRight * speed;
-        if (keys[SDL_SCANCODE_A]) camPos -= camRight * speed;
-        if (keys[SDL_SCANCODE_E]) camPos.y += speed;
-        if (keys[SDL_SCANCODE_Q]) camPos.y -= speed;
+        if (window.isKeyDown(Key::W)) camPos += camFwd   * speed;
+        if (window.isKeyDown(Key::S)) camPos -= camFwd   * speed;
+        if (window.isKeyDown(Key::D)) camPos += camRight * speed;
+        if (window.isKeyDown(Key::A)) camPos -= camRight * speed;
+        if (window.isKeyDown(Key::E)) camPos.y += speed;
+        if (window.isKeyDown(Key::Q)) camPos.y -= speed;
         const Mat4f view = Mat4f::lookAt(camPos, camPos + camFwd, {0.f, 1.f, 0.f});
 
-        int w, h;
-        SDL_GetWindowSizeInPixels(window, &w, &h);
-        const float aspect = float(w) / float(h);
+        const Vec2u size   = window.getSize();
+        const float aspect = float(size.x) / float(size.y);
         const Mat4f proj   = Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, 100.f);
         const float t      = SDL_GetTicks() / 1000.f;
 
@@ -138,8 +121,5 @@ int main() {
         valo.endFrame();
     }
 
-    valo.shutdown();
-    SDL_DestroyWindow(window);
-    SDL_Quit();
     return 0;
 }

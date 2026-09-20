@@ -1,59 +1,31 @@
 #include <VALO.hpp>
-#include <cmath>
 #include <numbers>
-#include <vector>
+#include <cmath>
+#include <algorithm>
 
-using namespace valo;
+struct Vertex   { valo::Vec3f pos; valo::Vec2f uv; };
+struct Uniforms { valo::Mat4f mvp; valo::TextureID tex; };
+struct Varyings { valo::Vec2f uv; };
 
-// ---- what a dev writes: their own vertex / uniform / varying types ----
-struct Vertex   { Vec3f pos; Vec2f uv; };
-struct Uniforms { Mat4f mvp; TextureID albedo; };
-struct Varyings { Vec2f uv; };
-
-Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.uv = in.uv;
-    return u.mvp * Vec4f(in.pos, 1.f);
+    return u.mvp * valo::Vec4f(in.pos, 1.f);
 }
 
-Color fs(const Varyings& in, const Uniforms& u) {
-    return texture(u.albedo, in.uv);
-}
-
-// 8x8 checkerboard with a red cell at uv (0,0) and a green one at uv (1,1),
-// so a flipped or rotated UV mapping is obvious at a glance.
-// Dark cells are 35% opaque so whatever is behind the cube shows through them.
-static std::vector<uint32_t> makeChecker(uint32_t size, uint32_t cells) {
-    std::vector<uint32_t> px(size * size);
-    const uint32_t cell = size / cells;
-    for (uint32_t y = 0; y < size; ++y)
-        for (uint32_t x = 0; x < size; ++x) {
-            bool dark = ((x / cell) + (y / cell)) & 1;
-            px[y * size + x] = colorToABGR32(dark ? Color(0.15f, 0.15f, 0.18f, 0.35f)
-                                                  : Color(0.9f,  0.9f,  0.85f, 1.f));
-        }
-    for (uint32_t i = 0; i < cell; ++i)
-        for (uint32_t j = 0; j < cell; ++j) {
-            px[j * size + i]                           = colorToABGR32({1.f, 0.f, 0.f, 1.f}); // top-left
-            px[(size - 1 - j) * size + (size - 1 - i)] = colorToABGR32({0.f, 1.f, 0.f, 1.f}); // bottom-right
-        }
-    return px;
+valo::Color fs(const Varyings& in, const Uniforms& u) {
+    return texture(u.tex, in.uv);
 }
 
 int main() {
-    // dev-owned window so we can query its size for the aspect ratio
-    if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
-    SDL_Window* window = SDL_CreateWindow("VALO - cube", 320 * 2, 240 * 2, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!window) return 1;
+    valo::Window window("VALO", {320 * 4, 320 * 4});
 
-    VALO valo;
-    RenderConfig cfg;
-    cfg.sdlWindow       = window;
-    cfg.vsync           = true;
-    cfg.renderScale     = 1.f;
-    if (!valo.init(cfg)) return 1;
+    valo::VALO valo;
+    valo::RenderConfig cfg;
+    cfg.vsync = false;
+    if (!valo.init(window, cfg)) return 1;
 
-    // unit cube, 4 verts per face so each face gets a full 0..1 uv square.
-    // uv (0,0) = image top-left. Faces are CCW from outside.
+    bool ortho = false;
+
     Vertex verts[24] = {
         {{-1,-1, 1},{0,1}}, {{ 1,-1, 1},{1,1}}, {{ 1, 1, 1},{1,0}}, {{-1, 1, 1},{0,0}},  // +z
         {{ 1,-1,-1},{0,1}}, {{-1,-1,-1},{1,1}}, {{-1, 1,-1},{1,0}}, {{ 1, 1,-1},{0,0}},  // -z
@@ -63,158 +35,61 @@ int main() {
         {{-1,-1,-1},{0,1}}, {{ 1,-1,-1},{1,1}}, {{ 1,-1, 1},{1,0}}, {{-1,-1, 1},{0,0}},  // -y
     };
 
-    // two triangles per face, indexing the 4 verts of that face above
-    uint32_t indices[36] = {
-         0,  1,  2,   0,  2,  3,   // +z
-         4,  5,  6,   4,  6,  7,   // -z
-         8,  9, 10,   8, 10, 11,   // +x
-        12, 13, 14,  12, 14, 15,   // -x
-        16, 17, 18,  16, 18, 19,   // +y
-        20, 21, 22,  20, 22, 23,   // -y
-    };
-
-    std::vector<uint32_t> checker = makeChecker(128, 4);
-    TextureID      tex  = valo.createTexture(128, 128, checker.data());
-
-    VtxLayout      layout({VtxAttrib::Vec3f, VtxAttrib::Vec2f});
-    VertexBufferID vb   = valo.createVertexBuffer(verts, 24, layout);
-    IndexBufferID  ib   = valo.createIndexBuffer(indices, 36);
-    ProgramID      prog = valo.createProgram(vs, fs);
-
-    valo.setLayerClearColor(VALO::BASE_LAYER, {0.7f, 0.7f, 1.f, 1.f});
-
-    // Transparent convex mesh: draw it in two passes so blending happens
-    // back-to-front - first the back faces only, then the front faces only.
-    RenderCommand cubeBack;
-    cubeBack.verts     = vb;
-    cubeBack.indices   = ib;
-    cubeBack.program   = prog;
-    cubeBack.blendmode = BlendMode::Alpha;
-    cubeBack.cullmode  = CullMode::Front;     // keep only faces pointing away from the camera
-
-    RenderCommand cubeFront = cubeBack;
-    cubeFront.cullmode = CullMode::Back;      // keep only faces pointing at the camera
-
-    // simple fly camera: W/S forward/back, A/D strafe, Q/E down/up, L wireframe,
-    // P pause animation, . step one frame while paused, UP/DOWN orbit speed, ESC quit
-    Vec3f camPos = {0.f, 1.5f, 6.f};
-    const Vec3f camFwd = Vec3f{0.f, -0.25f, -1.f}.normalized();
-    const Vec3f camRight = camFwd.cross({0.f, 1.f, 0.f}).normalized();
-    uint64_t lastTicks = SDL_GetTicks();
-
-    // Animation runs off its own accumulated clock, not SDL_GetTicks(), so that
-    // pausing simply stops accumulating and resuming picks up where it left off.
-    float animTime = 0.f;
-    bool  paused   = false;
-
-    float cube2RotSpeed = 2.f;   // rad/s
-    float cube2Angle    = 0.f;   // integrated, so a speed change never jumps the position
-
-    bool running = true;
-    SDL_Event event;
-
-    while (running) {
-        while (SDL_PollEvent(&event)) {
-            switch (event.type) {
-                case SDL_EVENT_QUIT: running = false; break;
-                case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: valo.resize(); break;
-                case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_ESCAPE) running = false;
-                    if (event.key.key == SDLK_L) {
-                        FillMode fm = cubeFront.fillmode == FillMode::Solid ? FillMode::Wireframe : FillMode::Solid;
-                        cubeFront.fillmode = cubeBack.fillmode = fm;
-                    }
-                    if (event.key.key == SDLK_P && !event.key.repeat) paused = !paused;
-                    if (event.key.key == SDLK_PERIOD && !event.key.repeat) {
-                        animTime   += 1.f / 60.f;
-                        cube2Angle += cube2RotSpeed * (1.f / 60.f);
-                    }
-                    break;
-                default: break;
-            }
-        }
-
-        // held keys -> camera movement (frame-rate independent)
-        const uint64_t now = SDL_GetTicks();
-        const float dt = (now - lastTicks) / 1000.f;
-        lastTicks = now;
-        if (!paused) {
-            animTime   += dt;
-            cube2Angle += cube2RotSpeed * dt;
-        }
-
-        const bool* keys = SDL_GetKeyboardState(nullptr);
-        const float speed = 3.f * dt;
-        if (keys[SDL_SCANCODE_W]) camPos += camFwd   * speed;
-        if (keys[SDL_SCANCODE_S]) camPos -= camFwd   * speed;
-        if (keys[SDL_SCANCODE_D]) camPos += camRight * speed;
-        if (keys[SDL_SCANCODE_A]) camPos -= camRight * speed;
-        if (keys[SDL_SCANCODE_E]) camPos.y += speed;
-        if (keys[SDL_SCANCODE_Q]) camPos.y -= speed;
-        if (keys[SDL_SCANCODE_1]) valo.setRenderScale(1.00f);
-        if (keys[SDL_SCANCODE_2]) valo.setRenderScale(0.75f);
-        if (keys[SDL_SCANCODE_3]) valo.setRenderScale(0.50f);
-        if (keys[SDL_SCANCODE_4]) valo.setRenderScale(0.25f);
-
-
-        static bool prevUp = false;
-        static bool prevDown = false;
-        bool up = keys[SDL_SCANCODE_UP];
-        bool down = keys[SDL_SCANCODE_DOWN];
-        if (up && !prevUp) cube2RotSpeed += 0.5f;
-        if (down && !prevDown) cube2RotSpeed -= 0.5f;
-        prevUp = up;
-        prevDown = down;
-
-
-        const Mat4f view = Mat4f::lookAt(camPos, camPos + camFwd, {0.f, 1.f, 0.f});
-
-        int w, h;
-        SDL_GetWindowSizeInPixels(window, &w, &h);
-        const float aspect = float(w) / float(h);
-        const Mat4f proj   = Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, 100.f);
-
-        valo.beginFrame();
-
-        // spinning cube at the origin
-        Mat4f model1 = Mat4f::rotationY(animTime) * Mat4f::rotationX(animTime * 0.6f);
-        Mat4f model2 =
-            Mat4f::translation({2.5f * std::cos(cube2Angle), 0.f, 2.5f * std::sin(cube2Angle)}) *
-            Mat4f::rotationZ(-animTime) *
-            Mat4f::scale({0.5f, 0.5f, 0.5f});
-
-        float z1 = model1.getZ();
-        float z2 = model2.getZ();
-
-        if (z2 < z1) {
-            cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
-            cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
-            valo.submit(cubeBack);
-            valo.submit(cubeFront);
-
-            cubeBack.setUniforms(Uniforms{proj * view * model1, tex});
-            cubeFront.setUniforms(Uniforms{proj * view * model1, tex});
-            valo.submit(cubeBack);
-            valo.submit(cubeFront);
-        }
-
-        else {
-            cubeBack.setUniforms(Uniforms{proj * view * model1, tex});
-            cubeFront.setUniforms(Uniforms{proj * view * model1, tex});
-            valo.submit(cubeBack);
-            valo.submit(cubeFront);
-            
-            cubeBack.setUniforms(Uniforms{proj * view * model2, tex});
-            cubeFront.setUniforms(Uniforms{proj * view * model2, tex});
-            valo.submit(cubeBack);
-            valo.submit(cubeFront);
-        }
-
-        valo.endFrame();
+    uint32_t indices[36];
+    for (uint32_t f = 0; f < 6; ++f) {
+        uint32_t* i = indices + f * 6;
+        i[0] = f*4; i[1] = f*4+1; i[2] = f*4+2;
+        i[3] = f*4; i[4] = f*4+2; i[5] = f*4+3;
     }
 
-    valo.shutdown();
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    valo::TextureID      tex  = valo.createTexture("examples/textures/dirt.jpg");
+    valo::VtxLayout      layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f});
+    valo::VertexBufferID vb   = valo.createVertexBuffer(verts, 24, layout);
+    valo::IndexBufferID  ib   = valo.createIndexBuffer(indices, 36);
+    valo::ProgramID      prog = valo.createProgram(vs, fs);
+
+    valo::RenderCommand cube;
+    cube.verts   = vb;
+    cube.indices = ib;
+    cube.program = prog;
+
+    const valo::Mat4f view = valo::Mat4f::lookAt({0.f, 1.5f, 5.f}, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
+    float yaw = 0.f, pitch = 0.f, zoom = 1.f;
+
+    while (window.pollEvents()) {
+        if (window.wasKeyPressed(valo::Key::Escape)) window.close();
+        if (window.wasKeyPressed(valo::Key::O)) ortho = !ortho;
+        if (window.isMouseDown(valo::MouseButton::Left)) {
+            const valo::Vec2f d = window.mouseDelta();
+            const bool upsideDown = std::cos(pitch) < 0.f;
+            yaw   += d.x * 0.01f * (upsideDown ? -1.f : 1.f);
+            pitch += d.y * 0.01f;
+        }
+
+        zoom = std::clamp(zoom - window.scrollDelta() * 0.1f, 0.3f, 3.f);
+
+        const valo::Vec2u size = window.getSize();
+        if (!ortho) {
+            const valo::Mat4f proj = valo::Mat4f::perspective(std::numbers::pi_v<float> / 3.f, float(size.x) / float(size.y), 0.1f, 100.f);
+            const valo::Mat4f model = valo::Mat4f::rotationX(pitch) * valo::Mat4f::rotationY(yaw) * valo::Mat4f::scale({zoom, zoom, zoom});
+
+            valo.beginFrame();
+            cube.setUniforms(Uniforms{proj * view * model, tex});
+            valo.submit(cube);
+            valo.endFrame();
+        }
+        else {
+            const float aspect = window.getAspect();
+            const float h = 2.5f;
+            const valo::Mat4f proj = valo::Mat4f::orthographic(-h * aspect, h * aspect, -h, h, 0.1f, 100.f);
+            const valo::Mat4f model = valo::Mat4f::rotationX(pitch) * valo::Mat4f::rotationY(yaw) * valo::Mat4f::scale({zoom, zoom, zoom});
+            
+            valo.beginFrame();
+            cube.setUniforms(Uniforms{proj * view * model, tex});
+            valo.submit(cube);
+            valo.endFrame();
+        }
+    }
+
     return 0;
 }

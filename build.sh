@@ -16,9 +16,10 @@
 #                                     copy libSDL3.a to lib/
 #   3. otherwise                   -> SDL3 step is skipped entirely
 #
-# stb handling (vendored, header-only):
-#   ext/stb/stb_image.h missing    -> download it (pinned to STB_COMMIT) into ext/stb
-#   otherwise                      -> skipped
+# header-only libs (vendored):
+#   ext/stb/stb_image.h missing               -> download (pinned STB_COMMIT) into ext/stb
+#   ext/tinyobjloader/tiny_obj_loader.h missing -> download (pinned TINYOBJ_TAG)
+#   otherwise                                 -> skipped
 #
 # Outputs:
 #   lib/                      libSDL3.a + libVALO.{a,dylib}
@@ -43,6 +44,11 @@ STB_COMMIT="${STB_COMMIT:-2c980bb59875b0d32144a71867fbdebb2f77cd20}"
 STB_BASE_URL="https://raw.githubusercontent.com/nothings/stb/$STB_COMMIT"
 STB_DIR="ext/stb"
 STB_HEADERS=(stb_image.h)
+
+# tinyobjloader: same deal, single header at a pinned release tag
+TINYOBJ_TAG="${TINYOBJ_TAG:-v1.0.6}"
+TINYOBJ_URL="https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/$TINYOBJ_TAG/tiny_obj_loader.h"
+TINYOBJ_DIR="ext/tinyobjloader"
 
 BUILD_TYPE="Release"
 LINKAGE="static"
@@ -99,6 +105,14 @@ for hdr in "${STB_HEADERS[@]}"; do
         echo "==> $hdr present in $STB_DIR"
     fi
 done
+
+mkdir -p "$TINYOBJ_DIR"
+if [[ ! -f "$TINYOBJ_DIR/tiny_obj_loader.h" ]]; then
+    echo "==> tiny_obj_loader.h not found in $TINYOBJ_DIR, downloading ($TINYOBJ_TAG)"
+    curl -fsSL "$TINYOBJ_URL" -o "$TINYOBJ_DIR/tiny_obj_loader.h"
+else
+    echo "==> tiny_obj_loader.h present in $TINYOBJ_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Build SDL3 once (static, PIC so a dynamic VALO can link it)

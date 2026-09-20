@@ -83,7 +83,7 @@ public:
     }
     bool getVsync() const { return m_cfg.vsync; }
     void setRenderScale(const float scale) { m_cfg.renderScale = scale; }
-    bool getRenderScale() const { return m_cfg.renderScale; }
+    float getRenderScale() const { return m_cfg.renderScale; }
 
 
     void shutdown() { 

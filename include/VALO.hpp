@@ -1,5 +1,6 @@
 #pragma once
 
+#include "render/Window.hpp"
 #include "render/Renderer.hpp"
 
 namespace valo {
@@ -13,8 +14,7 @@ public:
     VALO& operator=(const VALO&) = delete;
     ~VALO() { shutdown(); }
 
-    // if sdlWindow is null, create a window.
-    bool init(const RenderConfig& cfg = {});
+    bool init(Window& window, const RenderConfig& cfg = {});
 
     void beginFrame();
     void submit(const RenderCommand& cmd, LayerID layer = 0);
@@ -73,9 +73,9 @@ public:
 
     void setRenderScale(const float scale) { 
         m_renderer.setRenderScale(scale);
-        if (m_cfg.sdlWindow) resize();
+        if (m_window) resize();
     }
-    bool getRenderScale() const { return m_renderer.getRenderScale(); }
+    float getRenderScale() const { return m_renderer.getRenderScale(); }
 
     void resize();
     void shutdown();
@@ -84,7 +84,6 @@ public:
 
 private:
     RenderConfig m_cfg;
-    bool m_createdWindow = false;
     
     struct Layer {
         std::vector<RenderCommand> cmdQueue;
@@ -97,36 +96,22 @@ private:
     std::vector<LayerID> m_layerOrder;
     Renderer m_renderer;
 
-    bool recreateWindow(const uint32_t w, const uint32_t h) {
-        m_cfg.sdlWindow = SDL_CreateWindow("", w, h, SDL_WINDOW_RESIZABLE);
-
-        if (!m_cfg.sdlWindow) {
-            std::cout << "VALO: " << SDL_GetError() << std::endl;
-            return false;
-        }
-
-        return true;
-    }
+    Window* m_window = nullptr;
 };
 
 
 
-inline bool VALO::init(const RenderConfig& cfg) {
-    bool initialized = true;
+inline bool VALO::init(Window& window, const RenderConfig& cfg) {
+    if (!window.isOpen()) return false;
+
+    m_window = &window;
     m_cfg = cfg;
+    m_cfg.sdlWindow = window.sdlHandle();
 
     m_layers.clear();
     m_layerOrder.clear();
-    m_createdWindow = (!m_cfg.sdlWindow);
 
-    if (!m_cfg.sdlWindow) {
-        if (SDL_Init(SDL_INIT_VIDEO)) {
-            initialized &= recreateWindow(1280, 720); // default window
-            m_createdWindow = true;
-        } else return false;
-    }
-
-    initialized &= m_renderer.init(m_cfg);
+    bool initialized = m_renderer.init(m_cfg);
     m_layers.push_back(Layer()); // default layer, renders to backbuffer
     m_layerOrder.push_back(0);
 
@@ -136,6 +121,8 @@ inline bool VALO::init(const RenderConfig& cfg) {
 
 // clears each target once, using the clear color of the first layer (in draw order) that uses it
 inline void VALO::beginFrame() {
+    if (m_window && m_window->resized()) resize();
+
     std::vector<RenderTargetID> cleared;
 
     for (auto& layer : m_layerOrder) {
@@ -250,22 +237,16 @@ inline void VALO::destroyTexture(const TextureID texture)
 
 
 inline void VALO::resize() {
-    int w, h;
-    SDL_GetWindowSizeInPixels(m_cfg.sdlWindow, &w, &h);
-    m_renderer.resize(w, h);
+    if (!m_window) return;
+    Vec2u size = m_window->getSize();
+    m_renderer.resize(size.x, size.y);
 }
 
 
 inline void VALO::shutdown() {
     m_renderer.shutdown();
-
-    if (m_createdWindow) {
-        SDL_DestroyWindow(m_cfg.sdlWindow);
-        SDL_Quit();
-
-        m_cfg.sdlWindow = nullptr;
-        m_createdWindow = false;
-    }
+    m_cfg.sdlWindow = nullptr;
+    m_window = nullptr;
 }
 
 }
