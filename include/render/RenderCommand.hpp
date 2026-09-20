@@ -8,6 +8,7 @@ namespace valo {
 #define EMPTY_BUFFER    UINT32_MAX
 #define DEFAULT_PROGRAM UINT32_MAX
 #define ALL_INDICES     UINT32_MAX
+#define MAX_INSTANCES   UINT32_MAX  // Essentially unlimited for now
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
@@ -35,7 +36,10 @@ struct RenderCommand {
     BlendMode           blendmode       = BlendMode::Opaque;
     bool                depthTest       = true;
     bool                depthWrite      = true;
+    bool                colorWrite      = true;
     FillMode            fillmode        = FillMode::Solid;
+
+    uint32_t            instanceCount   = 1;
 
     static constexpr size_t MAX_UNIFORM_BYTES = 256;
     uint8_t uniforms[MAX_UNIFORM_BYTES];
@@ -44,7 +48,7 @@ struct RenderCommand {
     template <typename T> void setUniforms(const T& t) {
         static_assert(std::is_trivially_copyable_v<T>, "...");
         static_assert(sizeof(T) <= MAX_UNIFORM_BYTES, "...");
-        
+
         std::memcpy(uniforms, &t, sizeof(T));
         uniformSize = sizeof(T);
     }

@@ -15,6 +15,106 @@
 
 namespace valo {
 
+struct ClipVert { Vec4f pos; float vary[MAX_VARYINGS]; };
+
+struct ScreenTri {
+    Vec4f s[3];
+    float area;
+    float sign;
+    int xmin, ymin, xmax, ymax;
+    float vary[3][MAX_VARYINGS];
+    float invArea;
+};
+
+inline bool setupTriangle(
+    const RenderTarget* target,
+    const RenderCommand& cmd,
+    const ClipVert& c0, const ClipVert& c1, const ClipVert& c2,
+    const uint32_t varyingCount,
+    ScreenTri& out
+) {
+    const ClipVert* c[3] = { &c0, &c1, &c2 };
+
+    for (int i = 0; i < 3; ++i) {
+        const Vec4f& clip = c[i]->pos;
+        const Vec4f ndc = { clip.xyz / clip.w, 1.f / clip.w };
+        out.s[i] = {
+            (ndc.x + 1) * 0.5f * target->width(),
+            (1 - ndc.y) * 0.5f * target->height(),
+            ndc.z, ndc.w
+        };
+    }
+
+    float area = (out.s[1].xy - out.s[0].xy).cross(out.s[2].xy - out.s[0].xy);
+    if (area == 0.f) return false;
+
+    const bool ccw   = area < 0;
+    const bool front = (cmd.winding == VtxWinding::CCW) ? ccw : !ccw;
+    if (cmd.cullmode == CullMode::Back  && !front) return false;
+    if (cmd.cullmode == CullMode::Front &&  front) return false;
+
+    out.sign = area < 0 ? -1.f : 1.f;
+    out.area = area * out.sign;
+    out.invArea = 1.f / out.area;
+
+    const Vec2f lo = min(min(out.s[0].xy, out.s[1].xy), out.s[2].xy);
+    const Vec2f hi = max(max(out.s[0].xy, out.s[1].xy), out.s[2].xy);
+    const int w = int(target->width()), h = int(target->height());
+    out.xmin = int(std::floor(std::clamp<float>(lo.x, 0, w - 1)));
+    out.ymin = int(std::floor(std::clamp<float>(lo.y, 0, h - 1)));
+    out.xmax = int(std::ceil (std::clamp<float>(hi.x, 0, w - 1)));
+    out.ymax = int(std::ceil (std::clamp<float>(hi.y, 0, h - 1)));
+
+    for (int i = 0; i < 3; ++i)
+        std::memcpy(out.vary[i], c[i]->vary, varyingCount * sizeof(float));
+
+    return true;
+}
+
+
+inline int clipNear(
+    const ClipVert in[3], 
+    ClipVert out[4], 
+    uint32_t varyingCount
+) {
+    int n = 0;
+    for (int i = 0; i < 3; ++i) {
+        const ClipVert& a = in[i];
+        const ClipVert& b = in[(i + 1) % 3];
+        float da = a.pos.z, db = b.pos.z;
+        if (da >= 0) out[n++] = a;
+        if ((da >= 0) != (db >= 0)) {
+            float t = da / (da - db);
+            out[n].pos = lerp(a.pos, b.pos, t);
+            for (uint32_t k = 0; k < varyingCount; ++k)
+                out[n].vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
+            ++n;
+        }
+    }
+
+    return n;
+}
+
+
+template <typename F>
+void forEachBand(
+    ThreadPool& pool,
+    const uint32_t height,
+    const std::vector<std::unique_ptr<RenderTarget>>* targets,
+    F&& fn
+) {
+    const uint32_t bands = std::max(1u, std::min(pool.size() * 8, height));
+    const uint32_t rows  = (height + bands - 1) / bands;
+
+    pool.dispatch(bands, [&](uint32_t b) {
+        detail::boundTargets = targets;
+        const int y0 = int(b * rows);
+        const int y1 = int(std::min((b + 1) * rows, height));
+        if (y0 < y1) fn(y0, y1);
+    });
+}
+
+
 inline void writePixel(
     RenderTarget* target, 
     const int x, 
@@ -77,6 +177,7 @@ inline void rasterizePoint(
 
     const bool ownsCenter = (py >= bandY0 && py < bandY1);
     if (cmd.depthWrite && ownsCenter) target->setDepth(px, py, screen.z);
+    if (!cmd.colorWrite) return;
 
     int n = std::max(1, int(size + 0.5f));
     int half = int(n / 2);
@@ -132,6 +233,7 @@ inline void rasterizeLine(
         float z = s1.z + (s2.z - s1.z) * t;
         if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
         if (cmd.depthWrite) target->setDepth(px, py, z);
+        if (!cmd.colorWrite) continue;
 
         float invW = s1.w + (s2.w - s1.w) * t;
         const float w = 1.f / invW;
@@ -150,53 +252,17 @@ inline void rasterizeTriangle(
     RenderTarget* target,
     const Program& program,
     const RenderCommand& cmd,
-    const Vec4f clip[3],
-    const float* varys[3],
+    const ScreenTri& tri,
     const int bandY0, const int bandY1
 ) {
-    Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
-    Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
-    Vec4f ndc3 = {clip[2].xyz / clip[2].w, 1.f / clip[2].w};
+    const int ymin = std::max(tri.ymin, bandY0);
+    const int ymax = std::min(tri.ymax, bandY1 - 1);
+    if (ymin > ymax) return;                          // the whole point: two compares and out
 
-    Vec4f s1 = {
-        (ndc1.x + 1) * 0.5f * target->width(), 
-        (1 - ndc1.y) * 0.5f * target->height(),
-        ndc1.z, ndc1.w
-    };
-
-    Vec4f s2 = {
-        (ndc2.x + 1) * 0.5f * target->width(), 
-        (1 - ndc2.y) * 0.5f * target->height(),
-        ndc2.z, ndc2.w
-    };
-
-    Vec4f s3 = {
-        (ndc3.x + 1) * 0.5f * target->width(), 
-        (1 - ndc3.y) * 0.5f * target->height(),
-        ndc3.z, ndc3.w
-    };
-
-    float area = (s2.xy-s1.xy).cross(s3.xy-s1.xy);
-    bool ccw = area < 0;
-    bool front = (cmd.winding == VtxWinding::CCW) ? ccw : !ccw;
-
-    if (cmd.cullmode == CullMode::Back && !front) return;
-    if (cmd.cullmode == CullMode::Front && front) return;
-
-    float sign = area < 0 ? -1.f : 1.f;
-    area *= sign;
-
-    // create bounding box for looping
-    auto minScr = min(min(s1.xy, s2.xy), s3.xy);
-    auto maxScr = max(max(s1.xy, s2.xy), s3.xy);
-
-    uint32_t xmin = std::floor(std::clamp<float>(minScr.x, 0, target->width() - 1));
-    uint32_t ymin = std::floor(std::clamp<float>(minScr.y, 0, target->height() - 1));
-    uint32_t xmax = std::ceil(std::clamp<float>(maxScr.x, 0, target->width() - 1));
-    uint32_t ymax = std::ceil(std::clamp<float>(maxScr.y, 0, target->height() - 1));
-    ymin = std::max<int>(ymin, bandY0);
-    ymax = std::min<int>(ymax, bandY1 - 1);
-    if (ymin > ymax) return;
+    const Vec4f& s1 = tri.s[0]; const Vec4f& s2 = tri.s[1]; const Vec4f& s3 = tri.s[2];
+    const float sign = tri.sign;
+    const int xmin = tri.xmin, xmax = tri.xmax;
+    const float* varys[3] = { tri.vary[0], tri.vary[1], tri.vary[2] };
 
     const float d1 = -(s2.y - s1.y) * sign;
     const float d2 = -(s3.y - s2.y) * sign;
@@ -213,15 +279,16 @@ inline void rasterizeTriangle(
                 // pixel is inside triangle
 
                 // barycentrics
-                float b1 = e2 / area;
-                float b2 = e3 / area;
-                float b3 = e1 / area;
+                float b1 = e2 * tri.invArea;
+                float b2 = e3 * tri.invArea;
+                float b3 = e1 * tri.invArea;
 
                 // early z-test
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
                 if (z > 1.f) continue;
                 if (cmd.depthTest && z >= target->getDepth(x, y)) continue;
                 if (cmd.depthWrite) target->setDepth(x, y, z);
+                if (!cmd.colorWrite) continue;
 
                 // interpolate varyings
                 float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
@@ -243,51 +310,6 @@ inline void rasterizeTriangle(
 }
 
 
-struct ClipVert { Vec4f pos; float vary[MAX_VARYINGS]; };
-
-inline int clipNear(
-    const ClipVert in[3], 
-    ClipVert out[4], 
-    uint32_t varyingCount
-) {
-    int n = 0;
-    for (int i = 0; i < 3; ++i) {
-        const ClipVert& a = in[i];
-        const ClipVert& b = in[(i + 1) % 3];
-        float da = a.pos.z, db = b.pos.z;
-        if (da >= 0) out[n++] = a;
-        if ((da >= 0) != (db >= 0)) {
-            float t = da / (da - db);
-            out[n].pos = lerp(a.pos, b.pos, t);
-            for (uint32_t k = 0; k < varyingCount; ++k)
-                out[n].vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
-            ++n;
-        }
-    }
-
-    return n;
-}
-
-
-template <typename F>
-void forEachBand(
-    ThreadPool& pool,
-    const uint32_t height,
-    const std::vector<std::unique_ptr<RenderTarget>>* targets,
-    F&& fn
-) {
-    const uint32_t bands = std::max(1u, std::min(pool.size() * 8, height));
-    const uint32_t rows  = (height + bands - 1) / bands;
-
-    pool.dispatch(bands, [&](uint32_t b) {
-        detail::boundTargets = targets;
-        const int y0 = int(b * rows);
-        const int y1 = int(std::min((b + 1) * rows, height));
-        if (y0 < y1) fn(y0, y1);
-    });
-}
-
-
 inline void drawTriangles(
     RenderTarget* target,
     const VertexBuffer& vb,
@@ -305,54 +327,73 @@ inline void drawTriangles(
         std::min(begin + cmd.indexCount, ib.indices.size());
 
     constexpr size_t CHUNK = 4096;
-    static std::vector<ClipVert> tris;
+    const bool wire = (cmd.fillmode == FillMode::Wireframe);
+
+    // solid: set-up triangles.  wireframe: raw clip verts, 3 per triangle
+    static std::vector<ScreenTri> tris;
+    static std::vector<ClipVert>  wireTris;
     tris.clear();
+    wireTris.clear();
 
     auto rasterChunk = [&]() {
         forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
-            for (size_t k = 0; k + 2 < tris.size(); k += 3) {
-                Vec4f pos[3]            = { tris[k].pos,    tris[k + 1].pos,    tris[k + 2].pos  };
-                const float* varys[3]   = { tris[k].vary,   tris[k + 1].vary,   tris[k + 2].vary };
+            if (!wire) {
+                for (const ScreenTri& tri : tris)
+                    rasterizeTriangle(target, program, cmd, tri, y0, y1);
+                return;
+            }
 
-                if (cmd.fillmode == FillMode::Wireframe) {
-                    Vec4f line1[2] = {pos[0], pos[1]};
-                    Vec4f line2[2] = {pos[1], pos[2]};
-                    Vec4f line3[2] = {pos[2], pos[0]};
-                    const float* varys1[2] = {varys[0], varys[1]};
-                    const float* varys2[2] = {varys[1], varys[2]};
-                    const float* varys3[2] = {varys[2], varys[0]};
-                    rasterizeLine(target, program, cmd, line1, varys1, y0, y1);
-                    rasterizeLine(target, program, cmd, line2, varys2, y0, y1);
-                    rasterizeLine(target, program, cmd, line3, varys3, y0, y1);
-                }
-                else rasterizeTriangle(target, program, cmd, pos, varys, y0, y1);
+            for (size_t k = 0; k + 2 < wireTris.size(); k += 3) {
+                Vec4f pos[3]          = { wireTris[k].pos,  wireTris[k + 1].pos,  wireTris[k + 2].pos  };
+                const float* varys[3] = { wireTris[k].vary, wireTris[k + 1].vary, wireTris[k + 2].vary };
+
+                Vec4f line1[2] = {pos[0], pos[1]};
+                Vec4f line2[2] = {pos[1], pos[2]};
+                Vec4f line3[2] = {pos[2], pos[0]};
+                const float* varys1[2] = {varys[0], varys[1]};
+                const float* varys2[2] = {varys[1], varys[2]};
+                const float* varys3[2] = {varys[2], varys[0]};
+                rasterizeLine(target, program, cmd, line1, varys1, y0, y1);
+                rasterizeLine(target, program, cmd, line2, varys2, y0, y1);
+                rasterizeLine(target, program, cmd, line3, varys3, y0, y1);
             }
         });
         tris.clear();
+        wireTris.clear();
     };
 
-    for (size_t i = begin; i + 2 < end; i += 3) {
-        // collect three verts
-        const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
-        const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
-        const uint8_t* v3 = vb.verts.data() + ib.indices[i + 2] * stride;
+    for (uint32_t inst = 0; inst < cmd.instanceCount; ++inst) {
+        valo_InstanceIndex = inst;
 
-        ClipVert in[3], clipped[4];
+        for (size_t i = begin; i + 2 < end; i += 3) {
+            const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
+            const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
+            const uint8_t* v3 = vb.verts.data() + ib.indices[i + 2] * stride;
 
-        in[0].pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, in[0].vary);
-        in[1].pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, in[1].vary);
-        in[2].pos = program.vsThunk(program.vsFn, v3, cmd.uniforms, in[2].vary);
+            ClipVert in[3], clipped[4];
 
-        int n = clipNear(in, clipped, program.varyingCount);
-        if (n < 3) continue;
+            in[0].pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, in[0].vary);
+            in[1].pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, in[1].vary);
+            in[2].pos = program.vsThunk(program.vsFn, v3, cmd.uniforms, in[2].vary);
 
-        for (int t = 1; t + 1 < n; ++t) {
-            tris.push_back(clipped[0]);
-            tris.push_back(clipped[t]);
-            tris.push_back(clipped[t + 1]);
+            int n = clipNear(in, clipped, program.varyingCount);
+            if (n < 3) continue;
+
+            for (int t = 1; t + 1 < n; ++t) {
+                if (wire) {
+                    wireTris.push_back(clipped[0]);
+                    wireTris.push_back(clipped[t]);
+                    wireTris.push_back(clipped[t + 1]);
+                    continue;
+                }
+
+                ScreenTri st;
+                if (setupTriangle(target, cmd, clipped[0], clipped[t], clipped[t + 1], program.varyingCount, st))
+                    tris.push_back(st);
+            }
+
+            if (tris.size() >= CHUNK || wireTris.size() >= CHUNK * 3) rasterChunk();
         }
-
-        if (tris.size() >= CHUNK * 3) rasterChunk();
     }
 
     rasterChunk();
@@ -389,28 +430,32 @@ inline void drawLines(
         lines.clear();
     };
 
-    for (size_t i = begin; i + 1 < end; i += 2) {
-        const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
-        const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
+    for (uint32_t inst = 0; inst < cmd.instanceCount; ++inst) {
+        valo_InstanceIndex = inst;
+        for (size_t i = begin; i + 1 < end; i += 2) {
+            const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
+            const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
 
-        ClipVert a, b;
-        a.pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, a.vary);
-        b.pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, b.vary);
+            ClipVert a, b;
+            a.pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, a.vary);
+            b.pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, b.vary);
 
-        if (a.pos.z < 0 && b.pos.z < 0) continue;
-        if ((a.pos.z < 0) != (b.pos.z < 0)) {
-            float t = a.pos.z / (a.pos.z - b.pos.z);
-            ClipVert& out = (a.pos.z < 0) ? a : b;
-            out.pos = lerp(a.pos, b.pos, t);
+            if (a.pos.z < 0 && b.pos.z < 0) continue;
+            if ((a.pos.z < 0) != (b.pos.z < 0)) {
+                float t = a.pos.z / (a.pos.z - b.pos.z);
+                ClipVert& out = (a.pos.z < 0) ? a : b;
+                out.pos = lerp(a.pos, b.pos, t);
 
-            for (uint32_t k = 0; k < program.varyingCount; ++k)
-                out.vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
+                for (uint32_t k = 0; k < program.varyingCount; ++k)
+                    out.vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
+            }
+
+            lines.push_back(a);
+            lines.push_back(b);
+            if (lines.size() >= CHUNK * 2) rasterChunk();
         }
-
-        lines.push_back(a);
-        lines.push_back(b);
-        if (lines.size() >= CHUNK * 2) rasterChunk();
     }
+
     rasterChunk();
 }
 
@@ -445,19 +490,23 @@ inline void drawPoints(
         points.clear();
     };
 
-    for (size_t i = begin; i < end; ++i) {
-        const uint8_t* v = vb.verts.data() + ib.indices[i] * stride;
-        ClipVert a;
+    for (uint32_t inst = 0; inst < cmd.instanceCount; ++inst) {
+        valo_InstanceIndex = inst;
+        for (size_t i = begin; i < end; ++i) {
+            const uint8_t* v = vb.verts.data() + ib.indices[i] * stride;
+            ClipVert a;
 
-        valo_PointSize = 1.f;
-        a.pos = program.vsThunk(program.vsFn, v, cmd.uniforms, a.vary);
-        const float size = valo_PointSize;
+            valo_PointSize = 1.f;
+            a.pos = program.vsThunk(program.vsFn, v, cmd.uniforms, a.vary);
+            const float size = valo_PointSize;
 
-        if (a.pos.z < 0) continue;
+            if (a.pos.z < 0) continue;
 
-        points.push_back({a, size});
-        if (points.size() >= CHUNK) rasterChunk();
+            points.push_back({a, size});
+            if (points.size() >= CHUNK) rasterChunk();
+        }
     }
+
     rasterChunk();
 }
 

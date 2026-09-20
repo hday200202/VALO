@@ -5,13 +5,26 @@
 #include <chrono>
 #include <string>
 
+// N x N x N cubes from ONE submit: the vertex shader places each instance
+// on the grid from valo_InstanceIndex.
+constexpr uint32_t GRID    = 25;          // cubes per axis -> GRID^3 total
+constexpr float    SPACING = 8.f;         // distance between cube centers
+constexpr float    CUBE    = 1.f;        // cube half-size (mesh is -1..1)
+
 struct Vertex   { valo::Vec3f pos; valo::Vec2f uv; };
-struct Uniforms { valo::Mat4f mvp; valo::TextureID tex; };
+struct Uniforms { valo::Mat4f viewProj; valo::TextureID tex; };
 struct Varyings { valo::Vec2f uv; };
 
 valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    out.uv = in.uv * 0.01f;
-    return u.mvp * valo::Vec4f(in.pos, 1.f);
+    const uint32_t i  = valo::valo_InstanceIndex;
+    const float    gx = float(i % GRID);
+    const float    gy = float((i / GRID) % GRID);
+    const float    gz = float(i / (GRID * GRID));
+    const float    half = (GRID - 1) * 0.5f;                       // center the grid on the origin
+
+    const valo::Vec3f offset = valo::Vec3f{gx - half, gy - half, gz - half} * SPACING;
+    out.uv = in.uv;
+    return u.viewProj * valo::Vec4f(in.pos * CUBE + offset, 1.f);
 }
 
 valo::Color fs(const Varyings& in, const Uniforms& u) {
@@ -23,6 +36,8 @@ valo::Color fs(const Varyings& in, const Uniforms& u) {
             valo::Filter::Linear
         )
     );
+
+    // return {0.5f, 0.5f, 0.5f, 1.f};
 }
 
 int main() {
@@ -70,8 +85,11 @@ int main() {
     // cube.indexCount = 18;
     // cube.firstIndex = 9;
 
-    const valo::Mat4f view = valo::Mat4f::lookAt({0.f, 1.5f, 5.f}, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
-    float yaw = 0.f, pitch = 0.f, zoom = 1.f;
+    cube.instanceCount = GRID * GRID * GRID;
+
+    // orbit camera around the grid's center: yaw/pitch from the mouse, distance from scroll
+    const float gridExtent = GRID * SPACING;
+    float yaw = 0.6f, pitch = 0.4f, zoom = 1.f;
 
     using clock = std::chrono::steady_clock;
     auto     fpsWindowStart = clock::now();
@@ -98,35 +116,36 @@ int main() {
         if (window.wasKeyPressed(valo::Key::O)) ortho = !ortho;
         if (window.isMouseGrabbed()) {
             const valo::Vec2f d = window.mouseDelta();
-            const bool upsideDown = std::cos(pitch) < 0.f;
             window.setMousePositionLocal(window.getCenterLocal());
-            yaw   += d.x * 0.01f * (upsideDown ? -1.f : 1.f);
-            pitch += d.y * 0.01f;
+            yaw   += d.x * 0.005f;
+            pitch  = std::clamp(pitch + d.y * 0.005f, -1.5f, 1.5f);
         }
 
-        zoom = std::clamp(zoom - window.scrollDelta() * 0.1f, 0.3f, 3.f);
+        zoom = std::clamp(zoom - window.scrollDelta() * 0.05f, 0.05f, 5.f);
 
-        const valo::Vec2u size = window.getSize();
+        // camera sits on a sphere around the origin; the grid is centered there
+        const float dist = gridExtent * 1.2f * zoom;
+        const valo::Vec3f eye = {
+            dist * std::cos(pitch) * std::sin(yaw),
+            dist * std::sin(pitch),
+            dist * std::cos(pitch) * std::cos(yaw),
+        };
+        const valo::Mat4f view = valo::Mat4f::lookAt(eye, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
+
+        const float aspect  = window.getAspect();
+        const float farClip = gridExtent * 4.f * 5.f;   // covers the farthest zoom
+        valo::Mat4f proj;
         if (!ortho) {
-            const valo::Mat4f proj = valo::Mat4f::perspective(std::numbers::pi_v<float> / 3.f, float(size.x) / float(size.y), 0.1f, 100.f);
-            const valo::Mat4f model = valo::Mat4f::rotationX(pitch) * valo::Mat4f::rotationY(yaw) * valo::Mat4f::scale({zoom, zoom, zoom});
+            proj = valo::Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, farClip);
+        } else {
+            const float h = dist * 0.6f;
+            proj = valo::Mat4f::orthographic(-h * aspect, h * aspect, -h, h, 0.1f, farClip);
+        }
 
-            valo.beginFrame();
-            cube.setUniforms(Uniforms{proj * view * model, texToggle ? rust : dirt});
-            valo.submit(cube);
-            valo.endFrame();
-        }
-        else {
-            const float aspect = window.getAspect();
-            const float h = 2.5f;
-            const valo::Mat4f proj = valo::Mat4f::orthographic(-h * aspect, h * aspect, -h, h, 0.1f, 100.f);
-            const valo::Mat4f model = valo::Mat4f::rotationX(pitch) * valo::Mat4f::rotationY(yaw) * valo::Mat4f::scale({zoom, zoom, zoom});
-            
-            valo.beginFrame();
-            cube.setUniforms(Uniforms{proj * view * model, texToggle ? rust : dirt});
-            valo.submit(cube);
-            valo.endFrame();
-        }
+        valo.beginFrame();
+        cube.setUniforms(Uniforms{proj * view, texToggle ? rust : dirt});
+        valo.submit(cube);
+        valo.endFrame();
     }
 
     return 0;

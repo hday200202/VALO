@@ -14,6 +14,7 @@ namespace detail {
 }
 
 inline thread_local float valo_PointSize = 1.f;
+inline thread_local uint32_t valo_InstanceIndex = 0.f;
 
 
 enum class Wrap     { Repeat, Clamp, Mirror };
@@ -60,6 +61,14 @@ inline constexpr int wrapPixel(int x, int size, Wrap mode) {
     return 0;
 }
 
+inline uint32_t lerpABGR32(const uint32_t a, const uint32_t b, const uint32_t t) {
+    const uint32_t s = 256 - t;
+    const uint32_t r = (( a        & 0xFF) * s + ( b        & 0xFF) * t) >> 8;
+    const uint32_t g = (((a >>  8) & 0xFF) * s + ((b >>  8) & 0xFF) * t) >> 8;
+    const uint32_t bl= (((a >> 16) & 0xFF) * s + ((b >> 16) & 0xFF) * t) >> 8;
+    const uint32_t al= (((a >> 24) & 0xFF) * s + ((b >> 24) & 0xFF) * t) >> 8;
+    return (al << 24) | (bl << 16) | (g << 8) | r;
+}
 
 inline Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler = {}) {
     assert(detail::boundTargets && "texture() called outside of a draw");
@@ -84,13 +93,17 @@ inline Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sample
     const int y0 = wrapPixel(int(y0f),      h, sampler.wrapV);
     const int y1 = wrapPixel(int(y0f) + 1,  h, sampler.wrapV);
 
-    const Color c00 = t.getPixel(x0, y0), c10 = t.getPixel(x1, y0);
-    const Color c01 = t.getPixel(x0, y1), c11 = t.getPixel(x1, y1);
+    const uint32_t* px = t.data();
+    const uint32_t  W  = t.width();
+    const uint32_t p00 = px[y0 * W + x0], p10 = px[y0 * W + x1];
+    const uint32_t p01 = px[y1 * W + x0], p11 = px[y1 * W + x1];
 
-    const Color top = lerp(c00, c10, tx);
-    const Color bottom = lerp(c01, c11, tx);
+    const uint32_t wx = uint32_t(tx * 256.f + 0.5f);
+    const uint32_t wy = uint32_t(ty * 256.f + 0.5f);
 
-    return lerp(top, bottom, ty);
+    const uint32_t top    = lerpABGR32(p00, p10, wx);
+    const uint32_t bottom = lerpABGR32(p01, p11, wx);
+    return ABGR32ToColor(lerpABGR32(top, bottom, wy));
 }
 
 inline float textureDepth(const TextureID tex, const Vec2f& uv) {

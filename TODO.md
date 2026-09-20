@@ -12,27 +12,26 @@ after all of this is done.
       onto draw ranges + sampler state + instancing, so those come first.
 - [x] **Draw ranges** — `firstIndex` / `indexCount` on `RenderCommand`
       (`ALL_INDICES` default). One vertex+index buffer, many materials.
-- [ ] **Bilinear filtering** — 4-tap sample in `texture()`, weighted by the
-      fractional uv.
+- [x] **Bilinear filtering** — 2x2 tap in `texture()`, `Filter::Linear`.
 - [ ] **Mipmaps** — generate the chain at `createTexture`; pick LOD from uv
       derivatives (per-triangle `du/dx`, `dv/dy` computed in the rasterizer).
       Fixes the crawling on far/oblique surfaces.
-- [ ] **Sampler state** — wrap modes (repeat / clamp / mirror), filter mode.
-      Vulkan puts these in a sampler object; a small `Sampler` struct or extra
-      `texture()` params.
+- [x] **Sampler state** — `Sampler{wrapU, wrapV, filter}` passed to
+      `texture()`; Repeat / Clamp / Mirror, Nearest / Linear. Default is
+      repeat + linear.
 - [ ] **sRGB** — decode textures to linear on sample, encode on write to the
       backbuffer. Needed the moment lighting is involved.
-- [ ] **Instancing** — `instanceCount` on `RenderCommand` + a per-instance
-      vertex buffer stepping once per instance (Vulkan's
-      `VK_VERTEX_INPUT_RATE_INSTANCE`), or `valo_InstanceID` indexing uniforms.
+- [x] **Instancing** — `instanceCount` on `RenderCommand` + `valo_InstanceIndex`
+      built-in read by the vertex shader. (Per-instance vertex buffer with
+      instance step rate is a possible later addition.)
 - [x] **Dynamic buffers** — `updateVertexBuffer(id, data, count[, newLayout])` /
       `updateIndexBuffer(id, data, count)`.
 - [ ] **MRT** — fragment shader outputs N colors, command binds N targets.
       Needed for deferred shading.
 - [x] **Depth as texture** — `textureDepth()` samples a target's depth buffer.
-- [ ] **Shadow-map demo** — depth-only target drawn from the light in layer 0,
-      scene samples it in layer 1. Proves the layer → target → sample chain
-      (Vulkan's render-pass dependency).
+- [x] **Depth-only passes** — `colorWrite` on `RenderCommand`: depth is
+      tested/written, fragment shader and color write are skipped. Shadow maps
+      are now entirely dev-side (target + layer + `textureDepth`).
 - [ ] **Fragment discard** — a way for the fragment shader to reject the pixel
       (alpha-tested cutouts, foliage).
 - [ ] **Far-plane reject** — skip fragments with `z > 1` in the depth test.
@@ -81,6 +80,13 @@ after all of this is done.
 - [ ] Per-phase timing (clear / draw / show) printed with the fps to see where
       frame time actually goes; `show()`'s `SDL_UpdateTexture` upload is the
       big serial chunk.
+- [x] Triangle setup once per triangle (`setupTriangle` → `ScreenTri`), bands
+      only band-clamp + pixel loop. Barycentrics via `invArea` multiply.
+      Bilinear on packed ABGR32 (`lerpABGR32`, 0..256 weights, exact).
+- Profile (25^3 cubes, 4K): geometry ~5 ms, raster ~31 ms of which ~20 ms is
+  fragment shading + `writePixel`, ~10 ms per-triangle floor. Band scan is
+  0.03 ms — binning is NOT worth it. Next real step is a sampling profiler
+  (Instruments) on the fragment path, not more guessing.
 - Incremental edge functions (step, don't recompute per pixel).
 - Vertex cache: shade each unique index once per draw.
 - SIMD inner loops (interpolation, blending, sampling).
