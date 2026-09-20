@@ -10,6 +10,8 @@
 #include "VertexBuffer.hpp"
 #include "IndexBuffer.hpp"
 #include "ShaderProgram.hpp"
+#include "ThreadPool.hpp"
+#include "Sampling.hpp"
 
 namespace valo {
 
@@ -143,7 +145,8 @@ inline void rasterizeTriangle(
     const Program& program,
     const RenderCommand& cmd,
     const Vec4f clip[3],
-    const float* varys[3]
+    const float* varys[3],
+    const int bandY0, const int bandY1
 ) {
     Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
     Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
@@ -185,6 +188,9 @@ inline void rasterizeTriangle(
     uint32_t ymin = std::floor(std::clamp<float>(minScr.y, 0, target->height() - 1));
     uint32_t xmax = std::ceil(std::clamp<float>(maxScr.x, 0, target->width() - 1));
     uint32_t ymax = std::ceil(std::clamp<float>(maxScr.y, 0, target->height() - 1));
+    ymin = std::max<int>(ymin, bandY0);
+    ymax = std::min<int>(ymax, bandY1 - 1);
+    if (ymin > ymax) return;
 
     const float d1 = -(s2.y - s1.y) * sign;
     const float d2 = -(s3.y - s2.y) * sign;
@@ -257,14 +263,62 @@ inline int clipNear(
 }
 
 
+template <typename F>
+void forEachBand(
+    ThreadPool& pool,
+    const uint32_t height,
+    const std::vector<std::unique_ptr<RenderTarget>>* targets,
+    F&& fn
+) {
+    const uint32_t bands = std::max(1u, std::min(pool.size() * 8, height));
+    const uint32_t rows  = (height + bands - 1) / bands;
+
+    pool.dispatch(bands, [&](uint32_t b) {
+        detail::boundTargets = targets;
+        const int y0 = int(b * rows);
+        const int y1 = int(std::min((b + 1) * rows, height));
+        if (y0 < y1) fn(y0, y1);
+    });
+}
+
+
 inline void drawTriangles(
     RenderTarget* target,
     const VertexBuffer& vb,
     const IndexBuffer& ib,
     const Program& program,
-    const RenderCommand& cmd
+    const RenderCommand& cmd,
+    ThreadPool& pool,
+    std::vector<std::unique_ptr<RenderTarget>>* targets
 ) {
     const size_t stride = vb.layout.stride();
+
+    constexpr size_t CHUNK = 4096;
+    static std::vector<ClipVert> tris;
+    tris.clear();
+
+    auto rasterChunk = [&]() {
+        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+            for (size_t k = 0; k + 2 < tris.size(); k += 3) {
+                Vec4f pos[3]            = { tris[k].pos,    tris[k + 1].pos,    tris[k + 2].pos  };
+                const float* varys[3]   = { tris[k].vary,   tris[k + 1].vary,   tris[k + 2].vary };
+
+                if (cmd.fillmode == FillMode::Wireframe) {
+                    Vec4f line1[2] = {pos[0], pos[1]};
+                    Vec4f line2[2] = {pos[1], pos[2]};
+                    Vec4f line3[2] = {pos[2], pos[0]};
+                    const float* varys1[2] = {varys[0], varys[1]};
+                    const float* varys2[2] = {varys[1], varys[2]};
+                    const float* varys3[2] = {varys[2], varys[0]};
+                    rasterizeLine(target, program, cmd, line1, varys1);
+                    rasterizeLine(target, program, cmd, line2, varys2);
+                    rasterizeLine(target, program, cmd, line3, varys3);
+                }
+                else rasterizeTriangle(target, program, cmd, pos, varys, y0, y1);
+            }
+        });
+        tris.clear();
+    };
 
     for (size_t i = 0; i < ib.indices.size(); i += 3) {
         // collect three verts
@@ -282,23 +336,15 @@ inline void drawTriangles(
         if (n < 3) continue;
 
         for (int t = 1; t + 1 < n; ++t) {
-            Vec4f pos[3] = { clipped[0].pos,  clipped[t].pos,  clipped[t + 1].pos  };
-            const float* varys[3] = { clipped[0].vary, clipped[t].vary, clipped[t + 1].vary };
-
-            if (cmd.fillmode == FillMode::Wireframe) {
-                Vec4f line1[2] = {pos[0], pos[1]};
-                Vec4f line2[2] = {pos[1], pos[2]};
-                Vec4f line3[2] = {pos[2], pos[0]};
-                const float* varys1[2] = {varys[0], varys[1]};
-                const float* varys2[2] = {varys[1], varys[2]};
-                const float* varys3[2] = {varys[2], varys[0]};
-                rasterizeLine(target, program, cmd, line1, varys1);
-                rasterizeLine(target, program, cmd, line2, varys2);
-                rasterizeLine(target, program, cmd, line3, varys3);
-            }
-            else rasterizeTriangle(target, program, cmd, pos, varys);
+            tris.push_back(clipped[0]);
+            tris.push_back(clipped[t]);
+            tris.push_back(clipped[t + 1]);
         }
+
+        if (tris.size() >= CHUNK * 3) rasterChunk();
     }
+
+    rasterChunk();
 }
 
 
@@ -307,7 +353,9 @@ inline void drawLines(
     const VertexBuffer& vb,
     const IndexBuffer& ib,
     const Program& program,
-    const RenderCommand& cmd
+    const RenderCommand& cmd,
+    ThreadPool& pool,
+    std::vector<std::unique_ptr<RenderTarget>>* targets
 ) {
     const size_t stride = vb.layout.stride();
 
@@ -341,7 +389,9 @@ inline void drawPoints(
     const VertexBuffer& vb,
     const IndexBuffer& ib,
     const Program& program,
-    const RenderCommand& cmd
+    const RenderCommand& cmd,
+    ThreadPool& pool,
+    std::vector<std::unique_ptr<RenderTarget>>* targets
 ) {
     size_t stride = vb.layout.stride();
 

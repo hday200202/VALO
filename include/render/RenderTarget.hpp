@@ -122,6 +122,13 @@ public:
         std::fill(m_depth.begin(), m_depth.end(), 1.f);
     }
 
+    
+    void clearRows(const Color& color, const uint32_t y0, const uint32_t y1) {
+        const uint32_t col = colorToABGR32(color);
+        std::fill(m_pixels.begin() + y0 * m_width, m_pixels.begin() + y1 * m_width, col);
+        std::fill(m_depth.begin() + y0 * m_width, m_depth.begin() + y1 * m_width, 1.f);
+    }
+
 
     uint32_t width() const { return m_width; }
     uint32_t height() const { return m_height; }
@@ -142,8 +149,5 @@ private:
     // should this target be resized with window?
     bool                    m_trackWindow   = true;
 };
-
-
-
 
 } // namespace valo

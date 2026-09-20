@@ -14,6 +14,7 @@
 #include "ShaderProgram.hpp"
 #include "DrawFuncs.hpp"
 #include "Sampling.hpp"
+#include "ThreadPool.hpp"
 #include "common/Math.hpp"
 
 namespace valo {
@@ -121,6 +122,9 @@ protected:
     uint32_t m_texW, m_texH;
 
 
+    ThreadPool m_pool;
+
+
     // takes ownership of a target/texture, reusing a freed slot if there is one
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
 
@@ -171,7 +175,11 @@ inline void Renderer::clear(
     const RenderTargetID target
 ) { 
     assert(m_targets[target] && "Renderer: clear on destroyed target");
-    m_targets[target]->clear(clearColor); 
+    // RenderTarget* tgt = m_targets[target].get();
+    // forEachBand(m_pool, tgt->height(), &m_targets, [&](int y0, int y1) {
+    //     tgt->clearRows(clearColor, uint32_t(y0), uint32_t(y1));
+    // });
+    m_targets[target]->clear(clearColor);
 }
 
 
@@ -188,7 +196,9 @@ inline void Renderer::draw(
                 m_vertexBuffers[cmd.verts], 
                 m_indexBuffers[cmd.indices], 
                 m_programs[cmd.program], 
-                cmd
+                cmd,
+                m_pool,
+                &m_targets
             );
             break;
         
@@ -198,7 +208,9 @@ inline void Renderer::draw(
                 m_vertexBuffers[cmd.verts], 
                 m_indexBuffers[cmd.indices], 
                 m_programs[cmd.program], 
-                cmd
+                cmd,
+                m_pool,
+                &m_targets
             );
             break;
         
@@ -208,7 +220,9 @@ inline void Renderer::draw(
                 m_vertexBuffers[cmd.verts], 
                 m_indexBuffers[cmd.indices], 
                 m_programs[cmd.program], 
-                cmd
+                cmd,
+                m_pool,
+                &m_targets
             );
             break;
 
