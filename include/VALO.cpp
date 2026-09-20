@@ -127,6 +127,21 @@ TextureID VALO::createTexture(
 ) { return m_renderer.createTexture(w, h, data); }
 
 
+void VALO::updateIndexBuffer(
+    const IndexBufferID indices,
+    const uint32_t* data,
+    const size_t count
+) { m_renderer.updateIndexBuffer(indices, data, count); }
+
+
+void VALO::updateVertexBuffer(
+    const VertexBufferID vertices,
+    const void* data,
+    const size_t count,
+    const VtxLayout& newLayout
+) { m_renderer.updateVertexBuffer(vertices, data, count, newLayout); }
+
+
 TextureID VALO::createTexture(
     const std::string& path
 ) { return m_renderer.createTexture(path); }

@@ -10,12 +10,19 @@ struct Uniforms { valo::Mat4f mvp; valo::TextureID tex; };
 struct Varyings { valo::Vec2f uv; };
 
 valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    out.uv = in.uv;
+    out.uv = in.uv * 0.01f;
     return u.mvp * valo::Vec4f(in.pos, 1.f);
 }
 
 valo::Color fs(const Varyings& in, const Uniforms& u) {
-    return texture(u.tex, in.uv);
+    return texture(
+        u.tex, in.uv, 
+        valo::Sampler(
+            valo::Wrap::Repeat, 
+            valo::Wrap::Repeat, 
+            valo::Filter::Linear
+        )
+    );
 }
 
 int main() {
@@ -23,9 +30,10 @@ int main() {
 
     valo::VALO valo;
     valo::RenderConfig cfg;
-    cfg.vsync = false;
+    cfg.vsync = true;
     if (!valo.init(window, cfg)) return 1;
     valo.setRenderScale(1.f);
+    valo.setLayerClearColor(valo::VALO::BASE_LAYER, {.8f, .9f, 1.f, 1.f});
 
     bool ortho = false;
     bool texToggle = false;
@@ -57,11 +65,14 @@ int main() {
     cube.verts   = vb;
     cube.indices = ib;
     cube.program = prog;
+    // cube.cullmode = valo::CullMode::None;
+    // cube.fillmode = valo::FillMode::Wireframe;
+    // cube.indexCount = 18;
+    // cube.firstIndex = 9;
 
     const valo::Mat4f view = valo::Mat4f::lookAt({0.f, 1.5f, 5.f}, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
     float yaw = 0.f, pitch = 0.f, zoom = 1.f;
 
-    // fps in the title: frames counted over the last ~1 s, updated once per second
     using clock = std::chrono::steady_clock;
     auto     fpsWindowStart = clock::now();
     uint32_t fpsFrames      = 0;
@@ -74,13 +85,21 @@ int main() {
             fpsWindowStart = clock::now();
             fpsFrames      = 0;
         }
+        if (window.wasMousePressed(valo::MouseButton::Left)) 
+            window.isMouseGrabbed() ? window.releaseMouse() : window.grabMouse();
+        if (window.wasMousePressed(valo::MouseButton::Right)) window.releaseMouse();
+        if (window.wasKeyPressed(valo::Key::Num1)) valo.setRenderScale(1.00f);
+        if (window.wasKeyPressed(valo::Key::Num2)) valo.setRenderScale(0.75f);
+        if (window.wasKeyPressed(valo::Key::Num3)) valo.setRenderScale(0.50f);
+        if (window.wasKeyPressed(valo::Key::Num4)) valo.setRenderScale(0.25f);
         if (window.wasKeyPressed(valo::Key::T)) texToggle = !texToggle;
         if (window.wasKeyPressed(valo::Key::V)) valo.setVsync(!valo.getVsync());
         if (window.wasKeyPressed(valo::Key::Escape)) window.close();
         if (window.wasKeyPressed(valo::Key::O)) ortho = !ortho;
-        if (window.isMouseDown(valo::MouseButton::Left)) {
+        if (window.isMouseGrabbed()) {
             const valo::Vec2f d = window.mouseDelta();
             const bool upsideDown = std::cos(pitch) < 0.f;
+            window.setMousePositionLocal(window.getCenterLocal());
             yaw   += d.x * 0.01f * (upsideDown ? -1.f : 1.f);
             pitch += d.y * 0.01f;
         }

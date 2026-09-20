@@ -7,6 +7,7 @@ namespace valo {
 
 #define EMPTY_BUFFER    UINT32_MAX
 #define DEFAULT_PROGRAM UINT32_MAX
+#define ALL_INDICES     UINT32_MAX
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
@@ -25,6 +26,9 @@ struct RenderCommand {
     IndexBufferID       indices         = EMPTY_BUFFER;
     ProgramID           program         = DEFAULT_PROGRAM;
 
+    uint32_t            firstIndex      = 0;
+    uint32_t            indexCount      = ALL_INDICES;
+
     Topology            topology        = Topology::Triangles;
     CullMode            cullmode        = CullMode::Back;
     VtxWinding          winding         = VtxWinding::CCW;
@@ -40,6 +44,7 @@ struct RenderCommand {
     template <typename T> void setUniforms(const T& t) {
         static_assert(std::is_trivially_copyable_v<T>, "...");
         static_assert(sizeof(T) <= MAX_UNIFORM_BYTES, "...");
+        
         std::memcpy(uniforms, &t, sizeof(T));
         uniformSize = sizeof(T);
     }

@@ -5,10 +5,13 @@ after all of this is done.
 
 ## Features
 
-- [ ] **Mesh loading** — vendor a single-header loader (tinyobjloader for OBJ,
-      cgltf for glTF) the same way stb_image is vendored in `build.sh`. Produce a
-      vertex buffer + index buffer from a file. Gate for using the renderer on
-      anything real.
+- [x] **OBJ loading** — tinyobjloader vendored via `build.sh`; wrapper in
+      `utils/OBJParser.hpp` gives positions/uvs/normals, face triples, materials,
+      and per-face material ids. Mesh/vertex-buffer assembly is dev-side.
+- [ ] **glTF loading** — vendor cgltf the same way. Its primitives/materials map
+      onto draw ranges + sampler state + instancing, so those come first.
+- [x] **Draw ranges** — `firstIndex` / `indexCount` on `RenderCommand`
+      (`ALL_INDICES` default). One vertex+index buffer, many materials.
 - [ ] **Bilinear filtering** — 4-tap sample in `texture()`, weighted by the
       fractional uv.
 - [ ] **Mipmaps** — generate the chain at `createTexture`; pick LOD from uv
@@ -19,16 +22,17 @@ after all of this is done.
       `texture()` params.
 - [ ] **sRGB** — decode textures to linear on sample, encode on write to the
       backbuffer. Needed the moment lighting is involved.
-- [ ] **Instancing** — `instanceCount` on `RenderCommand` + `valo_InstanceID`
-      built-in (same thread_local pattern as `valo_PointSize`) so the vertex
-      shader can index per-instance data in uniforms.
-- [ ] **Dynamic buffers** — `updateVertexBuffer(id, data, count)` /
-      `updateIndexBuffer` instead of destroy+create for per-frame data.
-      Maps to a host-visible buffer write in Vulkan.
+- [ ] **Instancing** — `instanceCount` on `RenderCommand` + a per-instance
+      vertex buffer stepping once per instance (Vulkan's
+      `VK_VERTEX_INPUT_RATE_INSTANCE`), or `valo_InstanceID` indexing uniforms.
+- [x] **Dynamic buffers** — `updateVertexBuffer(id, data, count[, newLayout])` /
+      `updateIndexBuffer(id, data, count)`.
 - [ ] **MRT** — fragment shader outputs N colors, command binds N targets.
       Needed for deferred shading.
-- [ ] **Depth as texture** — sample a target's depth buffer from a shader
-      (`textureDepth()`), for shadow maps.
+- [x] **Depth as texture** — `textureDepth()` samples a target's depth buffer.
+- [ ] **Shadow-map demo** — depth-only target drawn from the light in layer 0,
+      scene samples it in layer 1. Proves the layer → target → sample chain
+      (Vulkan's render-pass dependency).
 - [ ] **Fragment discard** — a way for the fragment shader to reject the pixel
       (alpha-tested cutouts, foliage).
 - [ ] **Far-plane reject** — skip fragments with `z > 1` in the depth test.
@@ -47,8 +51,11 @@ after all of this is done.
       + per-draw `{pos, size, uvRect, tint}` uniforms) for UI-heavy use (UILO).
 - [ ] **Per-command sort key** within a layer (back-to-front for transparency,
       by program/texture for state coherence).
+- [x] **Window** — `valo::Window` owns the SDL window; pixel-sized on Retina,
+      `pollEvents`, `Key`/`MouseButton` enums (SDL scancode values),
+      `isKeyDown` / `wasKeyPressed` / `mouseDelta` / `scrollDelta`.
 - [ ] Move remaining header implementations into `.cpp` files once the
-      interfaces settle.
+      interfaces settle (VALO done; Renderer, DrawFuncs, RenderTarget partial).
 
 ## Deferred / probably not
 
@@ -63,11 +70,19 @@ after all of this is done.
   feature-complete; keep the dev-facing API (`createProgram`, `RenderCommand`,
   layers, IDs) identical. Only shader source changes.
 
-## After all of the above: optimization
+## Optimization
 
-- Tiled / multithreaded rasterization (per-tile bins, thread pool).
+- [x] **Multithreaded rasterization** — `ThreadPool` (generation +
+      active-count, TSan-clean) + `forEachBand`: geometry phase on the main
+      thread into a chunked buffer, workers rasterize disjoint row bands
+      (`pool.size() * 8` bands). Triangles, lines, points, and clear all banded.
+- [ ] Parallel geometry phase (triangles are independent; preserve output order
+      by giving each worker a fixed index range).
+- [ ] Per-phase timing (clear / draw / show) printed with the fps to see where
+      frame time actually goes; `show()`'s `SDL_UpdateTexture` upload is the
+      big serial chunk.
 - Incremental edge functions (step, don't recompute per pixel).
 - Vertex cache: shade each unique index once per draw.
 - SIMD inner loops (interpolation, blending, sampling).
 - Depth-test before shading (early-z) is already the order; keep it.
-- Profile with a real scene (needs mesh loading first).
+- Profile with a real scene (Iron Man OBJ: 217k tris, 11 materials).

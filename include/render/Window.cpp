@@ -89,6 +89,24 @@ Vec2u Window::getSize() const {
     };
 }
 
+Vec2f Window::getCenterGlobal() const {
+    const auto pos = getPosition();
+    const auto size = getSize();
+    const float d = getPixelDensity();
+    return {
+        pos.x + size.x / d / 2.f,
+        pos.y + size.y / d / 2.f,
+    };
+}
+
+Vec2f Window::getCenterLocal() const {
+    const auto size = getSize();
+    return {
+        size.x / 2.f,
+        size.y / 2.f
+    };
+}
+
 float Window::getPixelDensity() const {
     return SDL_GetWindowPixelDensity(m_window);
 }
@@ -137,6 +155,8 @@ bool Window::pollEvents() {
     m_mousePressed.reset();
     m_mouseReleased.reset();
 
+    const float density = getPixelDensity();
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
@@ -156,8 +176,8 @@ bool Window::pollEvents() {
                     m_released.set(e.key.scancode);
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                m_mouseDelta.x += e.motion.xrel;
-                m_mouseDelta.y += e.motion.yrel;
+                m_mouseDelta.x += e.motion.xrel * density;
+                m_mouseDelta.y += e.motion.yrel * density;
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 if (e.button.button < size_t(MouseButton::Count))
@@ -190,7 +210,17 @@ bool Window::isMouseDown(const MouseButton button) const {
 Vec2f Window::mousePosition() const {
     float x, y;
     SDL_GetMouseState(&x, &y);
-    return {x, y};
+    const float d = getPixelDensity();
+    return { x * d, y * d };
+}
+
+void Window::setMousePositionGlobal(const Vec2f& position) {
+    SDL_WarpMouseGlobal(position.x, position.y);
+}
+
+void Window::setMousePositionLocal(const Vec2f& position) {
+    const float d = getPixelDensity();
+    SDL_WarpMouseInWindow(m_window, position.x / d, position.y / d);
 }
 
 void Window::grabMouse() {

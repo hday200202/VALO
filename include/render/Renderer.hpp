@@ -51,6 +51,8 @@ public:
     IndexBufferID createIndexBuffer(const uint32_t* data, const size_t count);
     TextureID createTexture(const uint32_t w, const uint32_t h, uint32_t* data);
     TextureID createTexture(const std::string& path);
+    void updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
+    void updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout = {});
     
 
     template <typename V, typename U, typename Vy>
@@ -329,6 +331,33 @@ inline TextureID Renderer::createTexture(
     return pushTarget(std::make_unique<RenderTarget>(
         RenderTarget::loadFromMemory(w, h, data)
     ));
+}
+
+
+inline void Renderer::updateIndexBuffer(
+    const IndexBufferID indices, 
+    const uint32_t* data, 
+    size_t count
+) {
+    assert(indices < m_indexBuffers.size() && "updateIndexBuffer(): Index buffer ID out of range");
+    m_indexBuffers[indices].indices.assign(data, data + count);
+}
+
+
+inline void Renderer::updateVertexBuffer(
+    const VertexBufferID vertices, 
+    const void* data, 
+    const size_t count,
+    const VtxLayout& newLayout
+) {
+    assert(vertices < m_vertexBuffers.size() && "updateVertexBuffer(): Vertex buffer ID out of range");
+    auto& vb = m_vertexBuffers[vertices];
+    vb.layout = newLayout.stride() == 0 ? vb.layout : newLayout;
+
+    size_t sizeInBytes = count * vb.layout.stride();
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+
+    vb.verts.assign(bytes, bytes + sizeInBytes);
 }
 
 

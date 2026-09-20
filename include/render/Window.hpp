@@ -98,6 +98,9 @@ public:
     void setSize(const Vec2u& size);
     Vec2u getSize() const;
 
+    Vec2f getCenterGlobal() const;
+    Vec2f getCenterLocal() const;
+
     float getPixelDensity() const;
 
     void setFullscreen(const bool fullscreen);
@@ -140,6 +143,8 @@ public:
 
     Vec2f mouseDelta() const    { return m_mouseDelta; }
     Vec2f mousePosition() const;
+    void setMousePositionGlobal(const Vec2f& position);
+    void setMousePositionLocal(const Vec2f& position);
     float scrollDelta() const   { return m_scrollDelta; }
     float getAspect() const;
 

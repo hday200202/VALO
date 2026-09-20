@@ -57,7 +57,8 @@ inline void rasterizePoint(
     const RenderCommand& cmd,
     const Vec4f clip,
     const float* varys,
-    const float size
+    const float size,
+    const int bandY0, const int bandY1
 ) {
     Vec4f ndc = {clip.xyz / clip.w, clip.w};
     
@@ -71,16 +72,20 @@ inline void rasterizePoint(
 
     int px = int(screen.x), py = int(screen.y);
     if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
+
     if (cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
-    else if (cmd.depthWrite) target->setDepth(px, py, screen.z);
+
+    const bool ownsCenter = (py >= bandY0 && py < bandY1);
+    if (cmd.depthWrite && ownsCenter) target->setDepth(px, py, screen.z);
 
     int n = std::max(1, int(size + 0.5f));
     int half = int(n / 2);
     Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
 
     for (int y = py - half; y < py - half + n; ++y) {
+        if (y < bandY0 || y >= bandY1) continue;
         for (int x = px - half; x < px - half + n; ++x) {
-            if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) continue;
+            if (x < 0 || x >= w - 1) continue;
             writePixel(target, x, y, color, cmd.blendmode);
         }
     }
@@ -91,7 +96,8 @@ inline void rasterizeLine(
     const Program& program,
     const RenderCommand& cmd,
     const Vec4f clip[2],
-    const float* varys[2]
+    const float* varys[2],
+    const int bandY0, const int bandY1
 ) {
     Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
     Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
@@ -113,14 +119,14 @@ inline void rasterizeLine(
 
     int steps = int(std::max(std::abs(dx), std::abs(dy)));
 
-    const int w = int(target->width()), h = int(target->height());
+    const int w = int(target->width());
     
     for (int i = 0; i <= steps; ++i) {
         float t = float(i) / std::max(steps, 1);
         float x = s1.x + dx * t;
         float y = s1.y + dy * t;
         int px = int(x), py = int(y);
-        if (px < 0 || py < 0 || px >= w - 1 || h - 1) continue;
+        if (px < 0 || px >= w - 1 || py < bandY0 || py >= bandY1) continue;
 
         // early z-test
         float z = s1.z + (s2.z - s1.z) * t;
@@ -293,6 +299,11 @@ inline void drawTriangles(
 ) {
     const size_t stride = vb.layout.stride();
 
+    const size_t begin = std::min(static_cast<size_t>(cmd.firstIndex), ib.indices.size());
+    const size_t end = (cmd.indexCount == ALL_INDICES) ? 
+        ib.indices.size() : 
+        std::min(begin + cmd.indexCount, ib.indices.size());
+
     constexpr size_t CHUNK = 4096;
     static std::vector<ClipVert> tris;
     tris.clear();
@@ -310,9 +321,9 @@ inline void drawTriangles(
                     const float* varys1[2] = {varys[0], varys[1]};
                     const float* varys2[2] = {varys[1], varys[2]};
                     const float* varys3[2] = {varys[2], varys[0]};
-                    rasterizeLine(target, program, cmd, line1, varys1);
-                    rasterizeLine(target, program, cmd, line2, varys2);
-                    rasterizeLine(target, program, cmd, line3, varys3);
+                    rasterizeLine(target, program, cmd, line1, varys1, y0, y1);
+                    rasterizeLine(target, program, cmd, line2, varys2, y0, y1);
+                    rasterizeLine(target, program, cmd, line3, varys3, y0, y1);
                 }
                 else rasterizeTriangle(target, program, cmd, pos, varys, y0, y1);
             }
@@ -320,7 +331,7 @@ inline void drawTriangles(
         tris.clear();
     };
 
-    for (size_t i = 0; i < ib.indices.size(); i += 3) {
+    for (size_t i = begin; i + 2 < end; i += 3) {
         // collect three verts
         const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
         const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
@@ -358,8 +369,27 @@ inline void drawLines(
     std::vector<std::unique_ptr<RenderTarget>>* targets
 ) {
     const size_t stride = vb.layout.stride();
+    const size_t begin = std::min(static_cast<size_t>(cmd.firstIndex), ib.indices.size());
+    const size_t end = (cmd.indexCount == ALL_INDICES) ? 
+        ib.indices.size() : 
+        std::min(begin + cmd.indexCount, ib.indices.size());
 
-    for (size_t i = 0; i + 1 < ib.indices.size(); i += 2) {
+    constexpr size_t CHUNK = 4096;
+    static std::vector<ClipVert> lines;
+    lines.clear();
+
+    auto rasterChunk = [&]() {
+        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+            for (size_t k = 0; k + 1 < lines.size(); k += 2) {
+                Vec4f pos[2]            = { lines[k].pos,   lines[k + 1].pos  };
+                const float* varys[2]   = { lines[k].vary,  lines[k + 1].vary };
+                rasterizeLine(target, program, cmd, pos, varys, y0, y1);
+            }
+        });
+        lines.clear();
+    };
+
+    for (size_t i = begin; i + 1 < end; i += 2) {
         const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
         const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
 
@@ -377,10 +407,11 @@ inline void drawLines(
                 out.vary[k] = a.vary[k] + (b.vary[k] - a.vary[k]) * t;
         }
 
-        Vec4f pos[2]            = {a.pos, b.pos};
-        const float* varys[2]   = {a.vary, b.vary};
-        rasterizeLine(target, program, cmd, pos, varys);
+        lines.push_back(a);
+        lines.push_back(b);
+        if (lines.size() >= CHUNK * 2) rasterChunk();
     }
+    rasterChunk();
 }
 
 
@@ -395,7 +426,26 @@ inline void drawPoints(
 ) {
     size_t stride = vb.layout.stride();
 
-    for (size_t i = 0; i < ib.indices.size(); ++i) {
+    const size_t begin = std::min(static_cast<size_t>(cmd.firstIndex), ib.indices.size());
+    const size_t end = (cmd.indexCount == ALL_INDICES) ? 
+        ib.indices.size() : 
+        std::min(begin + cmd.indexCount, ib.indices.size());
+
+    struct PointRec { ClipVert v; float size; };
+    
+    constexpr size_t CHUNK = 4096;
+    static std::vector<PointRec> points;
+    points.clear();
+
+    auto rasterChunk = [&]() {
+        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+            for (const PointRec& p : points)
+                rasterizePoint(target, program, cmd, p.v.pos, p.v.vary, p.size, y0, y1);
+        });
+        points.clear();
+    };
+
+    for (size_t i = begin; i < end; ++i) {
         const uint8_t* v = vb.verts.data() + ib.indices[i] * stride;
         ClipVert a;
 
@@ -404,8 +454,11 @@ inline void drawPoints(
         const float size = valo_PointSize;
 
         if (a.pos.z < 0) continue;
-        rasterizePoint(target, program, cmd, a.pos, a.vary, size);
+
+        points.push_back({a, size});
+        if (points.size() >= CHUNK) rasterChunk();
     }
+    rasterChunk();
 }
 
 }; // namespace valo

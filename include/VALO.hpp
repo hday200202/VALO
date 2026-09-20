@@ -54,6 +54,19 @@ public:
         const std::string& path
     );
 
+    void updateIndexBuffer(
+        const IndexBufferID indices,
+        const uint32_t* data,
+        const size_t count
+    );
+
+    void updateVertexBuffer(
+        const VertexBufferID vertices,
+        const void* data,
+        const size_t count,
+        const VtxLayout& newLayout = {}
+    );
+
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(
         Vec4f (*vs)(const V&, const U&, Vy&), 
