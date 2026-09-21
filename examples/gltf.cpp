@@ -88,15 +88,15 @@ struct Uniforms {
 
 struct Varyings { Vec3f worldPos; Vec3f normal; Vec2f uv; Vec4f tangent; };
 
-static Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.worldPos = (u.model * Vec4f(in.pos, 1.f)).xyz;
     out.normal   = (u.model * Vec4f(in.normal, 0.f)).xyz;
     out.tangent  = {(u.model * Vec4f(in.tangent.xyz, 0.f)).xyz, in.tangent.w};
     out.uv       = in.uv;
-    return u.mvp * Vec4f(in.pos, 1.f);
+    valo::valo_Position = u.mvp * Vec4f(in.pos, 1.f);
 }
 
-static Color fs(const Varyings& in, const Uniforms& u) {
+static void fs(const Varyings& in, const Uniforms& u) {
     const valo::Sampler samp;   // repeat + linear
 
     // --- material inputs ---
@@ -146,13 +146,13 @@ static Color fs(const Varyings& in, const Uniforms& u) {
     const Vec3f refl        = (n * (2.f * n.dot(v)) - v).normalized();
     const Vec3f ambSpecular = environmentColour(refl) * fresnelSchlickRoughness(nDotV, f0, roughness) * (1.f - roughness * 0.7f);
 
-    return {toneMap(radiance + (ambDiffuse + ambSpecular) * ao + emissive * 2.f), 1.f};
+    valo::valo_FragColor = {toneMap(radiance + (ambDiffuse + ambSpecular) * ao + emissive * 2.f), 1.f};
 }
 
 struct SkyVertex { Vec2f ndc; }; struct SkyUniforms { float aspect, tanHalf; }; struct SkyVaryings { Vec2f ndc; };
-static Vec4f skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) { out.ndc = in.ndc; return {in.ndc.x, in.ndc.y, 0.9999f, 1.f}; }
-static Color skyFs(const SkyVaryings& in, const SkyUniforms& u) {
-    return {toneMap(environmentColour(Vec3f{in.ndc.x * u.tanHalf * u.aspect, in.ndc.y * u.tanHalf, -1.f}.normalized())), 1.f};
+static void skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) { out.ndc = in.ndc; valo::valo_Position = {in.ndc.x, in.ndc.y, 0.9999f, 1.f}; return; }
+static void skyFs(const SkyVaryings& in, const SkyUniforms& u) {
+    valo::valo_FragColor = {toneMap(environmentColour(Vec3f{in.ndc.x * u.tanHalf * u.aspect, in.ndc.y * u.tanHalf, -1.f}.normalized())), 1.f};
 }
 
 // ---------------------------------------------------------------------------

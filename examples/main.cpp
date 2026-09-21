@@ -16,7 +16,7 @@ struct Vertex   { valo::Vec3f pos; valo::Vec2f uv; };
 struct Uniforms { valo::Mat4f viewProj; valo::TextureID tex; };
 struct Varyings { valo::Vec2f uv; };
 
-valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     const uint32_t i  = valo::valo_InstanceIndex;
     const float    gx = float(i % GRID);
     const float    gy = float((i / GRID) % GRID);
@@ -25,21 +25,21 @@ valo::Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
 
     const valo::Vec3f offset = valo::Vec3f{gx - half, gy - half, gz - half} * SPACING;
     out.uv = in.uv;
-    return u.viewProj * valo::Vec4f(in.pos * CUBE + offset, 1.f);
+    valo::valo_Position = u.viewProj * valo::Vec4f(in.pos * CUBE + offset, 1.f);
 }
 
-valo::Color fs(const Varyings& in, const Uniforms& u) {
+void fs(const Varyings& in, const Uniforms& u) {
     discard;
-    return texture(
+    valo::valo_FragColor = texture(
         u.tex, in.uv, 
         valo::Sampler(
             valo::Wrap::Repeat, 
             valo::Wrap::Repeat, 
             valo::Filter::Linear
         )
-    );
+    ); return;
 
-    // return {0.5f, 0.5f, 0.5f, 1.f};
+    // valo::valo_FragColor = {0.5f, 0.5f, 0.5f, 1.f};
 }
 
 int main() {

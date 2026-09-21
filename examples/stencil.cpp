@@ -51,35 +51,35 @@ struct Vertex   { Vec3f pos; Vec3f normal; Vec2f uv; Vec3f smoothNormal; };
 struct Uniforms { Mat4f mvp, model; valo::TextureID base; float outline; };
 struct Varyings { Vec3f normal; Vec2f uv; };
 
-static Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.normal = (u.model * Vec4f(in.normal, 0.f)).xyz;
     out.uv = in.uv;
-    return u.mvp * Vec4f(in.pos, 1.f);
+    valo::valo_Position = u.mvp * Vec4f(in.pos, 1.f);
 }
 
-static Color fs(const Varyings& in, const Uniforms& u) {
+static void fs(const Varyings& in, const Uniforms& u) {
     const Vec3f n = in.normal.normalized();
     const float key  = std::max(n.dot(Vec3f{-0.5f, 0.6f, 0.6f}.normalized()), 0.f);
     const float fill = std::max(n.dot(Vec3f{ 0.7f, 0.1f, 0.4f}.normalized()), 0.f) * 0.4f;
     const Vec3f albedo = texture(u.base, in.uv).xyz;
     const Vec3f lit = albedo * (0.18f + 0.9f * key + fill);
-    return {{std::pow(lit.x, 1.f / 2.2f), std::pow(lit.y, 1.f / 2.2f), std::pow(lit.z, 1.f / 2.2f)}, 1.f};
+    valo::valo_FragColor = {{std::pow(lit.x, 1.f / 2.2f), std::pow(lit.y, 1.f / 2.2f), std::pow(lit.z, 1.f / 2.2f)}, 1.f};
 }
 
 // outline pass: same mesh, pushed out along the normal in object space, flat black
-static Vec4f outlineVs(const Vertex& in, const Uniforms& u, Varyings& out) {
+static void outlineVs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.normal = in.normal; out.uv = in.uv;
-    return u.mvp * Vec4f(in.pos + in.smoothNormal * u.outline, 1.f);
+    valo::valo_Position = u.mvp * Vec4f(in.pos + in.smoothNormal * u.outline, 1.f);
 }
-static Color outlineFs(const Varyings&, const Uniforms&) { return {0.f, 0.f, 0.f, 1.f}; }
+static void outlineFs(const Varyings&, const Uniforms&) { valo::valo_FragColor = {0.f, 0.f, 0.f, 1.f}; return; }
 
 // clip pass: fullscreen quad, discards outside a circle. colorWrite is off, so
 // all it leaves behind is stencil.
 struct ClipVertex { Vec2f ndc; }; struct ClipUniforms { float aspect, radius; }; struct ClipVaryings { Vec2f ndc; };
-static Vec4f clipVs(const ClipVertex& in, const ClipUniforms&, ClipVaryings& out) { out.ndc = in.ndc; return {in.ndc.x, in.ndc.y, 0.5f, 1.f}; }
-static Color clipFs(const ClipVaryings& in, const ClipUniforms& u) {
+static void clipVs(const ClipVertex& in, const ClipUniforms&, ClipVaryings& out) { out.ndc = in.ndc; valo::valo_Position = {in.ndc.x, in.ndc.y, 0.5f, 1.f}; return; }
+static void clipFs(const ClipVaryings& in, const ClipUniforms& u) {
     if ((Vec2f{in.ndc.x * u.aspect, in.ndc.y}).length() > u.radius) discard;
-    return {1.f, 1.f, 1.f, 1.f};
+    valo::valo_FragColor = {1.f, 1.f, 1.f, 1.f};
 }
 
 // ---------------------------------------------------------------------------

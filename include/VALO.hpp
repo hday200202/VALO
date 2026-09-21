@@ -69,12 +69,12 @@ public:
 
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(
-        Vec4f (*vs)(const V&, const U&, Vy&), 
-        Color (*fs)(const Vy&, const U&)
+        void (*vs)(const V&, const U&, Vy&), 
+        void (*fs)(const Vy&, const U&)
     ) { return m_renderer.createProgram(vs, fs); }
 
     template <typename V, typename U, typename Vy>
-    ProgramID createProgram(Vec4f (*vs)(const V&, const U&, Vy&))
+    ProgramID createProgram(void (*vs)(const V&, const U&, Vy&))
     { return m_renderer.createProgram(vs); }
 
     void destroyTarget(const RenderTargetID target);

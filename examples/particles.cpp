@@ -15,7 +15,7 @@ struct GVaryings { Vec3f color; float glow; };
 
 static constexpr float kGalaxyRadius = 3.5f;
 
-Vec4f galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
+void galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
     const float r = in.radius;
     // inner stars orbit faster (roughly Keplerian) -> arms wind up over time
     const float a = in.angle + u.time * 0.9f / std::sqrt(r + 0.25f);
@@ -37,11 +37,11 @@ Vec4f galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
 
     // point size shrinks with distance (clip.w == view depth), bigger near the core
     valo_PointSize = std::clamp((5.f + 4.f * (1.f - f)) / clip.w * 2.5f, 1.f, 14.f);
-    return clip;
+    valo_Position = clip;
 }
-Color galaxyFS(const GVaryings& in, const GUniforms&) {
+void galaxyFS(const GVaryings& in, const GUniforms&) {
     // low alpha so additive blending needs several overlapping stars to saturate
-    return Color(in.color * in.glow, 0.35f);
+    valo_FragColor = Color(in.color * in.glow, 0.35f);
 }
 
 static float frand(uint32_t& seed) {                         // cheap LCG, 0..1

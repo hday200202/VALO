@@ -442,12 +442,12 @@ struct Vertex   { Vec2f pos; };                                       // NDC
 struct Uniforms { Vec3f ro, cu, cv, cw; float aspect; };               // camera origin + basis
 struct Varyings { Vec2f ndc; };
 
-static Vec4f vs(const Vertex& in, const Uniforms&, Varyings& out) {
+static void vs(const Vertex& in, const Uniforms&, Varyings& out) {
     out.ndc = in.pos;
-    return {in.pos.x, in.pos.y, 0.5f, 1.f};
+    valo::valo_Position = {in.pos.x, in.pos.y, 0.5f, 1.f};
 }
 
-static Color fs(const Varyings& in, const Uniforms& u) {
+static void fs(const Varyings& in, const Uniforms& u) {
     // p in [-aspect, aspect] x [-1, 1], like (2*fragCoord - res) / res.y
     const float fl = 2.5f;
     auto rayDir = [&](Vec2f p) {
@@ -463,7 +463,7 @@ static Color fs(const Varyings& in, const Uniforms& u) {
 
     Vec3f col = render(u.ro, rd, rdx, rdy);
     col = powv(col, 0.4545f);
-    return {col, 1.f};
+    valo::valo_FragColor = {col, 1.f};
 }
 
 int main() {

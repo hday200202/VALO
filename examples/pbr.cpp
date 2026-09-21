@@ -236,7 +236,7 @@ struct Uniforms {
 
 struct Varyings { Vec3f objPos; Vec3f objNormal; Vec3f worldPos; };
 
-static Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     Vec3f pos = in.pos;
     if (u.displace && u.detail && u.bump > 0.f) {
         const float h = heightField(in.pos, u.noiseScale) - 0.5f;
@@ -247,10 +247,10 @@ static Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     out.objPos    = in.pos;
     out.objNormal = in.normal;
     out.worldPos  = (u.model * Vec4f(pos, 1.f)).xyz;
-    return u.mvp * Vec4f(pos, 1.f);
+    valo::valo_Position = u.mvp * Vec4f(pos, 1.f);
 }
 
-static Color fs(const Varyings& in, const Uniforms& u) {
+static void fs(const Varyings& in, const Uniforms& u) {
     // --- surface detail, in object space ---
     const Vec3f objN = in.objNormal.normalized();
     Vec3f n;
@@ -310,7 +310,7 @@ static Color fs(const Varyings& in, const Uniforms& u) {
     const Vec3f refl           = (n * (2.f * n.dot(v)) - v).normalized();
     const Vec3f ambientSpec    = environmentColour(refl) * fresnelSchlickRoughness(nDotV, f0, roughness) * (1.f - roughness * 0.7f);
 
-    return {toneMap(radiance + ambientDiffuse + ambientSpec), 1.f};
+    valo::valo_FragColor = {toneMap(radiance + ambientDiffuse + ambientSpec), 1.f};
 }
 
 // sky: one fullscreen triangle, ray per pixel from the fixed camera
@@ -318,10 +318,10 @@ struct SkyVertex   { Vec2f ndc; };
 struct SkyUniforms { float aspect, tanHalf; };
 struct SkyVaryings { Vec2f ndc; };
 
-static Vec4f skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) { out.ndc = in.ndc; return {in.ndc.x, in.ndc.y, 0.9999f, 1.f}; }
-static Color skyFs(const SkyVaryings& in, const SkyUniforms& u) {
+static void skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) { out.ndc = in.ndc; valo::valo_Position = {in.ndc.x, in.ndc.y, 0.9999f, 1.f}; return; }
+static void skyFs(const SkyVaryings& in, const SkyUniforms& u) {
     const Vec3f dir = Vec3f{in.ndc.x * u.tanHalf * u.aspect, in.ndc.y * u.tanHalf, -1.f}.normalized();
-    return {toneMap(environmentColour(dir)), 1.f};
+    valo::valo_FragColor = {toneMap(environmentColour(dir)), 1.f};
 }
 
 // ---------------------------------------------------------------------------

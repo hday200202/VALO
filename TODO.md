@@ -1,78 +1,148 @@
 # VALO TODO
 
-Software renderer feature work, roughly in order of payoff. Optimization comes
-after all of this is done.
+Ordered by what it takes to bring the software renderer to parity with the
+eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
+a gate for the next.
 
 ## State (2026-09-20)
 
-~3.3k lines of library, 7 examples, 16/24 feature items done. Every feature has
-a sanitizer-verified harness. The dev-facing API (Window -> VALO -> create* ->
-RenderCommand -> submit, typed shader callbacks) is settled and Vulkan-shaped;
-the backend should slot under it without dev code changing.
+~3.3k lines of library, 7 examples, 18/28 feature items done, every feature
+behind a sanitizer-verified harness. The dev-facing API (Window -> VALO ->
+create* -> RenderCommand -> submit, typed C++ shader callbacks) is settled and
+Vulkan-shaped. Benchmark (DamagedHelmet, 1280x960, lambert, M4): VALO 8.5 ms,
+SwiftShader 3.0 ms, MoltenVK GPU 0.7 ms. The 2.85x gap to SwiftShader is its
+LLVM-JIT'd 4-wide fragment shading; not something the Vulkan backend inherits.
 
-## Cleanup before the backend (from the 2026-09-20 review)
+---
+
+## 1. API parity — things the Vulkan backend would force into the API
+
+These are the gaps that would show up the moment the backend is written. Doing
+them now means the API doesn't move later. ~3-5 days.
+
+- [ ] **GLSL built-ins** — shaders now write `valo_Position` / `valo_FragColor`
+      (done, mirrors `gl_Position` / fragment `out`). Same thread-local pattern
+      for the rest:
+      - `valo_VertexIndex` (`gl_VertexIndex`) — set from the index value in the
+        geometry loop. Trivial.
+      - `valo_FragCoord` (`gl_FragCoord`) — `{x + 0.5, y + 0.5, z, 1/w}` set per
+        pixel before `fsThunk`. Most-used after FragColor.
+      - `valo_FrontFacing` (`gl_FrontFacing`) — `front` is already computed in
+        `setupTriangle`; stash on `ScreenTri`, set before the shader. Makes the
+        winding trap debuggable (color back faces red).
+      - `valo_FragDepth` (`gl_FragDepth`) — read after the shader; if written,
+        use it instead of interpolated z. Lets `sdf.cpp` depth-test against
+        meshes.
+      - `valo_PointCoord` (`gl_PointCoord`) — with AA points, later.
+      - `dFdx` / `dFdy` / `fwidth` — not a global, the real gap: screen-space
+        derivatives. Needed for mipmap LOD and antialiased SDF edges (every
+        UI's crisp rounded rect is `fwidth(d)`). Software needs 2x2 quad
+        shading or analytic per-triangle derivatives. Do with mipmaps.
+- [ ] **`updateTexture(id, data)`** — the only missing dynamic path. UILO font
+      atlases and streamed textures need it. Software: memcpy; Vulkan: staging
+      copy. Half a day.
+- [ ] **sRGB** — `linear` flag on `createTexture` (decode to linear on load),
+      encode on write to the backbuffer. Vulkan expresses this as `_SRGB` image
+      formats, so it has to be a texture/target property, not shader code.
+      Every PBR demo currently does `pow(2.2)` by hand. Half a day; land it in
+      the shared pixel path (section 2).
+- [ ] **Mipmaps** — generate the chain at `createTexture`; LOD from per-triangle
+      uv derivatives (`du/dx`, `dv/dy` in `setupTriangle`), `Sampler` gains a
+      mip filter. Vulkan samplers assume a chain; without one GPU textures
+      shimmer exactly like CPU ones do now. 1-2 days; the one substantive
+      rasterizer item left.
+- [ ] **Uniform buffer resource** — `createUniformBuffer` / `updateUniformBuffer`
+      + a `UniformBufferID` the shader can read from. The 1 KB inline
+      `setUniforms` maps to Vulkan push constants badly (128 B guaranteed); bone
+      arrays and light lists want a real buffer. Half a day of API; software
+      side is trivial.
+- [ ] **Viewport rect** on `RenderCommand` — draw into a sub-rect of the target.
+      Vulkan dynamic viewport. Half a day, alongside the scissor below.
+- [ ] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
+      for triangles, pixel test for lines/points). Vulkan dynamic scissor. The
+      stencil clip stack stays the general mechanism. Half a day.
+- [ ] **Texture formats** — at least R8 (font atlases, masks) and RGBA32F
+      (HDR targets). `createTexture` gains a format; `texture()` unpacks per
+      format. Vulkan has these for free; software needs them to exist so the
+      API doesn't change. 1 day.
+
+## 2. Cleanup — before the backend, because the backend duplicates the shape
 
 - [ ] **Shared pixel path** — the three rasterizers duplicate the per-pixel
       sequence (depth test -> stencil test -> shade -> discard -> depth write ->
-      stencil op -> blend). Pull it into one `shadePixel()` helper so sRGB/MRT
-      land in one place. DrawFuncs.hpp is 558 lines; a stage map comment at the
-      top would help too.
+      stencil op -> blend). One `shadePixel()` helper so sRGB / MRT / formats
+      land in one place. DrawFuncs.hpp is 558 lines; add a stage-map comment
+      at the top.
 - [ ] **Renderer.hpp -> Renderer.cpp** — 18 inline definitions still in the
       header (VALO, Window, ThreadPool, RenderTarget are done).
 - [ ] **Sentinel macros -> constexpr** — `EMPTY_BUFFER`, `DEFAULT_PROGRAM`,
       `ALL_INDICES`, `MAX_INSTANCES` in RenderCommand.hpp.
 - [ ] **Logging hook** — 8 `std::cout` sites; one `valo::log(level, msg)` the
       dev can redirect.
-- [ ] **Uniform limit** — `MAX_UNIFORM_BYTES = 256`; gltf.cpp is at ~200. Bump
-      to 512 or make it a template parameter before someone hits it.
 - [ ] **Quat.hpp** is empty — needed for glTF animation / camera code.
+- [x] **Uniform limit** raised to 1024 B (was 256).
 
-## Features
+## 3. Backend interface extraction
 
-- [x] **OBJ loading** — tinyobjloader vendored via `build.sh`; wrapper in
-      `utils/OBJParser.hpp` gives positions/uvs/normals, face triples, materials,
-      and per-face material ids. Mesh/vertex-buffer assembly is dev-side.
-- [x] **glTF loading** — cgltf vendored (`ext/cgltf`, v1.15); wrapper in
-      `utils/GLTFParser.hpp`: one interleaved vertex array + one index array,
-      meshes → primitives as draw ranges, PBR materials with resolved texture
-      paths, nodes with flattened world transforms. Verified on Khronos Box
-      and DamagedHelmet.
-- [x] **Draw ranges** — `firstIndex` / `indexCount` on `RenderCommand`
-      (`ALL_INDICES` default). One vertex+index buffer, many materials.
-- [x] **Bilinear filtering** — 2x2 tap in `texture()`, `Filter::Linear`.
-- [ ] **Mipmaps** — generate the chain at `createTexture`; pick LOD from uv
-      derivatives (per-triangle `du/dx`, `dv/dy` computed in the rasterizer).
-      Fixes the crawling on far/oblique surfaces.
-- [x] **Sampler state** — `Sampler{wrapU, wrapV, filter}` passed to
-      `texture()`; Repeat / Clamp / Mirror, Nearest / Linear. Default is
-      repeat + linear.
-- [ ] **sRGB** — decode textures to linear on sample, encode on write to the
-      backbuffer. Needed the moment lighting is involved.
-- [x] **Instancing** — `instanceCount` on `RenderCommand` + `valo_InstanceIndex`
-      built-in read by the vertex shader. (Per-instance vertex buffer with
-      instance step rate is a possible later addition.)
-- [x] **Dynamic buffers** — `updateVertexBuffer(id, data, count[, newLayout])` /
-      `updateIndexBuffer(id, data, count)`.
-- [ ] **MRT** — fragment shader outputs N colors, command binds N targets.
-      Needed for deferred shading.
-- [x] **Depth as texture** — `textureDepth()` samples a target's depth buffer.
-- [x] **Depth-only passes** — `colorWrite` on `RenderCommand`: depth is
-      tested/written, fragment shader and color write are skipped. Shadow maps
-      are now entirely dev-side (target + layer + `textureDepth`).
-- [x] **Fragment discard** — `discard;` in a fragment shader drops the pixel;
-      discarded pixels write no depth/stencil. `colorWrite = false` still runs
-      the shader (so SDF clips work); a program created with `createProgram(vs)`
-      has no fragment stage at all (the cheap depth-only path).
-- [x] **Far-plane reject** — fragments with `z > 1` are skipped. Note: geometry
-      placed at exactly `z = 1` (sky quads) gets rounding-dropped; use `0.9999`.
+- [ ] Split `Renderer` into an abstract interface + `SoftwareRenderer`.
+      Everything above `Renderer` (VALO, layers, clip stack, IDs, RenderCommand)
+      stays identical. `RenderTarget` becomes backend-owned.
+- [ ] Decide the shader contract for the GPU side: GLSL/SPIR-V passed to a
+      `createProgram` overload. Optionally the dual-compile header (same source
+      builds as C++ and GLSL) to shrink the rewrite — revisit once the backend
+      exists and the real constraints are known.
+
+## 4. Vulkan backend
+
+- [ ] Instance / device / queues / swapchain / frames-in-flight / sync.
+- [ ] Resources: buffers (staging upload), images + samplers, uniform buffers.
+- [ ] Pipeline cache keyed on `(program, RenderCommand state, vertex layout)`.
+- [ ] Layers -> render passes; targets -> framebuffers; `textureDepth` ->
+      depth-image sampling; stencil ops verbatim; dynamic viewport/scissor.
+- [ ] `gltf.cpp` running unchanged on both backends is the finish line.
+      Estimate: 3-4 weeks.
+
+## 5. Nice-to-have (either backend, not blocking)
+
+- [ ] **MRT** — fragment shader outputs N colors, command binds N targets
+      (deferred shading).
+- [ ] **Per-instance vertex buffer** (instance step rate) as an alternative to
+      `valo_InstanceIndex` + uniforms.
+- [ ] **Per-command sort key** within a layer (back-to-front for transparency,
+      by program/texture for state coherence).
+- [ ] **2D / 3D quick-config presets** — 2D = pixel-space ortho tracking
+      resize, no depth, alpha blend, no cull, plus a sprite/quad helper for
+      UI-heavy use (UILO). `clipstack.cpp` is the template.
 - [ ] **Point coverage / anti-aliased points** — disc coverage per edge pixel,
-      blended via alpha. Removes the last of the point-size stepping.
-- [x] **Stencil buffer** — 8-bit per pixel; `stencilTest` (Always/Equal/
-      NotEqual/Less/Greater) + `stencilOp` (Keep/Zero/Replace/Incr/Decr) +
-      `stencilRef` on `RenderCommand`. Test is early, op applies only to pixels
-      that survive depth/discard. Demo: `stencil.cpp` (outline + SDF circle clip).
-- [ ] **Other GLSL built-ins** — `valo_FragCoord`, `valo_FrontFacing`,
-      `valo_VertexID`, etc. Same pattern as `valo_PointSize`.
+      blended via alpha.
+
+## 6. Software-renderer optimization (never blocking)
+
+- [x] Multithreaded rasterization — `ThreadPool` (generation + active-count,
+      TSan-clean) + `forEachBand`; geometry phase on the main thread into a
+      chunked buffer, workers rasterize disjoint row bands (`pool.size() * 8`).
+      Triangles, lines, points, clear all banded.
+- [x] Triangle setup once per triangle (`setupTriangle` -> `ScreenTri`);
+      barycentrics via `invArea` multiply; bilinear on packed ABGR32.
+- Profile (25^3 cubes, 4K): geometry ~5 ms, raster ~31 ms of which ~20 ms is
+  fragment shading + `writePixel`, ~10 ms per-triangle floor. Band scan is
+  0.03 ms — binning is NOT worth it.
+- What would close the SwiftShader gap, in order of payoff: (1) shade 4 pixels
+  per fragment call so the surrounding loop vectorizes — changes the shader
+  contract; (2) explicit SIMD for the fixed parts (edge stepping, depth
+  compare, interpolation) — keeps the API, ~1.3x; (3) a JIT — out of scope.
+- [ ] Parallel geometry phase (fixed index range per worker, order preserved).
+- [ ] Vertex cache: shade each unique index once per draw.
+- [ ] Per-phase timing (clear / draw / show) printed with the fps.
+
+## Done
+
+- [x] OBJ loading (tinyobjloader) · glTF loading (cgltf) · draw ranges ·
+      dynamic vertex/index buffers · bilinear · sampler state (wrap/filter) ·
+      instancing (`valo_InstanceIndex`) · depth as texture · depth-only passes
+      (`colorWrite`, vs-only programs) · fragment discard · far-plane reject ·
+      stencil buffer (test/op/ref) · clip stack (`pushClip`/`popClip`) ·
+      Window (pixel-sized, input) · multithreaded raster.
 
 ## Examples
 
@@ -87,60 +157,11 @@ the backend should slot under it without dev code changing.
   shell along smoothed normals) and an SDF circle clip (discard + Incr).
 - `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
   scrolling list with three nested `pushClip`s. `C` toggles clipping.
-
-## API / ergonomics
-
-- [x] **Clip stack** — `VALO::pushClip(shape)` / `popClip()` on the stencil
-      buffer: any shape (SDF rounded rects, meshes), unbounded nesting, nested
-      pushes intersect. Content submitted inside gets `Equal(depth)` + `Keep`.
-      Stack is cleared at `beginFrame`. Demo: `clipstack.cpp` (nested UI panels).
-- [ ] **Scissor rect** — optional fast path for axis-aligned clips (bbox clamp
-      instead of a per-pixel stencil compare). Vulkan dynamic scissor.
-- [ ] **2D / 3D quick-config presets** — a 2D preset = pixel-space orthographic
-      projection tracking resize, no depth test/write, alpha blend, no cull;
-      3D preset = current defaults. Plus a sprite/quad helper (shared unit quad
-      + per-draw `{pos, size, uvRect, tint}` uniforms) for UI-heavy use (UILO).
-- [ ] **Per-command sort key** within a layer (back-to-front for transparency,
-      by program/texture for state coherence).
-- [x] **Window** — `valo::Window` owns the SDL window; pixel-sized on Retina,
-      `pollEvents`, `Key`/`MouseButton` enums (SDL scancode values),
-      `isKeyDown` / `wasKeyPressed` / `mouseDelta` / `scrollDelta`.
-- [ ] Move remaining header implementations into `.cpp` files once the
-      interfaces settle (VALO done; Renderer, DrawFuncs, RenderTarget partial).
+- `bench/` — `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
+  scene/shader/resolution. Run the Vulkan one on SwiftShader with
+  `VK_ICD_FILENAMES=$PWD/ext/swiftshader/build/Darwin/vk_swiftshader_icd.json`.
 
 ## Deferred / probably not
 
 - **MSAA** — expensive in software; `renderScale` already gives supersampling.
 - **Compute** — out of scope; this is a graphics library.
-- **GLSL translation / dual-compile shaders** — revisit when the Vulkan
-  backend exists and the real constraints are known.
-
-## Later: Vulkan backend
-
-- Abstract `Renderer` behind an interface once the software renderer is
-  feature-complete; keep the dev-facing API (`createProgram`, `RenderCommand`,
-  layers, IDs) identical. Only shader source changes.
-
-## Optimization
-
-- [x] **Multithreaded rasterization** — `ThreadPool` (generation +
-      active-count, TSan-clean) + `forEachBand`: geometry phase on the main
-      thread into a chunked buffer, workers rasterize disjoint row bands
-      (`pool.size() * 8` bands). Triangles, lines, points, and clear all banded.
-- [ ] Parallel geometry phase (triangles are independent; preserve output order
-      by giving each worker a fixed index range).
-- [ ] Per-phase timing (clear / draw / show) printed with the fps to see where
-      frame time actually goes; `show()`'s `SDL_UpdateTexture` upload is the
-      big serial chunk.
-- [x] Triangle setup once per triangle (`setupTriangle` → `ScreenTri`), bands
-      only band-clamp + pixel loop. Barycentrics via `invArea` multiply.
-      Bilinear on packed ABGR32 (`lerpABGR32`, 0..256 weights, exact).
-- Profile (25^3 cubes, 4K): geometry ~5 ms, raster ~31 ms of which ~20 ms is
-  fragment shading + `writePixel`, ~10 ms per-triangle floor. Band scan is
-  0.03 ms — binning is NOT worth it. Next real step is a sampling profiler
-  (Instruments) on the fragment path, not more guessing.
-- Incremental edge functions (step, don't recompute per pixel).
-- Vertex cache: shade each unique index once per draw.
-- SIMD inner loops (interpolation, blending, sampling).
-- Depth-test before shading (early-z) is already the order; keep it.
-- Profile with a real scene (Iron Man OBJ: 217k tris, 11 materials).

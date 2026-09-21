@@ -40,21 +40,21 @@ struct Vertex   { Vec2f pos; };                                 // 0..1
 struct Uniforms { Mat4f proj; Vec2f pos, size; Vec4f color; float radius; };
 struct Varyings { Vec2f local; };                               // pixel offset inside the rect
 
-static Vec4f vs(const Vertex& in, const Uniforms& u, Varyings& out) {
+static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
     const Vec2f p = u.pos + in.pos * u.size;
     out.local = in.pos * u.size;
-    return u.proj * Vec4f(p.x, p.y, 0.f, 1.f);
+    valo::valo_Position = u.proj * Vec4f(p.x, p.y, 0.f, 1.f);
 }
 
 // rounded-rect SDF: distance from the rect shrunk by the radius, then re-expanded
-static Color fs(const Varyings& in, const Uniforms& u) {
+static void fs(const Varyings& in, const Uniforms& u) {
     const Vec2f half = u.size * 0.5f;
     const Vec2f p = in.local - half;
     const Vec2f q = valo::abs(p) - (half - Vec2f{u.radius, u.radius});
     const Vec2f qp = {std::max(q.x, 0.f), std::max(q.y, 0.f)};
     const float d = qp.length() + std::min(std::max(q.x, q.y), 0.f) - u.radius;
     if (d > 0.f) discard;
-    return u.color;
+    valo::valo_FragColor = u.color;
 }
 
 // ---------------------------------------------------------------------------

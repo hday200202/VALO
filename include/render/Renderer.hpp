@@ -57,8 +57,8 @@ public:
 
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(
-        Vec4f (*vs)(const V&, const U&, Vy&), 
-        Color (*fs)(const Vy&, const U&)
+        void (*vs)(const V&, const U&, Vy&), 
+        void (*fs)(const Vy&, const U&)
     ) {
         if (!m_freePrograms.empty()) {
             ProgramID id = m_freePrograms.back();
@@ -73,7 +73,7 @@ public:
 
     // depth/stencil-only program: no fragment stage at all (shadow maps, rect clips)
     template <typename V, typename U, typename Vy>
-    ProgramID createProgram(Vec4f (*vs)(const V&, const U&, Vy&)) {
+    ProgramID createProgram(void (*vs)(const V&, const U&, Vy&)) {
         Program p;
         p.vsThunk = &vsThunk<V, U, Vy>;
         p.vsFn    = reinterpret_cast<RawFn>(vs);
