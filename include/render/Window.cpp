@@ -287,4 +287,29 @@ float Window::getAspect() const {
     return float(size.x) / float(size.y);
 }
 
+bool Window::create(
+    const std::string& title, 
+    const Vec2u& size, 
+    const WinFlags flags,
+    const bool respectOSScale
+) {
+    SDL_DestroyWindow(m_window);
+
+    m_window = SDL_CreateWindow(
+        title.c_str(), 
+        int(size.x), int(size.y), 
+        SDL_WindowFlags(uint64_t(flags | WinFlags::Hidden))
+    );
+
+    if (!m_window) {
+        SDL_Log("Window: %s", SDL_GetError());
+        return false;
+    }
+
+    setSize(size);
+    if ((flags & WinFlags::Hidden) == WinFlags::None) show();
+    m_open = true;
+    return true;
+}
+
 }

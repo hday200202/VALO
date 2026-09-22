@@ -152,6 +152,13 @@ public:
     float scrollDelta() const   { return m_scrollDelta; }
     float getAspect() const;
 
+    bool create(
+        const std::string& title, 
+        const Vec2u& size, 
+        const WinFlags flags = WinFlags::Resize | WinFlags::HiDPI,
+        const bool respectOSScale = false
+    );
+
 private:
     SDL_Window* m_window            = nullptr;
     bool        m_open              = false;

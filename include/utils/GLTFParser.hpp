@@ -11,6 +11,7 @@
 
 #include "../math/Vec.hpp"
 #include "../math/Mat.hpp"
+#include "../render/VertexBuffer.hpp"
 
 namespace valo {
 
@@ -27,7 +28,16 @@ struct GLTFMaterial {
         emissiveTex;
 };
 
-struct GLTFVertex { Vec3f pos; Vec3f normal; Vec2f uv; };
+struct GLTFVertex { 
+    Vec3f pos; Vec3f normal; Vec2f uv; 
+    static VtxLayout layout() {
+        return {{ 
+            VtxAttrib::Vec3f, 
+            VtxAttrib::Vec3f, 
+            VtxAttrib::Vec2f
+        }};
+    }
+};
 
 struct GLTFPrimitive {
     uint32_t    firstIndex, indexCount;
@@ -103,9 +113,9 @@ inline GLTF parseGLTF(const std::string& path) {
             m.emissive_factor[2]
         };
 
-        mat.normalTex = texPath(m.normal_texture);
-        mat.occlusionTex = texPath(m.occlusion_texture);
-        mat.emissiveTex = texPath(m.emissive_texture);
+        mat.normalTex       = texPath(m.normal_texture);
+        mat.occlusionTex    = texPath(m.occlusion_texture);
+        mat.emissiveTex     = texPath(m.emissive_texture);
 
         out.materials.push_back(mat);
     }

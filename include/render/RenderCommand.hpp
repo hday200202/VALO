@@ -9,6 +9,7 @@ inline constexpr uint32_t EMPTY_BUFFER      = UINT32_MAX;
 inline constexpr uint32_t DEFAULT_PROGRAM   = UINT32_MAX;
 inline constexpr uint32_t ALL_INDICES       = UINT32_MAX;
 inline constexpr uint32_t MAX_INSTANCES     = UINT32_MAX; // Essentially unlimited for now
+inline constexpr uint32_t EMPTY_TEXTURE     = UINT32_MAX;
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
