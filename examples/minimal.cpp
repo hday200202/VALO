@@ -3,78 +3,179 @@
 
 using namespace valo;
 
-// Vertex
-struct Vertex {
-    Vertex(
-        const Vec3f& pos, 
-        const Color& color, 
-        const Vec3f& normal, 
-        const Vec2f& uv
-    ) : pos(pos), color(color), normal(normal), uv(uv) {}
+constexpr float PI = 3.14159265f;
 
-    Vec3f pos; 
-    Color color; 
-    Vec3f normal; 
-    Vec2f uv;
+// Using GLTFVertex
 
-    static const VtxLayout layout() {
-        return {{
-            VtxAttrib::Vec3f, 
-            VtxAttrib::Vec4f, 
-            VtxAttrib::Vec3f, 
-            VtxAttrib::Vec2f
-        }};
-    }
-};
-
-struct Uniforms {};
+struct Uniforms { Mat4f mvp; TextureID tex; };
+struct BGUniforms { Vec3f forward; Vec3f right; Vec3f up; float aspect; float tanHalf; };
 struct Varyings { Vec2f uv; };
 
-void vertShader(const Vertex& in, const Uniforms& u, Varyings& out) {
-    // transform verts
+void vertShader(const GLTFVertex& in, const Uniforms& u, Varyings& out) {
     out.uv = in.uv;
-    valo_Position = {in.pos, 1.f};
+    valo_Position = u.mvp * Vec4f(in.pos, 1.f);
 }
 
 void fragShader(const Varyings& in, const Uniforms& u) {
-    // output color based on where the pixel is located
-    valo_FragColor = {in.uv.x, in.uv.y, 0.5, 1.f};
+    Sampler sampler;
+    sampler.filter = Filter::Nearest;
+    valo_FragColor = texture(u.tex, in.uv, sampler);
 }
 
+
+void updateTitle(Window& window, const float fps, const bool vsync);
+
+
 int main() {
-    Window window("Minimal", {800, 600});
+    /*
+        Initialize VALO and Window
+    */
     VALO valo;
+    Window window("Minimal", {800, 600});
 
     valo.init(window);
+    valo.setVsync(false);
+    valo.setLayerClearColor(VALO::BASE_LAYER, {.7f, .7f, .9f, 1.f});
 
-    Vertex fullscreen[4] = {
-        {{-1,  1,  0}, {1, 1, 1, 1}, {1, 1, 1}, {0, 0}},
-        {{ 1,  1,  0}, {1, 1, 1, 1}, {1, 1, 1}, {1, 0}},
-        {{-1, -1,  0}, {1, 1, 1, 1}, {1, 1, 1}, {0, 1}},
-        {{ 1, -1,  0}, {1, 1, 1, 1}, {1, 1, 1}, {1, 1}}
-    };
 
-    uint32_t fullscreenIndices[6] = {
-        0, 1, 2,
-        1, 3, 2 
-    };
+    GLTF helmet = parseGLTF("examples/gltf/DamagedHelmet/DamagedHelmet.gltf");
+    auto helmVerts = valo.createVertexBuffer(helmet.vertices.data(), helmet.vertices.size(), {{VtxAttrib::Vec3f, VtxAttrib::Vec3f, VtxAttrib::Vec2f}});
+    auto helmIndcs = valo.createIndexBuffer(helmet.indices.data(), helmet.indices.size());
+    auto helmPrgrm = valo.createProgram(vertShader, fragShader);
+    auto helmTextr = valo.createTexture("examples/gltf/DamagedHelmet/Default_albedo.jpg");
 
-    auto verts = valo.createVertexBuffer(fullscreen, 4, Vertex::layout());
-    auto indcs = valo.createIndexBuffer(fullscreenIndices, 6);
-    auto prgrm = valo.createProgram(vertShader, fragShader);
 
+    /*
+        Store the IDs of your vertices, indices, and program in a render
+        command. This can be done in the hot-loop, just done here since we're
+        only rendering one thing that never changes.
+    */
     RenderCommand cmd;
-    cmd.verts = verts;
-    cmd.indices = indcs;
-    cmd.program = prgrm;
-    cmd.winding = VtxWinding::CW;
+    cmd.verts       = helmVerts;
+    cmd.indices     = helmIndcs;
+    cmd.program     = helmPrgrm;
 
+
+    /*
+        Cube Positioning and Camera Setup
+    */
+    Mat4f helmPos       = Mat4f::translation({0, 0, -2.f});
+    Vec3f cameraPos     = {0.f, 0.f, 0.f};
+    Vec3f forward       = {0.f, 0.f, 0.f};
+    Vec3f right         = {0.f, 0.f, 0.f};
+    Vec3f up            = {0.f, 1.f, 0.f};
+
+    float yaw           = 0;
+    float pitch         = 0;
+
+    float nearPlane     = 0.1f;
+    float farPlane      = 500.f;
+
+    Clock titleClock;
+    titleClock.start();
+
+    /*
+        The main loop on window.pollEvents()
+    */
     while (window.pollEvents()) {
-        if (window.wasKeyPressed(Key::C)) std::cout << "C is down" << std::endl;
+        const float moveSpeed = 2.f * valo.getDeltaTime();
+        const float frameRate = 1 / valo.getDeltaTime();
 
+        if (titleClock.elapsed().asSeconds() >= 0.5) {
+            updateTitle(window, frameRate, valo.getVsync());
+            titleClock.reset();
+        }
+
+        // Grab or release the mouse on left click
+        if (window.wasMousePressed(MouseButton::Left)) {
+            if (window.isMouseGrabbed()) window.releaseMouse();
+            else window.grabMouse();
+        }
+
+
+        // Release the mouse on escape
+        if (window.wasKeyPressed(Key::Escape)) window.releaseMouse();
+
+
+        // Camera movement via mouse deltas
+        if (window.isMouseGrabbed()) {
+            Vec2f mouseDelta = window.mouseDelta();
+            yaw     += mouseDelta.x * 0.005f;
+            pitch   -= mouseDelta.y * 0.005f;
+            window.setMousePositionLocal(window.getCenterLocal());
+        }
+
+
+        // Camera movement via arrow keys
+        if (window.isKeyDown(Key::Left))    { yaw   -= moveSpeed; }
+        if (window.isKeyDown(Key::Right))   { yaw   += moveSpeed; }
+        if (window.isKeyDown(Key::Up))      { pitch += moveSpeed; }
+        if (window.isKeyDown(Key::Down))    { pitch -= moveSpeed; }
+
+        if (window.wasKeyPressed(Key::Num1)){ valo.setRenderScale(1.00f); }
+        if (window.wasKeyPressed(Key::Num2)){ valo.setRenderScale(0.75f); }
+        if (window.wasKeyPressed(Key::Num3)){ valo.setRenderScale(0.50f); }
+        if (window.wasKeyPressed(Key::Num4)){ valo.setRenderScale(0.25f); }
+
+        if (window.wasKeyPressed(Key::V))   { valo.setVsync(!valo.getVsync()); }
+
+
+        // Clamp the pitch so the camera doesn't flip
+        pitch   = std::clamp(pitch, -1.5f, 1.5f);
+
+
+        // Calculate the camera's forward vector
+        forward = Vec3f{
+            std::sin(yaw) * std::cos(pitch), 
+            std::sin(pitch), 
+            -std::cos(yaw) * std::cos(pitch)
+        }.normalized();
+
+
+        // Calculate the camera's right vector
+        right   = forward.cross(up).normalized();
+
+
+        // Camera movement via WASD, Left Shift and Space
+        if (window.isKeyDown(Key::A))       { cameraPos -= right    * moveSpeed; }
+        if (window.isKeyDown(Key::D))       { cameraPos += right    * moveSpeed; }
+        if (window.isKeyDown(Key::W))       { cameraPos += forward  * moveSpeed; }
+        if (window.isKeyDown(Key::S))       { cameraPos -= forward  * moveSpeed; }
+        if (window.isKeyDown(Key::LShift))  { cameraPos -= up       * moveSpeed; }
+        if (window.isKeyDown(Key::Space))   { cameraPos += up       * moveSpeed; }
+
+
+        /*
+            Calculate the view matrix via the static lookAt function 
+            (from camera position, look at camera position + forward)
+
+            Calculate the projection matrix via the static perspective function
+            (fov = radians)
+
+            Calculate the mvp matrix (model - cubePos, view - what's on screen,
+            projection - perspective)
+        */
+        const Mat4f view = valo::Mat4f::lookAt(cameraPos, cameraPos + forward, up);
+        const Mat4f proj = Mat4f::perspective(PI / 2.f, window.getAspect(), nearPlane, farPlane);
+        const Mat4f mvp = proj * view;
+
+
+        // Upload the mvp matrix into your uniforms for use in shaders
+        cmd.setUniforms(Uniforms{mvp * helmPos * helmet.nodes[0].world, helmTextr});
+
+
+        // clear, push to render queue, endFrame flushes queue and draws
         valo.beginFrame();
-        // submit RenderCommands
         valo.submit(cmd);
         valo.endFrame();
     }
+}
+
+void updateTitle(Window& window, const float fps, const bool vsync) {
+    window.setTitle(
+        "Minimal    FPS: " + 
+        std::to_string(static_cast<int>(fps)) + 
+        "\t" + "VSYNC: " + 
+        (vsync ? "ON" : "OFF")
+    );
 }

@@ -89,12 +89,11 @@ int main() {
     Vec3f camPos = {0.f, 2.5f, 7.f};
     const Vec3f camFwd = Vec3f{0.f, -0.35f, -1.f}.normalized();
     const Vec3f camRight = camFwd.cross({0.f, 1.f, 0.f}).normalized();
-    uint64_t lastTicks = SDL_GetTicks();
+    Clock timer;
+    timer.start();
 
     while (window.pollEvents()) {
-        const uint64_t now = SDL_GetTicks();
-        const float dt = (now - lastTicks) / 1000.f;
-        lastTicks = now;
+        const float dt = float(valo.getDeltaTime());
         if (window.wasKeyPressed(Key::Escape)) window.close();
 
         const float speed = 3.f * dt;
@@ -109,7 +108,7 @@ int main() {
         const Vec2u size   = window.getSize();
         const float aspect = float(size.x) / float(size.y);
         const Mat4f proj   = Mat4f::perspective(std::numbers::pi_v<float> / 3.f, aspect, 0.1f, 100.f);
-        const float t      = SDL_GetTicks() / 1000.f;
+        const float t      = float(timer.elapsed().asSeconds());
 
         valo.beginFrame();
 

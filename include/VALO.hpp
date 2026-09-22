@@ -2,11 +2,19 @@
 
 #include "render/Window.hpp"
 #include "render/Renderer.hpp"
+#include "utils/GLTFParser.hpp"
+#include "utils/OBJParser.hpp"
+#include "utils/Clock.hpp"
 
 namespace valo {
 
 using LayerID = uint32_t;
 
+
+/* ========================================================================= //
+    VALO - Vulkan Abstracted Layer Orchestrator
+    Features:
+// ========================================================================= */
 class VALO {
 public:
     VALO() = default;
@@ -94,6 +102,8 @@ public:
     void pushClip(const RenderCommand& shape, const LayerID layer = BASE_LAYER);
     void popClip(const LayerID layer = BASE_LAYER);
 
+    double getDeltaTime() const;
+
     void resize();
     void shutdown();
 
@@ -113,6 +123,9 @@ private:
     std::vector<LayerID> m_layerOrder;
     std::vector<RenderCommand> m_clipStack;
     Renderer m_renderer;
+
+    Clock m_dtClock;
+    double m_deltaTime = 0.5f;
 
     Window* m_window = nullptr;
 };

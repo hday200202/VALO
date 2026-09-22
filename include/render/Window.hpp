@@ -124,6 +124,10 @@ public:
     void releaseKeyboard();
     bool isKeyboardGrabbed() const;
 
+    void focus();
+    void setFocusable(const bool focusable);
+    bool isFocusable() const;
+
     void show();
     void hide();
     void minimize();

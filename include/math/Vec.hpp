@@ -311,4 +311,7 @@ inline Color ABGR32ToColor(const uint32_t c) {
     return Vec4f{r / 255.f, g / 255.f, b / 255.f, a / 255.f};
 }
 
+template <typename T> T lerp(const T& a, const T& b, const T t)
+{ return a + ((b - a) * t); }
+
 } // namespace valo

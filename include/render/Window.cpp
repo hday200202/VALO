@@ -247,6 +247,15 @@ bool Window::isKeyboardGrabbed() const {
     return SDL_GetWindowKeyboardGrab(m_window);
 }
 
+void Window::focus() { SDL_RaiseWindow(m_window); }
+void Window::setFocusable(const bool focusable) {
+    SDL_SetWindowFocusable(m_window, focusable);
+}
+bool Window::isFocusable() const {
+    return SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS;
+}
+
+
 void Window::show() {
     SDL_ShowWindow(m_window);
 }

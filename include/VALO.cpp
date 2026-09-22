@@ -27,8 +27,11 @@ bool VALO::init(Window& window, const RenderConfig& cfg) {
 
 // clears each target once, using the clear color of the first layer (in draw order) that uses it
 void VALO::beginFrame() {
+    m_deltaTime = m_dtClock.elapsed().asSeconds();
+    m_dtClock.reset();
+    m_dtClock.start();
+    
     if (m_window && m_window->resized()) resize();
-
     m_clipStack.clear();
     std::vector<RenderTargetID> cleared;
 
@@ -225,6 +228,10 @@ void VALO::popClip(
     c.stencilOp     = StencilOp::Decr;
     m_layers[layer].cmdQueue.push_back(c);
     m_clipStack.pop_back();
+}
+
+double VALO::getDeltaTime() const {
+    return std::min(m_deltaTime, 0.1);
 }
 
 }
