@@ -13,12 +13,16 @@ namespace detail {
     inline thread_local const std::vector<std::unique_ptr<RenderTarget>>* boundTargets = nullptr;
 }
 
-inline thread_local float valo_PointSize = 1.f;
-inline thread_local uint32_t valo_InstanceIndex = 0;
-inline thread_local bool valo_Discard = false;
-inline thread_local Vec4f valo_Position;      // written by the vertex shader (gl_Position)
-inline thread_local Color valo_FragColor;     // written by the fragment shader (gl_FragColor)
-inline void vDiscard() { valo_Discard = true; }
+inline thread_local float       valo_PointSize      = 1.f;
+inline thread_local uint32_t    valo_InstanceIndex  = 0;
+inline thread_local bool        valo_Discard        = false;
+inline thread_local uint32_t    valo_VertexIndex    = 0;
+inline thread_local Vec4f       valo_FragCoord      = {0.f, 0.f, 0.f, 0.f};
+inline thread_local bool        valo_FrontFacing    = false;
+inline thread_local Vec4f       valo_Position;          // written by the vertex shader (gl_Position)
+inline thread_local Color       valo_FragColor;         // written by the fragment shader (gl_FragColor)
+
+inline void vDiscard()          { valo_Discard = true; }
 
 enum class Wrap     { Repeat, Clamp, Mirror };
 enum class Filter   { Nearest, Linear };

@@ -4,12 +4,18 @@ Ordered by what it takes to bring the software renderer to parity with the
 eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
 a gate for the next.
 
-## State (2026-09-20)
+## State (2026-09-23)
 
-~3.3k lines of library, 7 examples, 18/28 feature items done, every feature
+~4.2k lines of library, 8 examples, 20/28 feature items done, every feature
 behind a sanitizer-verified harness. The dev-facing API (Window -> VALO ->
 create* -> RenderCommand -> submit, typed C++ shader callbacks) is settled and
-Vulkan-shaped. Benchmark (DamagedHelmet, 1280x960, lambert, M4): VALO 8.5 ms,
+Vulkan-shaped.
+
+Landed since 2026-09-20: `Renderer.hpp` -> `Renderer.cpp` and `DrawFuncs`
+split (both section-2 items, now checked off); sentinels were already
+`inline constexpr`; `Clock` / `Timestamp` utils + `VALO::getDeltaTime()`;
+`Sampling.cpp` split out; `EMPTY_TEXTURE` sentinel; `minimal.cpp` +
+`MinimalEngine.hpp`. Benchmark (DamagedHelmet, 1280x960, lambert, M4): VALO 8.5 ms,
 SwiftShader 3.0 ms, MoltenVK GPU 0.7 ms. The 2.85x gap to SwiftShader is its
 LLVM-JIT'd 4-wide fragment shading; not something the Vulkan backend inherits.
 
@@ -61,6 +67,22 @@ them now means the API doesn't move later. ~3-5 days.
 - [ ] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
       for triangles, pixel test for lines/points). Vulkan dynamic scissor. The
       stencil clip stack stays the general mechanism. Half a day.
+- [ ] **glTF embedded images (`.glb`)** — `GLTFParser::texPath()` returns `""`
+      unless `image->uri` is set, so every `.glb` loads fully untextured and
+      silently: verified on a 29-material car, 15/15 images live in
+      `buffer_view`, 0/29 materials got a texture. Same for `.gltf` files with
+      `data:` URIs, which currently build a nonsense path out of the base64.
+      `cgltf_buffer_view_data()` (cgltf.h:871) + `stbi_load_from_memory` is the
+      decode; the structural part is that `GLTFMaterial` stores `std::string`
+      paths, which can't name an embedded image. Suggest a
+      `std::vector<GLTFImage>` on `GLTF` (decoded pixels + w/h) with materials
+      holding `int` indices, so file-backed and embedded land in one place.
+      Half a day.
+- [ ] **Tangents in `GLTFVertex`** — it is `{pos, normal, uv}`, so nothing
+      using the shared vertex type can do normal mapping. `gltf.cpp` works
+      around it by declaring its own `Vertex` with a `Vec4f tangent` and
+      computing the basis at load. That belongs in the parser (MikkTSpace-ish
+      per-triangle accumulate) so every consumer gets it. 1 day.
 - [ ] **Texture formats** — at least R8 (font atlases, masks) and RGBA32F
       (HDR targets). `createTexture` gains a format; `texture()` unpacks per
       format. Vulkan has these for free; software needs them to exist so the
@@ -71,16 +93,40 @@ them now means the API doesn't move later. ~3-5 days.
 - [ ] **Shared pixel path** — the three rasterizers duplicate the per-pixel
       sequence (depth test -> stencil test -> shade -> discard -> depth write ->
       stencil op -> blend). One `shadePixel()` helper so sRGB / MRT / formats
-      land in one place. DrawFuncs.hpp is 558 lines; add a stage-map comment
-      at the top.
-- [ ] **Renderer.hpp -> Renderer.cpp** — 18 inline definitions still in the
-      header (VALO, Window, ThreadPool, RenderTarget are done).
-- [ ] **Sentinel macros -> constexpr** — `EMPTY_BUFFER`, `DEFAULT_PROGRAM`,
-      `ALL_INDICES`, `MAX_INSTANCES` in RenderCommand.hpp.
-- [ ] **Logging hook** — 8 `std::cout` sites; one `valo::log(level, msg)` the
-      dev can redirect.
-- [ ] **Quat.hpp** is empty — needed for glTF animation / camera code.
-- [x] **Uniform limit** raised to 1024 B (was 256).
+      land in one place. DrawFuncs is 146 (.hpp) + 514 (.cpp); add a stage-map
+      comment at the top. The one section-2 item still open with real work in
+      it.
+- [ ] **Logging hook** — 9 `std::cout` / `std::cerr` sites across Renderer.cpp,
+      RenderTarget.cpp, GLTFParser.hpp, OBJParser.hpp, Timestamp.hpp; one
+      `valo::log(level, msg)` the dev can redirect.
+- [ ] **Quat.hpp** is empty (0 lines) — needed for glTF animation / camera code.
+- [✅] **Renderer.hpp -> Renderer.cpp** — done; 0 inline definitions left in the
+      header. `DrawFuncs` got the same treatment.
+- [✅] **Sentinel macros -> constexpr** — already `inline constexpr uint32_t` in
+      RenderCommand.hpp; `EMPTY_TEXTURE` joined them.
+- [✅] **Uniform limit** raised to 512 B (was 256). Note: an earlier revision of
+      this file claimed 1024 — the code has only ever been 256 -> 512 (64e8cb5).
+      A `me::Uniforms` with two Mat4f + material + light is ~232 B, so 512 is
+      not roomy; this is what the uniform-buffer item in section 1 is for.
+
+### Robustness — unchecked indices that fail as segfaults
+
+Not API gaps, but each one costs an afternoon when it bites, and the Vulkan
+backend won't have the same failure modes to compare against.
+
+- [ ] `Renderer::draw` does `m_programs[cmd.program]` with no bounds check and
+      no handling of `DEFAULT_PROGRAM` (= `UINT32_MAX`), so a command submitted
+      without a program indexes ~4e9 past an empty vector. The crash surfaces
+      later, inside `drawTriangles` at the `vsThunk` call, which points at the
+      wrong file. Same for `m_vertexBuffers[cmd.verts]` / `m_indexBuffers`.
+- [ ] `texture()` does `(*boundTargets)[tex]` unchecked (Sampling.cpp:48, :84),
+      so sampling `EMPTY_TEXTURE` is an out-of-bounds read rather than a
+      diagnosable error. Every shader currently has to guard by hand.
+- [ ] `setupTriangle` clamps with `std::clamp<float>(lo.x, 0, w - 1)` where
+      `w = int(target->width())`. At width 0 that is `clamp(x, 0, -1)` — hi < lo
+      is UB. Minor since the loops then no-op, but a zero-sized target is
+      reachable (a minimised window reports 0x0, and `renderScale` can round
+      down to it).
 
 ## 3. Backend interface extraction
 
@@ -118,11 +164,11 @@ them now means the API doesn't move later. ~3-5 days.
 
 ## 6. Software-renderer optimization (never blocking)
 
-- [x] Multithreaded rasterization — `ThreadPool` (generation + active-count,
+- [✅] Multithreaded rasterization — `ThreadPool` (generation + active-count,
       TSan-clean) + `forEachBand`; geometry phase on the main thread into a
       chunked buffer, workers rasterize disjoint row bands (`pool.size() * 8`).
       Triangles, lines, points, clear all banded.
-- [x] Triangle setup once per triangle (`setupTriangle` -> `ScreenTri`);
+- [✅] Triangle setup once per triangle (`setupTriangle` -> `ScreenTri`);
       barycentrics via `invArea` multiply; bilinear on packed ABGR32.
 - Profile (25^3 cubes, 4K): geometry ~5 ms, raster ~31 ms of which ~20 ms is
   fragment shading + `writePixel`, ~10 ms per-triangle floor. Band scan is
@@ -133,11 +179,13 @@ them now means the API doesn't move later. ~3-5 days.
   compare, interpolation) — keeps the API, ~1.3x; (3) a JIT — out of scope.
 - [ ] Parallel geometry phase (fixed index range per worker, order preserved).
 - [ ] Vertex cache: shade each unique index once per draw.
-- [ ] Per-phase timing (clear / draw / show) printed with the fps.
+- [ ] Per-phase timing (clear / draw / show) printed with the fps. `Clock` /
+      `Timestamp` and `VALO::getDeltaTime()` landed 2026-09-22, so this is now
+      just instrumenting the three call sites.
 
 ## Done
 
-- [x] OBJ loading (tinyobjloader) · glTF loading (cgltf) · draw ranges ·
+- [✅] OBJ loading (tinyobjloader) · glTF loading (cgltf) · draw ranges ·
       dynamic vertex/index buffers · bilinear · sampler state (wrap/filter) ·
       instancing (`valo_InstanceIndex`) · depth as texture · depth-only passes
       (`colorWrite`, vs-only programs) · fragment discard · far-plane reject ·
@@ -157,7 +205,13 @@ them now means the API doesn't move later. ~3-5 days.
   shell along smoothed normals) and an SDF circle clip (discard + Incr).
 - `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
   scrolling list with three nested `pushClip`s. `C` toggles clipping.
-- `bench/` — `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
+- `minimal.cpp` + `MinimalEngine.hpp` — smallest embedder: an `Engine` owning
+  window/VALO/camera/light and a `Model` that loads a glTF, owns its materials
+  and program, and submits one command per primitive. Metallic-roughness
+  Cook-Torrance with a hemisphere ambient standing in for IBL. Doubles as the
+  test for what the API feels like from outside the repo.
+- `bench/` — **untracked, not in git** (never committed; a fresh clone has no
+  `examples/bench`). `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
   scene/shader/resolution. Run the Vulkan one on SwiftShader with
   `VK_ICD_FILENAMES=$PWD/ext/swiftshader/build/Darwin/vk_swiftshader_icd.json`.
 

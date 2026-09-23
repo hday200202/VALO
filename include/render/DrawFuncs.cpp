@@ -51,6 +51,7 @@ bool setupTriangle(
 
     const bool ccw   = area < 0;
     const bool front = (cmd.winding == VtxWinding::CCW) ? ccw : !ccw;
+    out.frontFacing = front;
     if (cmd.cullmode == CullMode::Back  && !front) return false;
     if (cmd.cullmode == CullMode::Front &&  front) return false;
 
@@ -162,6 +163,8 @@ void rasterizePoint(
     Color color;
     if (program.fsThunk) {
         valo_Discard = false;
+        valo_FragCoord = { px + 0.5f, py + 0.5f, screen.z, 1.f / screen.w };
+        valo_FrontFacing = true;
         color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
         if (valo_Discard) return;
     }
@@ -234,6 +237,8 @@ void rasterizeLine(
             }
 
             valo_Discard = false;
+            valo_FragCoord = { x + 0.5f, y + 0.5f, z, invW };
+            valo_FrontFacing = true;
             color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
             if (valo_Discard) continue;
         }
@@ -299,6 +304,8 @@ void rasterizeTriangle(
                     }
 
                     valo_Discard = false;
+                    valo_FragCoord = { x + 0.5f, y + 0.5f, z, invW };
+                    valo_FrontFacing = tri.frontFacing;
                     color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
                     if (valo_Discard) continue;
                 }
@@ -374,8 +381,13 @@ void drawTriangles(
 
             ClipVert in[3], clipped[4];
 
+            valo_VertexIndex = ib.indices[i];
             in[0].pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, in[0].vary);
+
+            valo_VertexIndex = ib.indices[i + 1];
             in[1].pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, in[1].vary);
+
+            valo_VertexIndex = ib.indices[i + 2];
             in[2].pos = program.vsThunk(program.vsFn, v3, cmd.uniforms, in[2].vary);
 
             int n = clipNear(in, clipped, program.varyingCount);
@@ -439,7 +451,11 @@ void drawLines(
             const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
 
             ClipVert a, b;
+
+            valo_VertexIndex = ib.indices[i];
             a.pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, a.vary);
+
+            valo_VertexIndex = ib.indices[i + 1];
             b.pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, b.vary);
 
             if (a.pos.z < 0 && b.pos.z < 0) continue;
@@ -499,6 +515,7 @@ void drawPoints(
             ClipVert a;
 
             valo_PointSize = 1.f;
+            valo_VertexIndex = ib.indices[i];
             a.pos = program.vsThunk(program.vsFn, v, cmd.uniforms, a.vary);
             const float size = valo_PointSize;
 

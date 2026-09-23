@@ -24,6 +24,7 @@ struct ScreenTri {
     int xmin, ymin, xmax, ymax;
     float vary[3][MAX_VARYINGS];
     float invArea;
+    bool frontFacing;
 };
 
 bool stencilTest(
