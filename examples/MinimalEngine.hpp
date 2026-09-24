@@ -8,15 +8,43 @@ namespace me {
 
 using namespace valo;
 
+/*
+    yaw/pitch are the authority here: update() rebuilds forward from them every
+    frame, so they need real values before the first update and anything that
+    wants to aim the camera has to go through setForward() to keep the two in
+    step. Leaving them to be assigned only by += in update() read them
+    uninitialised on the first mouse grab and threw the view in a random
+    direction - hence the defaults on every member below.
+*/
 struct Camera {
-    float pitch, yaw, roll, nearPlane, farPlane, fov;
-    Vec3f pos, forward, right, up;
+    float pitch = 0.f, yaw = 0.f, roll = 0.f;
+    float nearPlane = 0.1f, farPlane = 500.f, fov = 3.14159265f / 2.f;
+
+    Vec3f pos     = {0.f, 0.f,  0.f};
+    Vec3f forward = {0.f, 0.f, -1.f};
+    Vec3f right   = {1.f, 0.f,  0.f};
+    Vec3f up      = {0.f, 1.f,  0.f};
+
+    // inverse of rebuildBasis(), so a caller-supplied direction survives the
+    // next mouse move instead of being overwritten by the old yaw/pitch
+    void setForward(const Vec3f& dir) {
+        const Vec3f f = dir.normalized();
+        pitch = std::asin(std::clamp(f.y, -1.f, 1.f));
+        yaw   = std::atan2(f.x, -f.z);
+        rebuildBasis();
+    }
 
     void update(const Vec2f& mouseDelta, const Vec3f& movement) {
-        yaw     += mouseDelta.x * 0.005;
-        pitch   -= mouseDelta.y * 0.005;
+        yaw     += mouseDelta.x * 0.005f;
+        pitch   -= mouseDelta.y * 0.005f;
         pitch   = std::clamp(pitch, -1.5f, 1.5f);
 
+        rebuildBasis();
+
+        pos += (forward * movement.z) + (right * movement.x) + (up * movement.y);
+    }
+
+    void rebuildBasis() {
         forward = Vec3f{
             std::sin(yaw) * std::cos(pitch), 
             std::sin(pitch), 
@@ -24,8 +52,6 @@ struct Camera {
         }.normalized();
 
         right   = forward.cross(up).normalized();
-
-        pos += (forward * movement.z) + (right * movement.x) + (up * movement.y);
     }
 };
 
@@ -192,16 +218,7 @@ public:
 
     bool init(const RenderConfig& cfg = {}) {
         m_running = m_window.create("Minimal Engine", {800, 600}) && m_valo.init(m_window, cfg);
-
-        m_camera.pos        = {0.f, 0.f, 0.f};
-        m_camera.forward    = {0.f, 0.f, -1.f};
-        m_camera.up         = {0.f, 1.f, 0.f};
-        m_camera.right      = {1.f, 0.f, 0.f};
-        m_camera.nearPlane  = 0.1f;
-        m_camera.farPlane   = 500.f;
-        m_camera.fov        = 3.14159265f / 2.f;
-
-        return m_running;
+        return m_running;   // the camera defaults itself to the origin looking down -z
     }
 
     /*
@@ -218,13 +235,12 @@ public:
     }
 
     void update() {
-        const float moveSpeed = 2.f * m_valo.getDeltaTime();
-        const Vec2f mouseDelta = m_window.mouseDelta();
-        Vec3f movement = {0.f, 0.f, 0.f};
-
         m_running = m_window.pollEvents();
         if (!m_running) return;
         if (m_window.wasKeyPressed(Key::Escape)) { m_window.close(); m_running = false; }
+
+        const float moveSpeed = 2.f * m_valo.getDeltaTime();
+        Vec3f movement = {0.f, 0.f, 0.f};
 
         if (m_window.isKeyDown(Key::W))         { movement.z =  moveSpeed; }
         if (m_window.isKeyDown(Key::S))         { movement.z = -moveSpeed; }
@@ -233,15 +249,21 @@ public:
         if (m_window.isKeyDown(Key::LShift))    { movement.y = -moveSpeed; }
         if (m_window.isKeyDown(Key::Space))     { movement.y =  moveSpeed; }
 
+        bool justGrabbed = false;
         if (m_window.wasMousePressed(MouseButton::Left)) {
             if (m_window.isMouseGrabbed()) m_window.releaseMouse();
-            else m_window.grabMouse();
+            else { m_window.grabMouse(); justGrabbed = true; }
         }
 
-        if (m_window.isMouseGrabbed()) {
-            m_camera.update(mouseDelta, movement);
-            m_window.setMousePositionLocal(m_window.getCenterLocal());
-        }
+        /*
+            The delta has to be read after pollEvents, and thrown away on the
+            frame the grab turns on: that frame's motion is the sweep across the
+            window on the way to the click, which would snap the view off the
+            scene. Relative mode pins the cursor itself, so there is no warp to
+            the centre here - warping would only feed its own delta back in.
+        */
+        if (m_window.isMouseGrabbed())
+            m_camera.update(justGrabbed ? Vec2f{0.f, 0.f} : m_window.mouseDelta(), movement);
     }
 
     void render() {
@@ -257,7 +279,7 @@ public:
     }
 
     void setCameraPosition(const Vec3f& position) { m_camera.pos = position; }
-    void setCameraForward(const Vec3f& forward)   { m_camera.forward = forward.normalized(); }
+    void setCameraForward(const Vec3f& forward)   { m_camera.setForward(forward); }
 
     bool isRunning() const { return m_running; }
     VALO& getVALO()     { return m_valo; }
