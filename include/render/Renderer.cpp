@@ -153,7 +153,7 @@ IndexBufferID Renderer::createIndexBuffer(const uint32_t* data, const size_t cou
 }
 
 
-TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, uint32_t* data) {
+TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data) {
     return pushTarget(std::make_unique<RenderTarget>(
         RenderTarget::loadFromMemory(w, h, data)
     ));
@@ -180,6 +180,23 @@ void Renderer::updateVertexBuffer(
     const uint8_t* bytes = static_cast<const uint8_t*>(data);
 
     vb.verts.assign(bytes, bytes + sizeInBytes);
+}
+
+
+void Renderer::updateTexture(const TextureID texture, const uint32_t* data) {
+    assert(texture < m_targets.size() && "updateTexture(): Texture ID out of range");
+    m_targets[texture]->update(data);
+}
+
+
+void Renderer::updateTexture(
+    const TextureID texture, 
+    const uint32_t x, const uint32_t y, 
+    const uint32_t w, const uint32_t h, 
+    const uint32_t* data
+) { 
+    assert(texture < m_targets.size() && "updateTexture(): Texture ID out of range");
+    m_targets[texture]->update(x, y, w, h, data); 
 }
 
 

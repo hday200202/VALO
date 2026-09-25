@@ -879,6 +879,9 @@ public:
         if (m_window.wasKeyPressed(Key::Num2))   { m_valo.setRenderScale(0.75f); }
         if (m_window.wasKeyPressed(Key::Num3))   { m_valo.setRenderScale(0.50f); }
         if (m_window.wasKeyPressed(Key::Num4))   { m_valo.setRenderScale(0.25f); }
+        if (m_window.wasKeyPressed(Key::Num5))   { m_valo.setRenderScale(2.00f); }
+        if (m_window.wasKeyPressed(Key::Num6))   { m_valo.setRenderScale(3.00f); }
+        if (m_window.wasKeyPressed(Key::Num4))   { m_valo.setRenderScale(4.00f); }
         if (m_window.wasKeyPressed(Key::Tab))    { resetCamera(); m_autoOrbit = true; }
 
         m_exposure = clampf(m_exposure + m_window.scrollDelta() * 0.06f, 0.15f, 6.f);

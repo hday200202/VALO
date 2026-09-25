@@ -43,7 +43,7 @@ void fs(const Varyings& in, const Uniforms& u) {
 }
 
 int main() {
-    valo::Window window("VALO", {1920, 1080});
+    valo::Window window("VALO", {1280, 720});
 
     valo::VALO valo;
     valo::RenderConfig cfg;

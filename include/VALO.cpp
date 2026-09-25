@@ -134,7 +134,7 @@ IndexBufferID VALO::createIndexBuffer(
 TextureID VALO::createTexture(
     const uint32_t w, 
     const uint32_t h,
-    uint32_t* data
+    const uint32_t* data
 ) { return m_renderer.createTexture(w, h, data); }
 
 
@@ -151,6 +151,19 @@ void VALO::updateVertexBuffer(
     const size_t count,
     const VtxLayout& newLayout
 ) { m_renderer.updateVertexBuffer(vertices, data, count, newLayout); }
+
+
+void VALO::updateTexture(const TextureID texture, const uint32_t* data) {
+    m_renderer.updateTexture(texture, data);
+}
+
+
+void VALO::updateTexture(
+    const TextureID texture, 
+    const uint32_t x, const uint32_t y, 
+    const uint32_t w, const uint32_t h, 
+    const uint32_t* data
+) { m_renderer.updateTexture(texture, x, y, w, h, data); }
 
 
 TextureID VALO::createTexture(

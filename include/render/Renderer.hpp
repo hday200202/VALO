@@ -51,10 +51,17 @@ public:
     RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true);
     VertexBufferID createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
     IndexBufferID createIndexBuffer(const uint32_t* data, const size_t count);
-    TextureID createTexture(const uint32_t w, const uint32_t h, uint32_t* data);
+    TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data);
     TextureID createTexture(const std::string& path);
     void updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
     void updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout = {});
+    void updateTexture(const TextureID texture, const uint32_t* data);
+    void updateTexture(
+        const TextureID texture, 
+        const uint32_t x, const uint32_t y, 
+        const uint32_t w, const uint32_t h, 
+        const uint32_t* data
+    );
     
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(void (*vs)(const V&, const U&, Vy&), void (*fs)(const Vy&, const U&)) {

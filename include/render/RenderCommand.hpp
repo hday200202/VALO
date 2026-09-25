@@ -44,6 +44,11 @@ struct RenderCommand {
     bool                depthTest       = true;
     bool                depthWrite      = true;
     bool                colorWrite      = true;
+
+    // Set when the fragment shader writes valo_FragDepth. The depth test then
+    // has to run after shading instead of before it, since the interpolated z
+    // the early test would use is not the value that gets written.
+    bool                fragDepthWrite  = false;
     FillMode            fillmode        = FillMode::Solid;
 
     uint32_t            instanceCount   = 1;

@@ -26,7 +26,7 @@ LLVM-JIT'd 4-wide fragment shading; not something the Vulkan backend inherits.
 These are the gaps that would show up the moment the backend is written. Doing
 them now means the API doesn't move later. ~3-5 days.
 
-- [ ] **GLSL built-ins** — shaders now write `valo_Position` / `valo_FragColor`
+- [✅] **GLSL built-ins** — shaders now write `valo_Position` / `valo_FragColor`
       (done, mirrors `gl_Position` / fragment `out`). Same thread-local pattern
       for the rest:
       - `valo_VertexIndex` (`gl_VertexIndex`) — set from the index value in the
@@ -40,11 +40,34 @@ them now means the API doesn't move later. ~3-5 days.
         use it instead of interpolated z. Lets `sdf.cpp` depth-test against
         meshes.
       - `valo_PointCoord` (`gl_PointCoord`) — with AA points, later.
-      - `dFdx` / `dFdy` / `fwidth` — not a global, the real gap: screen-space
-        derivatives. Needed for mipmap LOD and antialiased SDF edges (every
-        UI's crisp rounded rect is `fwidth(d)`). Software needs 2x2 quad
-        shading or analytic per-triangle derivatives. Do with mipmaps.
-- [ ] **`updateTexture(id, data)`** — the only missing dynamic path. UILO font
+      - `dFdx` / `dFdy` / `fwidth` — **deferred, probably not for the software
+        backend** (decided 2026-09-25). The general form needs 2x2 quad
+        shading: shade fragments in blocks of four (including helper
+        invocations outside the triangle) so a value computed *inside* the
+        shader can be differenced against its neighbour. That changes how
+        every pixel is shaded, and the payoff does not justify it here,
+        because a renderer that owns its whole pipeline already knows the
+        scale factor that `fwidth` exists to recover:
+          - 2D pixel-space ortho (`clipstack.cpp`): `d` is already in screen
+            pixels, so `fwidth(d) == 1`. `smoothstep(-1, 1, d)` antialiases
+            those rounded rects today, no derivatives at all.
+          - Raymarched SDFs (`sdf.cpp`): footprint is `t * pixelAngle` from
+            FOV and resolution - ray differentials / cone tracing. Exact,
+            rather than quantised to a 2x2 quad.
+          - Procedural bump (`pbr.cpp`): keep the analytic finite difference,
+            scale `eps` by a passed-in footprint instead of a constant.
+        Revisit only if the 4-wide fragment shading in section 6 gets done for
+        performance - the quad restructure is the same work, so derivatives
+        would come along nearly free at that point.
+      - **Analytic varying derivatives** — still worth doing, and independent
+        of the above. For interpolated values the rasterizer already knows the
+        gradient: the per-pixel edge steps `d1`/`d2`/`d3` in `rasterizeTriangle`
+        *are* the barycentric gradients. With `A = dnum/dx` and `B = dinvW/dx`
+        precomputed per triangle, `dinterp/dx = (A - interp * B) / invW` is one
+        multiply-subtract-divide per varying. No shading contract change, and
+        more accurate than quad differencing (exact at triangle edges). This is
+        what mipmap LOD needs; do it with mipmaps.
+- [✅] **`updateTexture(id, data)`** — the only missing dynamic path. UILO font
       atlases and streamed textures need it. Software: memcpy; Vulkan: staging
       copy. Half a day.
 - [ ] **sRGB** — `linear` flag on `createTexture` (decode to linear on load),

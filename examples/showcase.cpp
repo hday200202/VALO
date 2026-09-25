@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
         downstream (camera framing, light rig, contact shadow) keys off the
         fitted size, so nothing needs placing by hand.
     */
-    const char* path = argc > 1 ? argv[1] : "examples/gltf/cuda/scene.gltf";
+    const char* path = argc > 1 ? argv[1] : "examples/gltf/DamagedHelmet/DamagedHelmet.gltf";
 
     sc::Model& model = engine.addModel(path);
     if (!model.isLoaded()) {

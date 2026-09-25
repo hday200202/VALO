@@ -136,12 +136,12 @@ constexpr Light kLights[4] = {
 // ---------------------------------------------------------------------------
 // environment: sky gradient + a sun along the key light
 // ---------------------------------------------------------------------------
-constexpr Vec3f kSkyTop     = { 0.012f, 0.035f, 0.120f };
-constexpr Vec3f kSkyHorizon = { 0.115f, 0.125f, 0.145f };
-constexpr Vec3f kSkyGround  = { 0.020f, 0.020f, 0.023f };
+constexpr Vec3f kSkyTop     = { 0.040f, 0.140f, 0.500f };  // saturated deep blue
+constexpr Vec3f kSkyHorizon = { 0.380f, 0.500f, 0.700f };  // lighter blue, less haze
+constexpr Vec3f kSkyGround  = { 0.160f, 0.105f, 0.060f };  // warmer, sandier earth
 constexpr float kSkyFalloff = 0.50f;
-constexpr Vec3f kSunColour  = { 1.000f, 0.945f, 0.855f };
-static const Vec3f kSunDir  = Vec3f{ -0.52f, 0.62f, 0.59f }.normalized();
+constexpr Vec3f kSunColour  = { 1.000f, 0.920f, 0.780f };  // a touch warmer
+static const Vec3f kSunDir  = Vec3f{ -0.45f, 0.75f, 0.48f }.normalized();
 
 static Vec3f skyColour(const Vec3f& d) {
     const float y = clampf(d.y, -1.f, 1.f);

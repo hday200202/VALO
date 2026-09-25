@@ -21,6 +21,8 @@ inline thread_local Vec4f       valo_FragCoord      = {0.f, 0.f, 0.f, 0.f};
 inline thread_local bool        valo_FrontFacing    = false;
 inline thread_local Vec4f       valo_Position;          // written by the vertex shader (gl_Position)
 inline thread_local Color       valo_FragColor;         // written by the fragment shader (gl_FragColor)
+inline thread_local float       valo_FragDepth      = 1.f;
+inline thread_local Vec2f       valo_PointCoord     = {0.f, 0.f};
 
 inline void vDiscard()          { valo_Discard = true; }
 

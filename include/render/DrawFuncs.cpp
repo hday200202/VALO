@@ -155,33 +155,60 @@ void rasterizePoint(
     int px = int(screen.x), py = int(screen.y);
     if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
 
-    if (cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
+    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
+    const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
+
+    if (!lateZ && cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
     if (!stencilTest(target, cmd, px, py)) return;
 
     const bool ownsCenter = (py >= bandY0 && py < bandY1);
 
-    Color color;
-    if (program.fsThunk) {
-        valo_Discard = false;
-        valo_FragCoord = { px + 0.5f, py + 0.5f, screen.z, 1.f / screen.w };
-        valo_FrontFacing = true;
-        color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
-        if (valo_Discard) return;
+    // No fragment stage: depth and stencil only, nothing to shade.
+    if (!program.fsThunk) {
+        if (ownsCenter) {
+            if (cmd.depthWrite) target->setDepth(px, py, screen.z);
+            stencilApply(target, cmd, px, py);
+        }
+        return;
     }
 
-    if (cmd.depthWrite && ownsCenter) target->setDepth(px, py, screen.z);
-    if (ownsCenter) stencilApply(target, cmd, px, py);
-    if (!cmd.colorWrite || !program.fsThunk) return;
+    const int n    = std::max(1, int(size + 0.5f));
+    const int half = n / 2;
+    const int x0   = px - half, y0 = py - half;
 
-    int n = std::max(1, int(size + 0.5f));
-    int half = int(n / 2);
-    for (int y = py - half; y < py - half + n; ++y) {
+    // The sprite is shaded per fragment, not once and splatted, because
+    // valo_PointCoord varies across it. At n == 1 this is the same one call.
+    // Depth and stencil stay a single decision made by the centre sample.
+    float centerDepth = screen.z;
+    bool  centerLive  = false;
+
+    for (int y = y0; y < y0 + n; ++y) {
         if (y < bandY0 || y >= bandY1) continue;
-        for (int x = px - half; x < px - half + n; ++x) {
+        for (int x = x0; x < x0 + n; ++x) {
             if (x < 0 || x >= w - 1) continue;
-            writePixel(target, x, y, color, cmd.blendmode);
+
+            valo_Discard     = false;
+            valo_FragDepth   = screen.z;
+            valo_FragCoord   = { x + 0.5f, y + 0.5f, screen.z, 1.f / screen.w };
+            valo_FrontFacing = true;
+            valo_PointCoord  = { (x - x0 + 0.5f) / n, (y - y0 + 0.5f) / n };
+
+            const Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
+            if (valo_Discard) continue;
+
+            if (x == px && y == py) {
+                centerDepth = std::clamp(valo_FragDepth, 0.f, 1.f);
+                centerLive  = true;
+            }
+
+            if (cmd.colorWrite) writePixel(target, x, y, color, cmd.blendmode);
         }
     }
+
+    if (!ownsCenter || !centerLive) return;
+    if (lateZ && cmd.depthTest && centerDepth >= target->getDepth(px, py)) return;
+    if (cmd.depthWrite) target->setDepth(px, py, centerDepth);
+    stencilApply(target, cmd, px, py);
 }
 
 void rasterizeLine(
@@ -192,6 +219,9 @@ void rasterizeLine(
     const float* varys[2],
     const int bandY0, const int bandY1
 ) {
+    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
+    const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
+
     Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
     Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
 
@@ -221,10 +251,12 @@ void rasterizeLine(
         int px = int(x), py = int(y);
         if (px < 0 || px >= w - 1 || py < bandY0 || py >= bandY1) continue;
 
-        // early z-test
+        // early z-test (skipped when the shader will write its own depth)
         float z = s1.z + (s2.z - s1.z) * t;
-        if (cmd.depthTest && z >= target->getDepth(px, py)) continue;
+        if (!lateZ && cmd.depthTest && z >= target->getDepth(px, py)) continue;
         if (!stencilTest(target, cmd, px, py)) continue;
+
+        valo_FragDepth = z;
 
         Color color;
         if (program.fsThunk) {
@@ -243,7 +275,10 @@ void rasterizeLine(
             if (valo_Discard) continue;
         }
 
-        if (cmd.depthWrite) target->setDepth(px, py, z);
+        const float depth = std::clamp(valo_FragDepth, 0.f, 1.f);
+        if (lateZ && cmd.depthTest && depth >= target->getDepth(px, py)) continue;
+
+        if (cmd.depthWrite) target->setDepth(px, py, depth);
         stencilApply(target, cmd, px, py);
         if (cmd.colorWrite && program.fsThunk) writePixel(target, px, py, color, cmd.blendmode);
     }
@@ -259,6 +294,9 @@ void rasterizeTriangle(
     const int ymin = std::max(tri.ymin, bandY0);
     const int ymax = std::min(tri.ymax, bandY1 - 1);
     if (ymin > ymax) return;
+
+    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
+    const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
     const Vec4f& s1 = tri.s[0]; const Vec4f& s2 = tri.s[1]; const Vec4f& s3 = tri.s[2];
     const float sign = tri.sign;
@@ -284,11 +322,15 @@ void rasterizeTriangle(
                 float b2 = e3 * tri.invArea;
                 float b3 = e1 * tri.invArea;
 
-                // early z-test
+                // early z-test (skipped when the shader will write its own
+                // depth; the far-plane reject stays early either way, it is a
+                // clip-space cull rather than a depth comparison)
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
                 if (z > 1.f) continue;
-                if (cmd.depthTest && z >= target->getDepth(x, y)) continue;
+                if (!lateZ && cmd.depthTest && z >= target->getDepth(x, y)) continue;
                 if (!stencilTest(target, cmd, x, y)) continue;
+
+                valo_FragDepth = z;
 
                 // fragment stage (if the program has one): interpolate, shade, honor discard
                 Color color;
@@ -310,7 +352,10 @@ void rasterizeTriangle(
                     if (valo_Discard) continue;
                 }
 
-                if (cmd.depthWrite) target->setDepth(x, y, z);
+                const float depth = std::clamp(valo_FragDepth, 0.f, 1.f);
+                if (lateZ && cmd.depthTest && depth >= target->getDepth(x, y)) continue;
+
+                if (cmd.depthWrite) target->setDepth(x, y, depth);
                 stencilApply(target, cmd, x, y);
                 if (cmd.colorWrite && program.fsThunk) writePixel(target, x, y, color, cmd.blendmode);
             }

@@ -25,7 +25,7 @@ uint8_t* getImageData(
 RenderTarget RenderTarget::loadFromMemory(
     uint32_t w, 
     uint32_t h, 
-    uint32_t* data
+    const uint32_t* data
 ) {
     RenderTarget tex;
     tex.m_width = w;
@@ -158,6 +158,37 @@ void RenderTarget::clearRows(const Color& color, const uint32_t y0, const uint32
     std::fill(m_pixels.begin() + y0 * m_width, m_pixels.begin() + y1 * m_width, col);
     std::fill(m_depth.begin() + y0 * m_width, m_depth.begin() + y1 * m_width, 1.f);
     std::fill(m_stencil.begin() + y0 * m_width, m_stencil.begin() + y1 * m_width, uint8_t(0));
+}
+
+
+void RenderTarget::update(const uint32_t* data) {
+    std::memcpy(
+        m_pixels.data(), 
+        data, 
+        sizeof(uint32_t) * m_width * m_height
+    );
+}
+
+
+void RenderTarget::update(
+    const uint32_t x, const uint32_t y, 
+    const uint32_t w, const uint32_t h, 
+    const uint32_t* data
+) {
+    assert(
+        x <= m_width && w <= m_width - x &&
+        y <= m_height && h <= m_height - y && 
+        "update: sub-rect out of bounds"
+    );
+
+    uint32_t* start = m_pixels.data() + ((y * m_width) + x);
+    for (uint32_t row = 0; row < h; ++row) {
+        std::memcpy(
+            m_pixels.data() + (y + row) * m_width + x,
+            data + row * w, 
+            sizeof(uint32_t) * w
+        );
+    }
 }
 
 } // namespace valo

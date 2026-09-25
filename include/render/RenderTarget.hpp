@@ -16,7 +16,7 @@ public:
     : m_width(width), m_height(height), m_trackWindow(trackWindow) { resize(width, height); }
 
     // For Textures
-    static RenderTarget loadFromMemory(uint32_t w, uint32_t h, uint32_t* data);
+    static RenderTarget loadFromMemory(uint32_t w, uint32_t h, const uint32_t* data);
     static RenderTarget loadImageFromPath(const std::string& path);
 
     void setPixel(const Vec2u& xy, const Color& color);
@@ -38,6 +38,9 @@ public:
 
     void clear(const Color& color = {0.f, 0.f, 0.f, 1.f});    
     void clearRows(const Color& color, const uint32_t y0, const uint32_t y1);
+
+    void update(const uint32_t* data);
+    void update(const uint32_t x, const uint32_t y, const uint32_t w, const uint32_t h, const uint32_t* data);
 
 
     uint32_t width() const { return m_width; }

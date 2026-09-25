@@ -55,7 +55,7 @@ public:
     TextureID createTexture(
         const uint32_t w, 
         const uint32_t h,
-        uint32_t* data
+        const uint32_t* data
     );
 
     TextureID createTexture(
@@ -73,6 +73,14 @@ public:
         const void* data,
         const size_t count,
         const VtxLayout& newLayout = {}
+    );
+
+    void updateTexture(const TextureID texture, const uint32_t* data);
+    void updateTexture(
+        const TextureID texture, 
+        const uint32_t x, const uint32_t y, 
+        const uint32_t w, const uint32_t h, 
+        const uint32_t* data
     );
 
     template <typename V, typename U, typename Vy>
