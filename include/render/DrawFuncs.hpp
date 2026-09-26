@@ -55,18 +55,24 @@ int clipNear(
     uint32_t varyingCount
 );
 
+struct DrawContext {
+    const std::vector<std::unique_ptr<RenderTarget>>* targets = nullptr;
+    const void* const* uniforms = nullptr;
+};
+
 template <typename F>
 void forEachBand(
     ThreadPool& pool,
     const uint32_t height,
-    const std::vector<std::unique_ptr<RenderTarget>>* targets,
+    const DrawContext& ctx,
     F&& fn
 ) {
     const uint32_t bands = std::max(1u, std::min(pool.size() * 8, height));
     const uint32_t rows  = (height + bands - 1) / bands;
 
     pool.dispatch(bands, [&](uint32_t b) {
-        detail::boundTargets = targets;
+        detail::boundTargets = ctx.targets;
+        detail::boundUniforms = ctx.uniforms;
         const int y0 = int(b * rows);
         const int y1 = int(std::min((b + 1) * rows, height));
         if (y0 < y1) fn(y0, y1);
@@ -120,7 +126,7 @@ void drawTriangles(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 );
 
 
@@ -131,7 +137,7 @@ void drawLines(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 );
 
 
@@ -142,7 +148,7 @@ void drawPoints(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 );
 
 }; // namespace valo

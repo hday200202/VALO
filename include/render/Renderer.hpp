@@ -11,6 +11,7 @@
 #include "VertexBuffer.hpp"
 #include "IndexBuffer.hpp"
 #include "ShaderProgram.hpp"
+#include "UniformBuffer.hpp"
 #include "DrawFuncs.hpp"
 #include "Sampling.hpp"
 #include "ThreadPool.hpp"
@@ -38,23 +39,42 @@ struct RenderConfig {
 // ========================================================================= */
 class Renderer {
 public:
+    static const uint8_t BACKBUFFER = 0;
+
+    /* ---- lifecycle ------------------------------------------------------ */
     Renderer() = default;
     ~Renderer() { shutdown(); }
+
     bool init(const RenderConfig& cfg = {});
+    void shutdown();
 
-
+    /* ---- frame ---------------------------------------------------------- */
     void clear(const Color& clearColor = {0.f, 0.f, 0.f, 1.f}, const RenderTargetID target = BACKBUFFER);
     void draw(const RenderCommand& cmd, const RenderTargetID target = BACKBUFFER);
     void show(const RenderTargetID target = BACKBUFFER);
 
-    void resize(const uint32_t w, const uint32_t h);
+    /* ---- render targets ------------------------------------------------- */
     RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true);
+    void destroyTarget(const RenderTargetID target);
+
+    /* ---- vertex buffers ------------------------------------------------- */
     VertexBufferID createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
+    void updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout = {});
+    void destroyVertexBuffer(const VertexBufferID buffer);
+
+    /* ---- index buffers -------------------------------------------------- */
     IndexBufferID createIndexBuffer(const uint32_t* data, const size_t count);
+    void updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
+    void destroyIndexBuffer(const IndexBufferID buffer);
+
+    /* ---- uniform buffers ------------------------------------------------ */
+    UniformBufferID createUniformBuffer(const void* data, const size_t bytes);
+    void updateUniformBuffer(const UniformBufferID uniforms, const void* data, const size_t bytes);
+    void destroyUniformBuffer(const UniformBufferID buffer);
+
+    /* ---- textures ------------------------------------------------------- */
     TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data);
     TextureID createTexture(const std::string& path);
-    void updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
-    void updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout = {});
     void updateTexture(const TextureID texture, const uint32_t* data);
     void updateTexture(
         const TextureID texture, 
@@ -62,7 +82,9 @@ public:
         const uint32_t w, const uint32_t h, 
         const uint32_t* data
     );
-    
+    void destroyTexture(const TextureID texture);
+
+    /* ---- programs ------------------------------------------------------- */
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(void (*vs)(const V&, const U&, Vy&), void (*fs)(const Vy&, const U&)) {
         if (!m_freePrograms.empty()) {
@@ -98,38 +120,36 @@ public:
     }
 
     void destroyProgram(const ProgramID program);
-    void destroyTarget(const RenderTargetID target);
-    void destroyVertexBuffer(const VertexBufferID buffer);
-    void destroyIndexBuffer(const IndexBufferID buffer);
-    void destroyTexture(const TextureID texture);
+
+    /* ---- state ---------------------------------------------------------- */
+    void resize(const uint32_t w, const uint32_t h);
 
     void setVsync(const bool vsync);
     bool getVsync() const { return m_cfg.vsync; }
+
     void setRenderScale(const float scale) { m_cfg.renderScale = scale; }
     float getRenderScale() const { return m_cfg.renderScale; }
 
-    void shutdown();
-
+    /* ---- queries -------------------------------------------------------- */
     uint32_t width() const { return m_targets[BACKBUFFER]->width(); }
     uint32_t height() const { return m_targets[BACKBUFFER]->height(); }
-
-
-    static const uint8_t BACKBUFFER = 0;
 
 protected:
     RenderConfig m_cfg;
     std::vector<std::unique_ptr<RenderTarget>> m_targets;
-    SDL_Renderer* m_sdlRenderer = nullptr;
-    SDL_Texture* m_sdlTexture = nullptr;
+    SDL_Renderer*                   m_sdlRenderer = nullptr;
+    SDL_Texture*                    m_sdlTexture = nullptr;
 
-    std::vector<VertexBuffer> m_vertexBuffers;
-    std::vector<IndexBuffer> m_indexBuffers;
-    std::vector<Program> m_programs;
+    std::vector<VertexBuffer>       m_vertexBuffers;
+    std::vector<IndexBuffer>        m_indexBuffers;
+    std::vector<Program>            m_programs;
+    std::vector<UniformBuffer>      m_uniformBuffers;
 
-    std::vector<RenderTargetID> m_freeTargets;
-    std::vector<VertexBufferID> m_freeVertexBuffers;
-    std::vector<IndexBufferID> m_freeIndexBuffers;
-    std::vector<ProgramID> m_freePrograms;
+    std::vector<RenderTargetID>     m_freeTargets;
+    std::vector<VertexBufferID>     m_freeVertexBuffers;
+    std::vector<IndexBufferID>      m_freeIndexBuffers;
+    std::vector<ProgramID>          m_freePrograms;
+    std::vector<UniformBufferID>    m_freeUniformBuffers;
 
     uint32_t m_texW, m_texH;
 

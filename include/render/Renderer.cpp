@@ -3,6 +3,10 @@
 
 namespace valo {
 
+/* ========================================================================= //
+    Lifecycle
+// ========================================================================= */
+
 bool Renderer::init(const RenderConfig& cfg) {
     m_cfg = cfg;
     m_sdlRenderer = SDL_CreateRenderer(cfg.sdlWindow, NULL);
@@ -23,17 +27,40 @@ bool Renderer::init(const RenderConfig& cfg) {
     return true;
 }
 
+
+void Renderer::shutdown() { 
+    SDL_DestroyTexture(m_sdlTexture); 
+    SDL_DestroyRenderer(m_sdlRenderer);
+    m_sdlTexture = nullptr;
+    m_sdlRenderer = nullptr;
+}
+
+
+
+/* ========================================================================= //
+    Frame
+// ========================================================================= */
+
 void Renderer::clear(const Color& clearColor, const RenderTargetID target) { 
     assert(m_targets[target] && "Renderer: clear on destroyed target");
     RenderTarget* tgt = m_targets[target].get();
-    forEachBand(m_pool, tgt->height(), &m_targets, [&](int y0, int y1) {
+    forEachBand(m_pool, tgt->height(), {&m_targets, nullptr}, [&](int y0, int y1) {
         tgt->clearRows(clearColor, uint32_t(y0), uint32_t(y1));
     });
     // m_targets[target]->clear(clearColor);
 }
 
+
 void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
-    detail::boundTargets = &m_targets;
+    const void* resolved[MAX_UNIFORM_SLOTS];
+    for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) {
+        const UniformBufferID id = cmd.uniformBuffers[i];
+        resolved[i] = (id == EMPTY_BUFFER) ? nullptr : m_uniformBuffers[id].data.data();
+    }
+    
+    const DrawContext ctx{&m_targets, resolved};
+    detail::boundTargets = ctx.targets;
+    detail::boundUniforms = ctx.uniforms;
 
     switch (cmd.topology) {
         case Topology::Triangles:
@@ -44,7 +71,7 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
                 m_programs[cmd.program], 
                 cmd,
                 m_pool,
-                &m_targets
+                ctx
             );
             break;
         
@@ -56,7 +83,7 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
                 m_programs[cmd.program], 
                 cmd,
                 m_pool,
-                &m_targets
+                ctx
             );
             break;
         
@@ -68,13 +95,14 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
                 m_programs[cmd.program], 
                 cmd,
                 m_pool,
-                &m_targets
+                ctx
             );
             break;
 
         default: break;
     }
 }
+
 
 void Renderer::show(const RenderTargetID target) {
     RenderTarget* tgt = m_targets[target].get();
@@ -90,31 +118,28 @@ void Renderer::show(const RenderTargetID target) {
 }
 
 
-void Renderer::resize(const uint32_t w, const uint32_t h) {
-    for (auto& tgt : m_targets)
-        if (tgt && tgt->tracksWindow()) // destroyed slots are null
-            tgt->resize(w * m_cfg.renderScale, h * m_cfg.renderScale);
 
-    recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale);
-}
-
-
-RenderTargetID Renderer::pushTarget(std::unique_ptr<RenderTarget> target) {
-    if (!m_freeTargets.empty()) {
-        RenderTargetID id = m_freeTargets.back();
-        m_freeTargets.pop_back();
-        m_targets[id] = std::move(target);
-        return id;
-    }
-
-    m_targets.push_back(std::move(target));
-    return m_targets.size() - 1;
-}
-
+/* ========================================================================= //
+    Render targets
+// ========================================================================= */
 
 RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h,const bool tracksWindow) 
 { return pushTarget(std::make_unique<RenderTarget>(w, h, tracksWindow)); }
 
+
+void Renderer::destroyTarget(const RenderTargetID target) {
+    assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
+    assert(target < m_targets.size() && m_targets[target] && "Renderer: invalid or already destroyed target");
+
+    m_targets[target].reset();
+    m_freeTargets.push_back(target);
+}
+
+
+
+/* ========================================================================= //
+    Vertex buffers
+// ========================================================================= */
 
 VertexBufferID Renderer::createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout) {
     size_t sizeInBytes = count * layout.stride();
@@ -137,6 +162,36 @@ VertexBufferID Renderer::createVertexBuffer(const void* data, const size_t count
 }
 
 
+void Renderer::updateVertexBuffer(
+    const VertexBufferID vertices, 
+    const void* data, 
+    const size_t count,
+    const VtxLayout& newLayout
+) {
+    assert(vertices < m_vertexBuffers.size() && "updateVertexBuffer(): Vertex buffer ID out of range");
+    auto& vb = m_vertexBuffers[vertices];
+    vb.layout = newLayout.stride() == 0 ? vb.layout : newLayout;
+
+    size_t sizeInBytes = count * vb.layout.stride();
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+
+    vb.verts.assign(bytes, bytes + sizeInBytes);
+}
+
+
+void Renderer::destroyVertexBuffer(const VertexBufferID buffer) {
+    assert(buffer < m_vertexBuffers.size() && "Renderer: invalid vertex buffer");
+
+    m_vertexBuffers[buffer] = VertexBuffer{}; // releases the byte storage
+    m_freeVertexBuffers.push_back(buffer);
+}
+
+
+
+/* ========================================================================= //
+    Index buffers
+// ========================================================================= */
+
 IndexBufferID Renderer::createIndexBuffer(const uint32_t* data, const size_t count) {
     IndexBuffer newBuffer;
     newBuffer.indices.assign(data, data + count);
@@ -153,6 +208,63 @@ IndexBufferID Renderer::createIndexBuffer(const uint32_t* data, const size_t cou
 }
 
 
+void Renderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count) {
+    assert(indices < m_indexBuffers.size() && "updateIndexBuffer(): Index buffer ID out of range");
+    m_indexBuffers[indices].indices.assign(data, data + count);
+}
+
+
+void Renderer::destroyIndexBuffer(const IndexBufferID buffer) {
+    assert(buffer < m_indexBuffers.size() && "Renderer: invalid index buffer");
+
+    m_indexBuffers[buffer] = IndexBuffer{}; // releases the index storage
+    m_freeIndexBuffers.push_back(buffer);
+}
+
+
+
+/* ========================================================================= //
+    Uniform buffers
+// ========================================================================= */
+
+UniformBufferID Renderer::createUniformBuffer(const void* data, const size_t bytes) {
+    UniformBuffer newBuffer;
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    newBuffer.data.assign(src, src + bytes);
+
+    if (!m_freeUniformBuffers.empty()) {
+        UniformBufferID id = m_freeUniformBuffers.back();
+        m_freeUniformBuffers.pop_back();
+        m_uniformBuffers[id] = std::move(newBuffer);
+        return id;
+    }
+
+    m_uniformBuffers.push_back(std::move(newBuffer));
+    return m_uniformBuffers.size() - 1;
+}
+
+
+void Renderer::updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes) {
+    assert(buffer < m_uniformBuffers.size() && "updateUniformBuffer(): Uniform buffer ID out of range");
+    
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    m_uniformBuffers[buffer].data.assign(src, src + bytes);
+}
+
+
+void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
+    assert(buffer < m_uniformBuffers.size() && "destroyUniformBuffer(): Uniform buffer ID out of range");
+
+    m_uniformBuffers[buffer] = UniformBuffer{};
+    m_freeUniformBuffers.push_back(buffer);
+}
+
+
+
+/* ========================================================================= //
+    Textures
+// ========================================================================= */
+
 TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data) {
     return pushTarget(std::make_unique<RenderTarget>(
         RenderTarget::loadFromMemory(w, h, data)
@@ -160,26 +272,10 @@ TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint
 }
 
 
-void Renderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count) {
-    assert(indices < m_indexBuffers.size() && "updateIndexBuffer(): Index buffer ID out of range");
-    m_indexBuffers[indices].indices.assign(data, data + count);
-}
-
-
-void Renderer::updateVertexBuffer(
-    const VertexBufferID vertices, 
-    const void* data, 
-    const size_t count,
-    const VtxLayout& newLayout
-) {
-    assert(vertices < m_vertexBuffers.size() && "updateVertexBuffer(): Vertex buffer ID out of range");
-    auto& vb = m_vertexBuffers[vertices];
-    vb.layout = newLayout.stride() == 0 ? vb.layout : newLayout;
-
-    size_t sizeInBytes = count * vb.layout.stride();
-    const uint8_t* bytes = static_cast<const uint8_t*>(data);
-
-    vb.verts.assign(bytes, bytes + sizeInBytes);
+TextureID Renderer::createTexture(const std::string& path) {
+    return pushTarget(std::make_unique<RenderTarget>(
+        RenderTarget::loadImageFromPath(path)
+    ));
 }
 
 
@@ -200,37 +296,19 @@ void Renderer::updateTexture(
 }
 
 
-TextureID Renderer::createTexture(const std::string& path) {
-    return pushTarget(std::make_unique<RenderTarget>(
-        RenderTarget::loadImageFromPath(path)
-    ));
+void Renderer::destroyTexture(const TextureID texture) {
+    assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
+    assert(texture < m_targets.size() && m_targets[texture] && "Renderer: invalid or already destroyed texture");
+
+    m_targets[texture].reset();
+    m_freeTargets.push_back(texture);
 }
 
 
-void Renderer::destroyTarget(const RenderTargetID target) {
-    assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
-    assert(target < m_targets.size() && m_targets[target] && "Renderer: invalid or already destroyed target");
 
-    m_targets[target].reset();
-    m_freeTargets.push_back(target);
-}
-
-
-void Renderer::destroyVertexBuffer(const VertexBufferID buffer) {
-    assert(buffer < m_vertexBuffers.size() && "Renderer: invalid vertex buffer");
-
-    m_vertexBuffers[buffer] = VertexBuffer{}; // releases the byte storage
-    m_freeVertexBuffers.push_back(buffer);
-}
-
-
-void Renderer::destroyIndexBuffer(const IndexBufferID buffer) {
-    assert(buffer < m_indexBuffers.size() && "Renderer: invalid index buffer");
-
-    m_indexBuffers[buffer] = IndexBuffer{}; // releases the index storage
-    m_freeIndexBuffers.push_back(buffer);
-}
-
+/* ========================================================================= //
+    Programs
+// ========================================================================= */
 
 void Renderer::destroyProgram(const ProgramID program) {
     assert(program < m_programs.size() && "Renderer: invalid program");
@@ -240,14 +318,45 @@ void Renderer::destroyProgram(const ProgramID program) {
 }
 
 
-void Renderer::destroyTexture(const TextureID texture) {
-    assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
-    assert(texture < m_targets.size() && m_targets[texture] && "Renderer: invalid or already destroyed texture");
 
-    m_targets[texture].reset();
-    m_freeTargets.push_back(texture);
+/* ========================================================================= //
+    State
+// ========================================================================= */
+
+void Renderer::resize(const uint32_t w, const uint32_t h) {
+    for (auto& tgt : m_targets)
+        if (tgt && tgt->tracksWindow()) // destroyed slots are null
+            tgt->resize(w * m_cfg.renderScale, h * m_cfg.renderScale);
+
+    recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale);
 }
 
+
+void Renderer::setVsync(const bool vsync) { 
+    m_cfg.vsync = vsync; 
+    SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync); 
+}
+
+
+
+/* ========================================================================= //
+    Internal
+// ========================================================================= */
+
+RenderTargetID Renderer::pushTarget(std::unique_ptr<RenderTarget> target) {
+    if (!m_freeTargets.empty()) {
+        RenderTargetID id = m_freeTargets.back();
+        m_freeTargets.pop_back();
+        m_targets[id] = std::move(target);
+        return id;
+    }
+
+    m_targets.push_back(std::move(target));
+    return m_targets.size() - 1;
+}
+
+
+// the SDL streaming texture that show() blits the backbuffer through
 bool Renderer::recreateTexture(const uint32_t w, const uint32_t h) {
     SDL_DestroyTexture(m_sdlTexture);
     m_sdlTexture = SDL_CreateTexture(
@@ -264,18 +373,6 @@ bool Renderer::recreateTexture(const uint32_t w, const uint32_t h) {
 
     m_texW = w; m_texH = h;
     return true;
-}
-
-void Renderer::setVsync(const bool vsync) { 
-    m_cfg.vsync = vsync; 
-    SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync); 
-}
-
-void Renderer::shutdown() { 
-    SDL_DestroyTexture(m_sdlTexture); 
-    SDL_DestroyRenderer(m_sdlRenderer);
-    m_sdlTexture = nullptr;
-    m_sdlRenderer = nullptr;
 }
 
 } // namespace valo

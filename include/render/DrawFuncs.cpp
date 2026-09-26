@@ -371,7 +371,7 @@ void drawTriangles(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 ) {
     const size_t stride = vb.layout.stride();
 
@@ -390,7 +390,7 @@ void drawTriangles(
     wireTris.clear();
 
     auto rasterChunk = [&]() {
-        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+        forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
             if (!wire) {
                 for (const ScreenTri& tri : tris)
                     rasterizeTriangle(target, program, cmd, tri, y0, y1);
@@ -466,7 +466,7 @@ void drawLines(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 ) {
     const size_t stride = vb.layout.stride();
     const size_t begin = std::min(static_cast<size_t>(cmd.firstIndex), ib.indices.size());
@@ -479,7 +479,7 @@ void drawLines(
     lines.clear();
 
     auto rasterChunk = [&]() {
-        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+        forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
             for (size_t k = 0; k + 1 < lines.size(); k += 2) {
                 Vec4f pos[2]            = { lines[k].pos,   lines[k + 1].pos  };
                 const float* varys[2]   = { lines[k].vary,  lines[k + 1].vary };
@@ -530,7 +530,7 @@ void drawPoints(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    std::vector<std::unique_ptr<RenderTarget>>* targets
+    const DrawContext& ctx
 ) {
     size_t stride = vb.layout.stride();
 
@@ -546,7 +546,7 @@ void drawPoints(
     points.clear();
 
     auto rasterChunk = [&]() {
-        forEachBand(pool, target->height(), targets, [&](int y0, int y1) {
+        forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
             for (const PointRec& p : points)
                 rasterizePoint(target, program, cmd, p.v.pos, p.v.vary, p.size, y0, y1);
         });

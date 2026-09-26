@@ -4,6 +4,10 @@
 
 namespace valo {
 
+/* ========================================================================= //
+    Lifecycle
+// ========================================================================= */
+
 VALO::~VALO() { shutdown(); }
 
 
@@ -24,6 +28,18 @@ bool VALO::init(Window& window, const RenderConfig& cfg) {
     return initialized;
 }
 
+
+void VALO::shutdown() {
+    m_renderer.shutdown();
+    m_cfg.sdlWindow = nullptr;
+    m_window = nullptr;
+}
+
+
+
+/* ========================================================================= //
+    Frame
+// ========================================================================= */
 
 // clears each target once, using the clear color of the first layer (in draw order) that uses it
 void VALO::beginFrame() {
@@ -70,10 +86,10 @@ void VALO::endFrame(const RenderTargetID displayTarget) {
 }
 
 
-void VALO::setLayerOrder(const std::vector<LayerID>& order) {
-    m_layerOrder = order;
-}
 
+/* ========================================================================= //
+    Layers
+// ========================================================================= */
 
 LayerID VALO::addLayer(
     const RenderTargetID target,
@@ -94,9 +110,54 @@ void VALO::removeLayer(const LayerID layer) {
 }
 
 
+void VALO::setLayerOrder(const std::vector<LayerID>& order) {
+    m_layerOrder = order;
+}
+
+
 void VALO::setLayerClearColor(const LayerID layer, const Color& color) {
     m_layers[layer].clearColor = clamp(color, 0.f, 1.f);
 }
+
+
+
+/* ========================================================================= //
+    Clip stack
+// ========================================================================= */
+
+void VALO::pushClip(
+    const RenderCommand& shape, 
+    const LayerID layer
+) {
+    RenderCommand c = shape;
+    c.colorWrite    = false;
+    c.depthTest     = false;
+    c.depthWrite    = false;
+    c.stencilTest   = m_clipStack.empty() ? StencilTest::Always : StencilTest::Equal;
+    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilOp     = StencilOp::Incr;
+    m_layers[layer].cmdQueue.push_back(c);
+    m_clipStack.push_back(c);
+}
+
+
+void VALO::popClip(
+    const LayerID layer
+) {
+    if (m_clipStack.empty()) return;
+    RenderCommand c = m_clipStack.back();
+    c.stencilTest   = StencilTest::Equal;
+    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilOp     = StencilOp::Decr;
+    m_layers[layer].cmdQueue.push_back(c);
+    m_clipStack.pop_back();
+}
+
+
+
+/* ========================================================================= //
+    Render targets
+// ========================================================================= */
 
 /*
     if no args passed in, target is same size as window.
@@ -118,6 +179,15 @@ RenderTargetID VALO::createTarget(
 }
 
 
+void VALO::destroyTarget(const RenderTargetID target) 
+{ m_renderer.destroyTarget(target); }
+
+
+
+/* ========================================================================= //
+    Vertex buffers
+// ========================================================================= */
+
 VertexBufferID VALO::createVertexBuffer(
     const void* data,
     const size_t count,
@@ -125,17 +195,27 @@ VertexBufferID VALO::createVertexBuffer(
 ) { return m_renderer.createVertexBuffer(data, count, layout); }
 
 
+void VALO::updateVertexBuffer(
+    const VertexBufferID vertices,
+    const void* data,
+    const size_t count,
+    const VtxLayout& newLayout
+) { m_renderer.updateVertexBuffer(vertices, data, count, newLayout); }
+
+
+void VALO::destroyVertexBuffer(const VertexBufferID buffer) 
+{ m_renderer.destroyVertexBuffer(buffer); }
+
+
+
+/* ========================================================================= //
+    Index buffers
+// ========================================================================= */
+
 IndexBufferID VALO::createIndexBuffer(
     const uint32_t* data,
     const size_t count
 ) { return m_renderer.createIndexBuffer(data, count); }
-
-
-TextureID VALO::createTexture(
-    const uint32_t w, 
-    const uint32_t h,
-    const uint32_t* data
-) { return m_renderer.createTexture(w, h, data); }
 
 
 void VALO::updateIndexBuffer(
@@ -145,12 +225,47 @@ void VALO::updateIndexBuffer(
 ) { m_renderer.updateIndexBuffer(indices, data, count); }
 
 
-void VALO::updateVertexBuffer(
-    const VertexBufferID vertices,
+void VALO::destroyIndexBuffer(const IndexBufferID buffer) 
+{ m_renderer.destroyIndexBuffer(buffer); }
+
+
+
+/* ========================================================================= //
+    Uniform buffers
+// ========================================================================= */
+
+UniformBufferID VALO::createUniformBuffer(
     const void* data,
-    const size_t count,
-    const VtxLayout& newLayout
-) { m_renderer.updateVertexBuffer(vertices, data, count, newLayout); }
+    const size_t bytes
+) { return m_renderer.createUniformBuffer(data, bytes); }
+
+
+void VALO::updateUniformBuffer(
+    const UniformBufferID buffer,
+    const void* data,
+    const size_t bytes
+) { m_renderer.updateUniformBuffer(buffer, data, bytes); }
+
+
+void VALO::destroyUniformBuffer(const UniformBufferID buffer)
+{ m_renderer.destroyUniformBuffer(buffer); }
+
+
+
+/* ========================================================================= //
+    Textures
+// ========================================================================= */
+
+TextureID VALO::createTexture(
+    const uint32_t w, 
+    const uint32_t h,
+    const uint32_t* data
+) { return m_renderer.createTexture(w, h, data); }
+
+
+TextureID VALO::createTexture(
+    const std::string& path
+) { return m_renderer.createTexture(path); }
 
 
 void VALO::updateTexture(const TextureID texture, const uint32_t* data) {
@@ -166,34 +281,23 @@ void VALO::updateTexture(
 ) { m_renderer.updateTexture(texture, x, y, w, h, data); }
 
 
-TextureID VALO::createTexture(
-    const std::string& path
-) { return m_renderer.createTexture(path); }
-
-
-void VALO::destroyTarget(const RenderTargetID target) 
-{ m_renderer.destroyTarget(target); }
-
-void VALO::destroyVertexBuffer(const VertexBufferID buffer) 
-{ m_renderer.destroyVertexBuffer(buffer); }
-
-void VALO::destroyIndexBuffer(const IndexBufferID buffer) 
-{ m_renderer.destroyIndexBuffer(buffer); }
-
-void VALO::destroyProgram(const ProgramID program) 
-{ m_renderer.destroyProgram(program); }
-
 void VALO::destroyTexture(const TextureID texture)
 { m_renderer.destroyTexture(texture); }
 
 
-void VALO::setRenderScale(const float scale) { 
-    m_renderer.setRenderScale(scale);
-    if (m_window) resize();
-}
 
-float VALO::getRenderScale() const { return m_renderer.getRenderScale(); }
+/* ========================================================================= //
+    Programs
+// ========================================================================= */
 
+void VALO::destroyProgram(const ProgramID program) 
+{ m_renderer.destroyProgram(program); }
+
+
+
+/* ========================================================================= //
+    State
+// ========================================================================= */
 
 void VALO::resize() {
     if (!m_window) return;
@@ -202,46 +306,29 @@ void VALO::resize() {
 }
 
 
-void VALO::shutdown() {
-    m_renderer.shutdown();
-    m_cfg.sdlWindow = nullptr;
-    m_window = nullptr;
+void VALO::setRenderScale(const float scale) { 
+    m_renderer.setRenderScale(scale);
+    if (m_window) resize();
 }
+
+
+float VALO::getRenderScale() const { return m_renderer.getRenderScale(); }
+
 
 void VALO::setVsync(const bool vsync) {
     m_renderer.setVsync(vsync);
 }
 
+
 bool VALO::getVsync() const {
     return m_renderer.getVsync();
 }
 
-void VALO::pushClip(
-    const RenderCommand& shape, 
-    const LayerID layer
-) {
-    RenderCommand c = shape;
-    c.colorWrite    = false;
-    c.depthTest     = false;
-    c.depthWrite    = false;
-    c.stencilTest   = m_clipStack.empty() ? StencilTest::Always : StencilTest::Equal;
-    c.stencilRef    = uint8_t(m_clipStack.size());
-    c.stencilOp     = StencilOp::Incr;
-    m_layers[layer].cmdQueue.push_back(c);
-    m_clipStack.push_back(c);
-}
 
-void VALO::popClip(
-    const LayerID layer
-) {
-    if (m_clipStack.empty()) return;
-    RenderCommand c = m_clipStack.back();
-    c.stencilTest   = StencilTest::Equal;
-    c.stencilRef    = uint8_t(m_clipStack.size());
-    c.stencilOp     = StencilOp::Decr;
-    m_layers[layer].cmdQueue.push_back(c);
-    m_clipStack.pop_back();
-}
+
+/* ========================================================================= //
+    Queries
+// ========================================================================= */
 
 double VALO::getDeltaTime() const {
     return std::min(m_deltaTime, 0.1);

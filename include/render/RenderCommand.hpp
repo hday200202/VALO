@@ -2,6 +2,10 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cassert>
+#include <cstring>
+#include <type_traits>
+#include <array>
 
 namespace valo {
 
@@ -10,12 +14,14 @@ inline constexpr uint32_t DEFAULT_PROGRAM   = UINT32_MAX;
 inline constexpr uint32_t ALL_INDICES       = UINT32_MAX;
 inline constexpr uint32_t MAX_INSTANCES     = UINT32_MAX; // Essentially unlimited for now
 inline constexpr uint32_t EMPTY_TEXTURE     = UINT32_MAX;
+inline constexpr uint32_t MAX_UNIFORM_SLOTS = 8;
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
 using IndexBufferID     = uint32_t;
 using ProgramID         = uint32_t;
 using TextureID         = uint32_t;
+using UniformBufferID   = uint32_t;
 
 enum class Topology     { Points, Lines, Triangles };
 enum class CullMode     { None, Back, Front };
@@ -29,6 +35,8 @@ struct RenderCommand {
     VertexBufferID      verts           = EMPTY_BUFFER;
     IndexBufferID       indices         = EMPTY_BUFFER;
     ProgramID           program         = DEFAULT_PROGRAM;
+
+    // UniformBufferID     uniforms        = EMPTY_BUFFER;
 
     uint32_t            firstIndex      = 0;
     uint32_t            indexCount      = ALL_INDICES;
@@ -63,6 +71,19 @@ struct RenderCommand {
 
         std::memcpy(uniforms, &t, sizeof(T));
         uniformSize = sizeof(T);
+    }
+
+    inline constexpr std::array<UniformBufferID, MAX_UNIFORM_SLOTS> emptyUniformSlots() {
+        std::array<UniformBufferID, MAX_UNIFORM_SLOTS> slots{};
+        for (auto& s : slots) s = EMPTY_BUFFER;
+        return slots;
+    }
+
+    std::array<UniformBufferID, MAX_UNIFORM_SLOTS> uniformBuffers = emptyUniformSlots();
+
+    void bindUniformBuffer(const uint32_t slot, const UniformBufferID buffer) {
+        assert(slot < MAX_UNIFORM_SLOTS && "bindUniformBuffer(): slot out of range");
+        uniformBuffers[slot] = buffer;
     }
 };
 

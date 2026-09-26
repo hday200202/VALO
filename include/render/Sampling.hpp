@@ -3,6 +3,7 @@
 #include <vector>
 #include <memory>
 #include "RenderTarget.hpp"
+#include "RenderCommand.hpp"
 #include "common/Math.hpp"
 
 namespace valo {
@@ -11,6 +12,7 @@ using TextureID = uint32_t;
 
 namespace detail {
     inline thread_local const std::vector<std::unique_ptr<RenderTarget>>* boundTargets = nullptr;
+    inline thread_local const void* const* boundUniforms = nullptr;
 }
 
 inline thread_local float       valo_PointSize      = 1.f;
@@ -45,6 +47,12 @@ struct Sampler {
 uint32_t lerpABGR32(const uint32_t a, const uint32_t b, const uint32_t t);
 Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler = {});
 float textureDepth(const TextureID tex, const Vec2f& uv);
+
+template <typename T>
+const T& uniformBuffer(const uint32_t slot) {
+    assert(slot < MAX_UNIFORM_SLOTS && detail::boundUniforms[slot] && "uniformBuffer(): nothing bound to slot");
+    return *static_cast<const T*>(detail::boundUniforms[slot]);
+}
 
 #define discard valo::vDiscard()
 

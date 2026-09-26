@@ -17,41 +17,89 @@ using LayerID = uint32_t;
 // ========================================================================= */
 class VALO {
 public:
+    static const LayerID BASE_LAYER = 0;
+
+    /* ---- lifecycle ------------------------------------------------------ */
     VALO() = default;
     VALO(const VALO&) = delete;
     VALO& operator=(const VALO&) = delete;
     ~VALO();
 
     bool init(Window& window, const RenderConfig& cfg = {});
+    void shutdown();
 
+    /* ---- frame ---------------------------------------------------------- */
     void beginFrame();
     void submit(const RenderCommand& cmd, LayerID layer = 0);
     void endFrame(const RenderTargetID displayTarget = Renderer::BACKBUFFER);
 
-    void setLayerOrder(const std::vector<LayerID>& order);
+    /* ---- layers --------------------------------------------------------- */
     LayerID addLayer(
         const RenderTargetID target = Renderer::BACKBUFFER,
         const Color& clearColor = {0.f, 0.f, 0.f, 1.f}
     );
     void removeLayer(const LayerID layer);
+    void setLayerOrder(const std::vector<LayerID>& order);
     void setLayerClearColor(const LayerID layer, const Color& color);
 
+    /* ---- clip stack ----------------------------------------------------- */
+    void pushClip(const RenderCommand& shape, const LayerID layer = BASE_LAYER);
+    void popClip(const LayerID layer = BASE_LAYER);
+
+    /* ---- render targets ------------------------------------------------- */
     RenderTargetID createTarget(
         const uint32_t w = 0,
         const uint32_t h = 0
     );
+    void destroyTarget(const RenderTargetID target);
 
+    /* ---- vertex buffers ------------------------------------------------- */
     VertexBufferID createVertexBuffer(
         const void* data,
         const size_t count,
         const VtxLayout& layout
     );
 
+    void updateVertexBuffer(
+        const VertexBufferID vertices,
+        const void* data,
+        const size_t count,
+        const VtxLayout& newLayout = {}
+    );
+
+    void destroyVertexBuffer(const VertexBufferID buffer);
+
+    /* ---- index buffers -------------------------------------------------- */
     IndexBufferID createIndexBuffer(
         const uint32_t* data,
         const size_t count
     );
 
+    void updateIndexBuffer(
+        const IndexBufferID indices,
+        const uint32_t* data,
+        const size_t count
+    );
+
+    void destroyIndexBuffer(const IndexBufferID buffer);
+
+    /* ---- uniform buffers ------------------------------------------------ */
+    UniformBufferID createUniformBuffer(
+        const void* data,
+        const size_t bytes
+    );
+
+    void updateUniformBuffer(
+        const UniformBufferID buffer,
+        const void* data,
+        const size_t bytes
+    );
+
+    void destroyUniformBuffer(
+        const UniformBufferID buffer
+    );
+
+    /* ---- textures ------------------------------------------------------- */
     TextureID createTexture(
         const uint32_t w, 
         const uint32_t h,
@@ -62,19 +110,6 @@ public:
         const std::string& path
     );
 
-    void updateIndexBuffer(
-        const IndexBufferID indices,
-        const uint32_t* data,
-        const size_t count
-    );
-
-    void updateVertexBuffer(
-        const VertexBufferID vertices,
-        const void* data,
-        const size_t count,
-        const VtxLayout& newLayout = {}
-    );
-
     void updateTexture(const TextureID texture, const uint32_t* data);
     void updateTexture(
         const TextureID texture, 
@@ -83,6 +118,9 @@ public:
         const uint32_t* data
     );
 
+    void destroyTexture(const TextureID texture);
+
+    /* ---- programs ------------------------------------------------------- */
     template <typename V, typename U, typename Vy>
     ProgramID createProgram(
         void (*vs)(const V&, const U&, Vy&), 
@@ -93,29 +131,20 @@ public:
     ProgramID createProgram(void (*vs)(const V&, const U&, Vy&))
     { return m_renderer.createProgram(vs); }
 
-    void destroyTarget(const RenderTargetID target);
-    void destroyVertexBuffer(const VertexBufferID buffer);
-    void destroyIndexBuffer(const IndexBufferID buffer);
     void destroyProgram(const ProgramID program);
-    void destroyTexture(const TextureID texture);
+
+    /* ---- state ---------------------------------------------------------- */
+    void resize();
 
     void  setRenderScale(const float scale);
     float getRenderScale() const;
 
-    Window* getWindow() const { return m_window; }
-    
     void setVsync(const bool vsync);
     bool getVsync() const;
 
-    void pushClip(const RenderCommand& shape, const LayerID layer = BASE_LAYER);
-    void popClip(const LayerID layer = BASE_LAYER);
-
+    /* ---- queries -------------------------------------------------------- */
+    Window* getWindow() const { return m_window; }
     double getDeltaTime() const;
-
-    void resize();
-    void shutdown();
-
-    static const LayerID BASE_LAYER = 0;
 
 private:
     RenderConfig m_cfg;
