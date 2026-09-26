@@ -159,61 +159,121 @@ static Vec3f environmentColour(const Vec3f& d) {
 static const Vec3f kAmbientUp   = skyColour({0.f,  1.f, 0.f});
 static const Vec3f kAmbientDown = skyColour({0.f, -1.f, 0.f});
 
-// ---------------------------------------------------------------------------
-// value noise / fbm
-// ---------------------------------------------------------------------------
+/* ===========================================================================
+    Value noise and fbm
+
+    Value noise: hash each integer lattice point to a random number, then
+    interpolate smoothly between the eight corners of the cell a point falls in.
+    fbm sums several octaves at doubling frequency and halving amplitude, which
+    is what turns a soft blob field into something that reads as surface detail.
+=========================================================================== */
+
+// A cheap integer hash. No randomness needed beyond "the same input always gives
+// the same unpredictable-looking output", which is what makes the noise stable
+// frame to frame.
 static inline float hash3(int x, int y, int z) {
     uint32_t h = uint32_t(x) * 374761393u + uint32_t(y) * 668265263u + uint32_t(z) * 2147483647u;
     h = (h ^ (h >> 13)) * 1274126177u;
     h ^= h >> 16;
     return float(h) * (1.f / 4294967296.f);
 }
+// The classic 3t^2 - 2t^3 ease. Interpolating the lattice linearly would leave
+// visible creases at every cell boundary; this makes the first derivative match.
 static inline float smoothstepf(float t) { return t * t * (3.f - 2.f * t); }
 
 static float valueNoise(const Vec3f& p) {
-    const float fx = std::floor(p.x), fy = std::floor(p.y), fz = std::floor(p.z);
-    const int ix = int(fx), iy = int(fy), iz = int(fz);
-    const float tx = smoothstepf(p.x - fx), ty = smoothstepf(p.y - fy), tz = smoothstepf(p.z - fz);
-    const float c000 = hash3(ix,   iy,   iz  ), c100 = hash3(ix+1, iy,   iz  );
-    const float c010 = hash3(ix,   iy+1, iz  ), c110 = hash3(ix+1, iy+1, iz  );
-    const float c001 = hash3(ix,   iy,   iz+1), c101 = hash3(ix+1, iy,   iz+1);
-    const float c011 = hash3(ix,   iy+1, iz+1), c111 = hash3(ix+1, iy+1, iz+1);
-    const float x00 = c000 + (c100 - c000) * tx, x10 = c010 + (c110 - c010) * tx;
-    const float x01 = c001 + (c101 - c001) * tx, x11 = c011 + (c111 - c011) * tx;
-    const float y0 = x00 + (x10 - x00) * ty, y1 = x01 + (x11 - x01) * ty;
+    // which lattice cell, and how far into it
+    const float fx = std::floor(p.x);
+    const float fy = std::floor(p.y);
+    const float fz = std::floor(p.z);
+
+    const int ix = int(fx);
+    const int iy = int(fy);
+    const int iz = int(fz);
+
+    const float tx = smoothstepf(p.x - fx);
+    const float ty = smoothstepf(p.y - fy);
+    const float tz = smoothstepf(p.z - fz);
+
+    // the cell's eight corners
+    const float c000 = hash3(ix,     iy,     iz    );
+    const float c100 = hash3(ix + 1, iy,     iz    );
+    const float c010 = hash3(ix,     iy + 1, iz    );
+    const float c110 = hash3(ix + 1, iy + 1, iz    );
+    const float c001 = hash3(ix,     iy,     iz + 1);
+    const float c101 = hash3(ix + 1, iy,     iz + 1);
+    const float c011 = hash3(ix,     iy + 1, iz + 1);
+    const float c111 = hash3(ix + 1, iy + 1, iz + 1);
+
+    // trilinear: collapse along x, then y, then z
+    const float x00 = c000 + (c100 - c000) * tx;
+    const float x10 = c010 + (c110 - c010) * tx;
+    const float x01 = c001 + (c101 - c001) * tx;
+    const float x11 = c011 + (c111 - c011) * tx;
+
+    const float y0 = x00 + (x10 - x00) * ty;
+    const float y1 = x01 + (x11 - x01) * ty;
+
     return y0 + (y1 - y0) * tz;
 }
 
 static float fbm(Vec3f p, int octaves) {
-    float sum = 0.f, amp = 0.5f, total = 0.f;
-    for (int i = 0; i < octaves; ++i) { sum += valueNoise(p) * amp; total += amp; p = p * 2.02f; amp *= 0.5f; }
+    float sum   = 0.f;
+    float amp   = 0.5f;
+    float total = 0.f;                  // running amplitude, to normalise at the end
+
+    for (int i = 0; i < octaves; ++i) {
+        sum   += valueNoise(p) * amp;
+        total += amp;
+
+        // 2.02 rather than 2: an exact doubling lines every octave's lattice up
+        // on the same integer grid, which shows as a regular grid artefact
+        p    = p * 2.02f;
+        amp *= 0.5f;
+    }
+
     return total > 0.f ? sum / total : 0.f;
 }
 
 static inline float heightField(const Vec3f& objPos, float scale) { return fbm(objPos * scale, 4); }
 
-// ---------------------------------------------------------------------------
-// BRDF
-// ---------------------------------------------------------------------------
+/* ===========================================================================
+    Cook-Torrance BRDF
+
+    The specular term is  D * G * F / (4 * nDotL * nDotV), where
+      D  how much of the surface's microfacets point at the half vector
+      G  how much those microfacets shadow and mask each other
+      F  how reflective the surface is at this viewing angle (Fresnel)
+=========================================================================== */
+
+// Trowbridge-Reitz / GGX. r is perceptual roughness, so it is squared once to
+// get the material's alpha and again inside the formula - hence r^4.
 static float distributionGGX(float nDotH, float r) {
     const float a2 = r * r * r * r;
     const float d  = nDotH * nDotH * (a2 - 1.f) + 1.f;
     return a2 / std::max(kPi * d * d, 1e-7f);
 }
+// Schlick-GGX geometry term, one direction at a time; the caller multiplies the
+// light and view directions together (Smith's method).
 static float geometrySchlick(float nDotX, float r) {
     const float k = (r + 1.f) * (r + 1.f) / 8.f;
     return nDotX / std::max(nDotX * (1.f - k) + k, 1e-7f);
 }
+// Fresnel: reflectivity climbs toward 1 at grazing angles. f0 is the head-on
+// reflectance - 0.04 for dielectrics, the albedo itself for metals.
 static Vec3f fresnelSchlick(float cosTheta, const Vec3f& f0) {
     const float f = std::pow(1.f - saturate(cosTheta), 5.f);
     return f0 + (Vec3f{1.f, 1.f, 1.f} - f0) * f;
 }
+// Same curve with the ceiling pulled down by roughness, for the environment
+// reflection - a rough surface should not mirror at the silhouette.
 static Vec3f fresnelSchlickRoughness(float cosTheta, const Vec3f& f0, float r) {
     const float f = std::pow(1.f - saturate(cosTheta), 5.f);
     const float invR = 1.f - r;
     const Vec3f maxR = {std::max(invR, f0.x), std::max(invR, f0.y), std::max(invR, f0.z)};
     return f0 + (maxR - f0) * f;
 }
+// Reinhard (v / (1 + v)) to pull HDR into 0..1, then gamma for display.
 static Vec3f toneMap(const Vec3f& c) {
     auto enc = [](float v) { return std::pow(saturate(v / (1.f + v)), 1.f / 2.2f); };
     return {enc(c.x), enc(c.y), enc(c.z)};
@@ -224,11 +284,22 @@ static Vec3f toneMap(const Vec3f& c) {
 // ---------------------------------------------------------------------------
 struct Vertex { Vec3f pos; Vec3f normal; Vec2f uv; };
 
+/*
+    Camera and lights are the same for every draw in the frame, so they live in
+    a uniform buffer bound to a slot rather than being memcpy'd into each
+    command. A uniform buffer is read when the queue executes at endFrame, so
+    only frame-constant values belong in one - per-draw state stays in Uniforms.
+*/
+struct SceneUniforms {
+    Vec3f camPos;
+    Vec3f lightPos[4];           // world space
+};
+
+constexpr uint32_t kSceneSlot = 0;
+
 struct Uniforms {
     Mat4f mvp;
     Mat4f model;                 // pure rotation, doubles as the normal matrix
-    Vec3f camPos;
-    Vec3f lightPos[4];           // world space
     Vec3f albedo; float metallic, roughness;
     float bump, noiseScale, variation;
     bool  detail, displace;
@@ -278,7 +349,9 @@ static void fs(const Varyings& in, const Uniforms& u) {
     }
 
     // --- Cook-Torrance over four lights ---
-    const Vec3f v = (u.camPos - in.worldPos).normalized();
+    const SceneUniforms& scene = valo::uniformBuffer<SceneUniforms>(kSceneSlot);
+
+    const Vec3f v = (scene.camPos - in.worldPos).normalized();
     const float nDotV = std::max(n.dot(v), 1e-4f);
     const float roughness = clampf(u.roughness + roughOff, 0.035f, 1.f);
     const float metallic  = clampf(u.metallic  + metalOff, 0.f, 1.f);
@@ -286,7 +359,7 @@ static void fs(const Varyings& in, const Uniforms& u) {
 
     Vec3f radiance = {0.f, 0.f, 0.f};
     for (int i = 0; i < 4; ++i) {
-        const Vec3f toLight = u.lightPos[i] - in.worldPos;
+        const Vec3f toLight = scene.lightPos[i] - in.worldPos;
         const float dist = toLight.length();
         if (dist < 1e-5f) continue;
         const Vec3f l = toLight * (1.f / dist);
@@ -318,7 +391,10 @@ struct SkyVertex   { Vec2f ndc; };
 struct SkyUniforms { float aspect, tanHalf; };
 struct SkyVaryings { Vec2f ndc; };
 
-static void skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) { out.ndc = in.ndc; valo::valo_Position = {in.ndc.x, in.ndc.y, 0.9999f, 1.f}; return; }
+static void skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) {
+    out.ndc = in.ndc;
+    valo::valo_Position = {in.ndc.x, in.ndc.y, 0.9999f, 1.f};   // just inside the far plane
+}
 static void skyFs(const SkyVaryings& in, const SkyUniforms& u) {
     const Vec3f dir = Vec3f{in.ndc.x * u.tanHalf * u.aspect, in.ndc.y * u.tanHalf, -1.f}.normalized();
     valo::valo_FragColor = {toneMap(environmentColour(dir)), 1.f};
@@ -329,45 +405,104 @@ static void skyFs(const SkyVaryings& in, const SkyUniforms& u) {
 // ---------------------------------------------------------------------------
 struct Mesh { std::vector<Vertex> verts; std::vector<uint32_t> idx; };
 
-// each face is a grid so displacement has vertices to move; normals stay per-face
+/*
+    Each face is a seg x seg grid rather than two triangles, so the displacement
+    in the vertex shader has vertices to actually move. Every vertex on a face
+    carries that face's flat normal, which is what keeps the cube's edges sharp -
+    a shared, averaged normal would round them off.
+*/
 static Mesh buildCube(float size, int seg) {
     const float h = size * 0.5f;
+
+    // each face as an origin corner plus two edge directions, so one loop builds
+    // all six without six special cases
     struct Face { Vec3f origin, right, up, normal; };
+
     const Face faces[6] = {
-        { {-h,-h, h}, { 1,0,0}, {0,1, 0}, { 0,0, 1} }, { { h,-h,-h}, {-1,0,0}, {0,1,0}, { 0,0,-1} },
-        { {-h,-h,-h}, { 0,0,1}, {0,1, 0}, {-1,0, 0} }, { { h,-h, h}, { 0,0,-1}, {0,1,0}, { 1,0, 0} },
-        { {-h, h, h}, { 1,0,0}, {0,0,-1}, { 0,1, 0} }, { {-h,-h,-h}, { 1,0,0}, {0,0,1}, { 0,-1,0} },
+        { {-h, -h,  h}, { 1, 0,  0}, {0, 1,  0}, { 0,  0,  1} },   // +z
+        { { h, -h, -h}, {-1, 0,  0}, {0, 1,  0}, { 0,  0, -1} },   // -z
+        { {-h, -h, -h}, { 0, 0,  1}, {0, 1,  0}, {-1,  0,  0} },   // -x
+        { { h, -h,  h}, { 0, 0, -1}, {0, 1,  0}, { 1,  0,  0} },   // +x
+        { {-h,  h,  h}, { 1, 0,  0}, {0, 0, -1}, { 0,  1,  0} },   // +y
+        { {-h, -h, -h}, { 1, 0,  0}, {0, 0,  1}, { 0, -1,  0} },   // -y
     };
-    Mesh m; const int stride = seg + 1;
+
+    Mesh m;
+    const int stride = seg + 1;      // vertices per row, not quads
+
     for (const Face& f : faces) {
         const uint32_t base = uint32_t(m.verts.size());
-        for (int j = 0; j <= seg; ++j) for (int i = 0; i <= seg; ++i) {
-            const float u = float(i) / seg, v = float(j) / seg;
-            m.verts.push_back({f.origin + f.right * (u * size) + f.up * (v * size), f.normal, {u, v}});
+
+        for (int j = 0; j <= seg; ++j) {
+            for (int i = 0; i <= seg; ++i) {
+                const float u = float(i) / seg;
+                const float v = float(j) / seg;
+
+                m.verts.push_back({
+                    f.origin + f.right * (u * size) + f.up * (v * size),
+                    f.normal,
+                    {u, v},
+                });
+            }
         }
-        for (int j = 0; j < seg; ++j) for (int i = 0; i < seg; ++i) {
-            const uint32_t v00 = base + j * stride + i, v10 = v00 + 1, v01 = v00 + stride, v11 = v01 + 1;
-            m.idx.insert(m.idx.end(), {v00, v10, v11, v00, v11, v01});
+
+        for (int j = 0; j < seg; ++j) {
+            for (int i = 0; i < seg; ++i) {
+                const uint32_t v00 = base + j * stride + i;
+                const uint32_t v10 = v00 + 1;
+                const uint32_t v01 = v00 + stride;
+                const uint32_t v11 = v01 + 1;
+
+                m.idx.insert(m.idx.end(), {v00, v10, v11,  v00, v11, v01});
+            }
         }
     }
+
     return m;
 }
 
+/*
+    A UV sphere: stacks run pole to pole (phi), slices run around (theta). For a
+    unit sphere the position and the normal are the same vector, which is why
+    `unit` is used for both.
+
+    The seam column is duplicated (j goes to <= slices) because the vertex at
+    u = 0 and the one at u = 1 are in the same place but need different UVs.
+*/
 static Mesh buildSphere(float radius, int stacks, int slices) {
     Mesh m;
+
     for (int i = 0; i <= stacks; ++i) {
-        const float v = float(i) / stacks, phi = v * kPi;
+        const float v   = float(i) / stacks;
+        const float phi = v * kPi;                  // 0 at +y, pi at -y
+
         for (int j = 0; j <= slices; ++j) {
-            const float u = float(j) / slices, theta = u * 2.f * kPi;
-            const Vec3f unit = {std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta)};
+            const float u     = float(j) / slices;
+            const float theta = u * 2.f * kPi;
+
+            const Vec3f unit = {
+                std::sin(phi) * std::cos(theta),
+                std::cos(phi),
+                std::sin(phi) * std::sin(theta),
+            };
+
             m.verts.push_back({unit * radius, unit, {u, v}});
         }
     }
+
     const uint32_t stride = slices + 1;
-    for (int i = 0; i < stacks; ++i) for (int j = 0; j < slices; ++j) {
-        const uint32_t tl = i * stride + j, tr = tl + 1, bl = tl + stride, br = bl + 1;
-        m.idx.insert(m.idx.end(), {tl, br, bl, tl, tr, br});
+
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            const uint32_t tl = i * stride + j;
+            const uint32_t tr = tl + 1;
+            const uint32_t bl = tl + stride;
+            const uint32_t br = bl + 1;
+
+            m.idx.insert(m.idx.end(), {tl, br, bl,  tl, tr, br});
+        }
     }
+
     return m;
 }
 
@@ -380,14 +515,19 @@ int main() {
     if (!valo.init(window, cfg)) return 1;
 
     valo::VtxLayout layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f});
-    const Mesh cube = buildCube(2.f, kCubeSegments), sphere = buildSphere(1.25f, kSphereStacks, kSphereSlices);
+    const Mesh cube   = buildCube(2.f, kCubeSegments);
+    const Mesh sphere = buildSphere(1.25f, kSphereStacks, kSphereSlices);
     const valo::VertexBufferID cubeVb = valo.createVertexBuffer(cube.verts.data(), cube.verts.size(), layout);
     const valo::IndexBufferID  cubeIb = valo.createIndexBuffer(cube.idx.data(), cube.idx.size());
     const valo::VertexBufferID sphVb  = valo.createVertexBuffer(sphere.verts.data(), sphere.verts.size(), layout);
     const valo::IndexBufferID  sphIb  = valo.createIndexBuffer(sphere.idx.data(), sphere.idx.size());
 
+    SceneUniforms scene{};
+    const valo::UniformBufferID sceneBuffer = valo.createUniformBuffer(&scene, sizeof(scene));
+
     valo::RenderCommand obj;
     obj.program = valo.createProgram(vs, fs);
+    obj.bindUniformBuffer(kSceneSlot, sceneBuffer);
 
     SkyVertex quad[4] = {{{-1.f, -1.f}}, {{1.f, -1.f}}, {{1.f, 1.f}}, {{-1.f, 1.f}}};
     uint32_t quadIdx[6] = {0, 1, 2, 0, 2, 3};
@@ -406,30 +546,54 @@ int main() {
 
     Mat4f orientation;
     int   materialIndex = 0;
-    bool  useSphere = false, detail = true, displace = false;
-    float bump = kDefaultBump, noiseScale = kDefaultNoise, variation = kDefaultVariation;
+
+    bool  useSphere = false;
+    bool  detail    = true;
+    bool  displace  = false;
+
+    float bump       = kDefaultBump;
+    float noiseScale = kDefaultNoise;
+    float variation  = kDefaultVariation;
 
     using clk = std::chrono::steady_clock;
-    auto last = clk::now(), fpsStart = last; uint32_t fpsFrames = 0; int fps = 0;
+    auto     last      = clk::now();
+    auto     fpsStart  = last;
+    uint32_t fpsFrames = 0;
+    int      fps       = 0;
 
     while (window.pollEvents()) {
-        const auto now = clk::now();
-        const float dt = std::min(std::chrono::duration<float>(now - last).count(), 0.1f); last = now;
+        // clamped so one slow frame cannot make a held key jump the value
+        const auto  now = clk::now();
+        const float dt  = std::min(std::chrono::duration<float>(now - last).count(), 0.1f);
+        last = now;
 
+        /* --- input: view --- */
         if (window.wasKeyPressed(valo::Key::Escape)) window.close();
         if (window.wasMousePressed(valo::MouseButton::Left))  window.grabMouse();
         if (window.wasMousePressed(valo::MouseButton::Right)) window.releaseMouse();
         if (window.isMouseGrabbed()) {
+            // pre-multiplied, so each drag rotates about the SCREEN axes rather
+            // than the object's own - which is what dragging a thing feels like
             const Vec2f d = window.mouseDelta();
-            orientation = Mat4f::rotationX(d.y * kMouseSpeed) * Mat4f::rotationY(d.x * kMouseSpeed) * orientation;
+            orientation = Mat4f::rotationX(d.y * kMouseSpeed)
+                        * Mat4f::rotationY(d.x * kMouseSpeed)
+                        * orientation;
         }
+
+        /* --- input: what to draw --- */
         if (window.wasKeyPressed(valo::Key::C)) useSphere = !useSphere;
-        if (window.wasKeyPressed(valo::Key::D)) detail = !detail;
-        if (window.wasKeyPressed(valo::Key::G)) displace = !displace;
+        if (window.wasKeyPressed(valo::Key::D)) detail    = !detail;
+        if (window.wasKeyPressed(valo::Key::G)) displace  = !displace;
+
+        // wheel or brackets step through the material table; adding
+        // kMaterialCount before the modulo keeps -1 from going negative
         int step = int(window.scrollDelta() > 0.f) - int(window.scrollDelta() < 0.f);
-        if (window.wasKeyPressed(valo::Key::RightBracket)) step = 1;
+        if (window.wasKeyPressed(valo::Key::RightBracket)) step =  1;
         if (window.wasKeyPressed(valo::Key::LeftBracket))  step = -1;
         materialIndex = (materialIndex + kMaterialCount + step) % kMaterialCount;
+
+        /* --- input: held keys, scaled by dt so they tune at the same rate
+               whatever the frame rate --- */
         if (window.isKeyDown(valo::Key::Up))       bump       = clampf(bump + 1.0f * dt, 0.f, 4.f);
         if (window.isKeyDown(valo::Key::Down))     bump       = clampf(bump - 1.0f * dt, 0.f, 4.f);
         if (window.isKeyDown(valo::Key::Right))    noiseScale = clampf(noiseScale + 6.f * dt, 0.5f, 48.f);
@@ -440,36 +604,81 @@ int main() {
         if (window.wasKeyPressed(valo::Key::Num2)) valo.setRenderScale(0.75f);
         if (window.wasKeyPressed(valo::Key::Num3)) valo.setRenderScale(0.50f);
         if (window.wasKeyPressed(valo::Key::Num4)) valo.setRenderScale(0.25f);
+
         if (window.wasKeyPressed(valo::Key::R)) {
-            orientation = Mat4f(); detail = true; displace = false;
-            bump = kDefaultBump; noiseScale = kDefaultNoise; variation = kDefaultVariation;
+            orientation = Mat4f();
+            detail      = true;
+            displace    = false;
+            bump        = kDefaultBump;
+            noiseScale  = kDefaultNoise;
+            variation   = kDefaultVariation;
         }
 
+        /* --- title --- */
         ++fpsFrames;
-        if (std::chrono::duration<float>(now - fpsStart).count() >= 1.f) { fps = int(fpsFrames); fpsFrames = 0; fpsStart = now; }
+        if (std::chrono::duration<float>(now - fpsStart).count() >= 1.f) {
+            fps       = int(fpsFrames);
+            fpsFrames = 0;
+            fpsStart  = now;
+        }
+
         const Material& mat = kMaterials[materialIndex];
-        window.setTitle(std::string("VALO - PBR   ") + mat.name + "   bump " + std::to_string(bump).substr(0, 4)
-            + "  scale " + std::to_string(noiseScale).substr(0, 4) + "  var " + std::to_string(variation).substr(0, 4)
-            + (detail ? "" : "  [detail off]") + (displace ? "  [displace]" : "") + "   " + std::to_string(fps) + " fps");
+        window.setTitle(
+            std::string("VALO - PBR   ") + mat.name +
+            "   bump "  + std::to_string(bump).substr(0, 4) +
+            "  scale "  + std::to_string(noiseScale).substr(0, 4) +
+            "  var "    + std::to_string(variation).substr(0, 4) +
+            (detail   ? "" : "  [detail off]") +
+            (displace ? "  [displace]" : "") +
+            "   " + std::to_string(fps) + " fps"
+        );
 
+        /* --- camera and per-frame uniforms --- */
         const float aspect = window.getAspect();
-        const Mat4f proj = Mat4f::perspective(kFovY, aspect, 0.1f, 100.f);
+        const Mat4f proj   = Mat4f::perspective(kFovY, aspect, 0.1f, 100.f);
 
+        // the lights are authored in view space so the rig stays put as the
+        // object turns; viewInv puts them back into the world space the shader
+        // does its distance maths in
+        scene.camPos = camPos;
+        for (int i = 0; i < 4; ++i) {
+            scene.lightPos[i] = (viewInv * Vec4f(kLights[i].viewPos, 1.f)).xyz;
+        }
+        valo.updateUniformBuffer(sceneBuffer, &scene, sizeof(scene));
+
+        /* --- per-draw uniforms ---
+
+            The object rotates and the camera does not, so `orientation` is the
+            whole model matrix. It is a pure rotation, which is why the shader
+            can reuse it to transform normals - a matrix with scale in it would
+            need the inverse transpose instead.
+        */
         Uniforms u;
-        u.mvp = proj * view * orientation; u.model = orientation; u.camPos = camPos;
-        for (int i = 0; i < 4; ++i) u.lightPos[i] = (viewInv * Vec4f(kLights[i].viewPos, 1.f)).xyz;
-        u.albedo = mat.albedo; u.metallic = mat.metallic; u.roughness = mat.roughness;
-        u.bump = bump; u.noiseScale = noiseScale; u.variation = variation; u.detail = detail; u.displace = displace;
+        u.mvp   = proj * view * orientation;
+        u.model = orientation;
 
+        u.albedo    = mat.albedo;
+        u.metallic  = mat.metallic;
+        u.roughness = mat.roughness;
+
+        u.bump       = bump;
+        u.noiseScale = noiseScale;
+        u.variation  = variation;
+        u.detail     = detail;
+        u.displace   = displace;
+
+        /* --- draw --- */
         obj.verts   = useSphere ? sphVb : cubeVb;
         obj.indices = useSphere ? sphIb : cubeIb;
         obj.setUniforms(u);
+
         sky.setUniforms(SkyUniforms{aspect, std::tan(kFovY * 0.5f)});
 
         valo.beginFrame();
-        valo.submit(sky);
+        valo.submit(sky);       // first: depth test off, so it never occludes
         valo.submit(obj);
         valo.endFrame();
     }
+
     return 0;
 }

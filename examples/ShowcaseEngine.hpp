@@ -200,6 +200,24 @@ struct Light {
     float intensity = 0.f;
 };
 
+/*
+    Per-frame constants: the light rig plus the camera position and exposure.
+    Nothing here varies between draws, so instead of memcpy'ing it into every
+    RenderCommand it is uploaded once a frame and bound to a slot, which every
+    shader below reads with uniformBuffer<SceneUniforms>(kSceneSlot).
+
+    Note the read happens when the queue executes, at endFrame - so a uniform
+    buffer can only hold values that are the same for the whole frame. Anything
+    that changes per draw (mvp, material, handedness) stays in setUniforms.
+*/
+struct SceneUniforms {
+    Light lights[kLightCount];
+    Vec3f camPos;
+    float exposure;
+};
+
+inline constexpr uint32_t kSceneSlot = 0;
+
 // ---------------------------------------------------------------------------
 // camera - yaw/pitch are the authority, forward is always derived from them
 // ---------------------------------------------------------------------------
@@ -275,10 +293,7 @@ struct Material {
 struct Uniforms {
     Mat4f    mvp;
     Mat4f    model;                     // world transform, doubles as the normal matrix
-    Vec3f    camPos;
-    Light    lights[kLightCount];
     Material material;
-    float    exposure;
     float    handedness;                // -1 in the mirrored pass, flips the bitangent
     float    dim;                       // reflections come back a touch darker than the real thing
     float    emissiveBoost;
@@ -337,7 +352,9 @@ static inline void objectFs(const Varyings& in, const Uniforms& u) {
         }
     }
 
-    const Vec3f v = (u.camPos - in.worldPos).normalized();
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+
+    const Vec3f v = (scene.camPos - in.worldPos).normalized();
     if (n.dot(v) < 0.f) n = n * -1.f;                                // back faces of blended glass
     const float nDotV = std::max(n.dot(v), 1e-4f);
 
@@ -348,7 +365,7 @@ static inline void objectFs(const Varyings& in, const Uniforms& u) {
     // --- punctual lights ---
     Vec3f radiance = {0.f, 0.f, 0.f};
     for (int i = 0; i < kLightCount; ++i) {
-        const Light& light = u.lights[i];
+        const Light& light = scene.lights[i];
         if (light.intensity <= 0.f) continue;
 
         const Vec3f toLight = light.pos - in.worldPos;
@@ -391,7 +408,7 @@ static inline void objectFs(const Varyings& in, const Uniforms& u) {
     }
 
     const Vec3f hdr = (radiance + ambient + emissive * u.emissiveBoost) * u.dim;
-    valo_FragColor = {tonemap(hdr, u.exposure), alpha};
+    valo_FragColor = {tonemap(hdr, scene.exposure), alpha};
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +418,7 @@ struct SkyVertex   { Vec2f ndc; };
 struct SkyVaryings { Vec2f ndc; };
 struct SkyUniforms {
     Vec3f right, up, forward;
-    float tanHalfFov, aspect, exposure;
+    float tanHalfFov, aspect;
 };
 
 static inline void skyVs(const SkyVertex& in, const SkyUniforms&, SkyVaryings& out) {
@@ -413,7 +430,7 @@ static inline void skyFs(const SkyVaryings& in, const SkyUniforms& u) {
     const Vec3f dir = (u.right   * (in.ndc.x * u.tanHalfFov * u.aspect)
                      + u.up      * (in.ndc.y * u.tanHalfFov)
                      + u.forward).normalized();
-    valo_FragColor = {tonemap(environment(dir), u.exposure), 1.f};
+    valo_FragColor = {tonemap(environment(dir), uniformBuffer<SceneUniforms>(kSceneSlot).exposure), 1.f};
 }
 
 // ---------------------------------------------------------------------------
@@ -424,11 +441,9 @@ struct FloorVertex   { Vec3f pos; };
 struct FloorVaryings { Vec3f worldPos; };
 struct FloorUniforms {
     Mat4f viewProj;
-    Vec3f camPos;
-    Light lights[kLightCount];
     Vec3f shadowCentre;
     Vec2f shadowRadius;     // xz half extents of the model footprint
-    float exposure, fadeStart, fadeEnd, gridSpacing;
+    float fadeStart, fadeEnd, gridSpacing;
 };
 static_assert(sizeof(FloorUniforms) <= RenderCommand::MAX_UNIFORM_BYTES,
               "FloorUniforms must fit in RenderCommand's fixed uniform block");
@@ -439,8 +454,10 @@ static inline void floorVs(const FloorVertex& in, const FloorUniforms& u, FloorV
 }
 
 static inline void floorFs(const FloorVaryings& in, const FloorUniforms& u) {
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+
     const Vec3f p = in.worldPos;
-    const Vec3f toCam = u.camPos - p;
+    const Vec3f toCam = scene.camPos - p;
     const float dist  = toCam.length();
 
     // past the fade the quad contributes nothing, so bail before paying for the
@@ -473,7 +490,7 @@ static inline void floorFs(const FloorVaryings& in, const FloorUniforms& u) {
 
     Vec3f radiance = {0.f, 0.f, 0.f};
     for (int i = 0; i < kLightCount; ++i) {
-        const Light& light = u.lights[i];
+        const Light& light = scene.lights[i];
         if (light.intensity <= 0.f) continue;
 
         const Vec3f toLight = light.pos - p;
@@ -517,7 +534,7 @@ static inline void floorFs(const FloorVaryings& in, const FloorUniforms& u) {
     const float fresnel      = saturate(fEnv.x * 6.5f);
     const float fade         = 1.f - smoothstepf(u.fadeStart, u.fadeEnd, dist);
     const float reflectivity = fresnel * 0.92f * (0.3f + 0.7f * occl);   // occluded ground is a poor mirror
-    valo_FragColor = {tonemap(hdr, u.exposure), (1.f - reflectivity) * fade};
+    valo_FragColor = {tonemap(hdr, scene.exposure), (1.f - reflectivity) * fade};
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +542,7 @@ static inline void floorFs(const FloorVaryings& in, const FloorUniforms& u) {
 // ---------------------------------------------------------------------------
 struct OrbVertex   { Vec3f pos; Vec3f normal; };
 struct OrbVaryings { Vec3f normal; Vec3f worldPos; };
-struct OrbUniforms { Mat4f viewProj; Vec3f camPos, centre, colour; float exposure, brightness, radius; };
+struct OrbUniforms { Mat4f viewProj; Vec3f centre, colour; float brightness, radius; };
 
 static inline void orbVs(const OrbVertex& in, const OrbUniforms& u, OrbVaryings& out) {
     out.normal   = in.normal;
@@ -534,12 +551,14 @@ static inline void orbVs(const OrbVertex& in, const OrbUniforms& u, OrbVaryings&
 }
 
 static inline void orbFs(const OrbVaryings& in, const OrbUniforms& u) {
-    const Vec3f v = (u.camPos - in.worldPos).normalized();
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+
+    const Vec3f v = (scene.camPos - in.worldPos).normalized();
     const float facing = saturate(in.normal.normalized().dot(v));
     // bright core, halo climbing toward the silhouette
     const float halo = std::pow(1.f - facing, 2.2f);
     const Vec3f hdr  = u.colour * (u.brightness * (0.55f + halo * 2.6f));
-    valo_FragColor = {tonemap(hdr, u.exposure), 1.f};
+    valo_FragColor = {tonemap(hdr, scene.exposure), 1.f};
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +569,7 @@ public:
     Model() = default;
 
     void setVALO(VALO* valo)                    { m_valo = valo; }
+    void setSceneBuffer(UniformBufferID scene)  { m_sceneBuffer = scene; }
     void setTransform(const Mat4f& transform)   { m_transform = transform; }
     void setPosition(const Vec3f& position)     { m_transform = Mat4f::translation(position); }
     bool isLoaded() const                       { return m_loaded; }
@@ -659,7 +679,6 @@ public:
     // pass = the world matrix the whole model is drawn through (identity for the
     // real draw, the mirror for the reflection)
     void draw(const Mat4f& viewProj, const Mat4f& pass, const Vec3f& camPos,
-              const Light (&lights)[kLightCount], const float exposure,
               const float handedness, const float dim, const float emissiveBoost,
               const bool blendedPass, const CullMode cull) {
         if (!m_valo || !m_loaded) return;
@@ -677,14 +696,14 @@ public:
                       [](const auto& a, const auto& b) { return a.first > b.first; });
 
             for (const auto& [_, index] : m_sorted)
-                submit(m_items[index], viewProj, root, camPos, lights, exposure,
+                submit(m_items[index], viewProj, root,
                        handedness, dim, emissiveBoost, true, cull);
             return;
         }
 
         for (const Item& item : m_items)
             if (!item.blended)
-                submit(item, viewProj, root, camPos, lights, exposure,
+                submit(item, viewProj, root,
                        handedness, dim, emissiveBoost, false, cull);
     }
 
@@ -697,21 +716,17 @@ private:
         bool     blended;
     };
 
-    void submit(const Item& item, const Mat4f& viewProj, const Mat4f& root, const Vec3f& camPos,
-                const Light (&lights)[kLightCount], const float exposure, const float handedness,
+    void submit(const Item& item, const Mat4f& viewProj, const Mat4f& root, const float handedness,
                 const float dim, const float emissiveBoost, const bool blended, const CullMode cull) {
         const Mat4f model = root * item.world;
 
         Uniforms u{};
         u.mvp           = viewProj * model;
         u.model         = model;
-        u.camPos        = camPos;
         u.material      = materialFor(item.material);
-        u.exposure      = exposure;
         u.handedness    = handedness;
         u.dim           = dim;
         u.emissiveBoost = emissiveBoost;
-        for (int i = 0; i < kLightCount; ++i) u.lights[i] = lights[i];
 
         RenderCommand cmd;
         cmd.verts      = m_vertices;
@@ -723,6 +738,7 @@ private:
         cmd.blendmode  = blended ? BlendMode::Alpha : BlendMode::Opaque;
         cmd.depthWrite = !blended;
         cmd.setUniforms(u);
+        cmd.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
         m_valo->submit(cmd);
     }
 
@@ -805,6 +821,7 @@ private:
     Vec3f m_boundsMax = {-1e30f, -1e30f, -1e30f};
 
     VALO* m_valo = nullptr;
+    UniformBufferID m_sceneBuffer = EMPTY_BUFFER;
     bool  m_loaded = false;
 };
 
@@ -829,6 +846,10 @@ public:
         if (!m_window.create(title, size) || !m_valo.init(m_window, cfg)) return false;
         m_running = true;
 
+        // created empty; render() refills it every frame before the first submit
+        const SceneUniforms scene{};
+        m_sceneBuffer = m_valo.createUniformBuffer(&scene, sizeof(scene));
+
         buildSky();
         buildFloor();
         buildOrb();
@@ -842,6 +863,7 @@ public:
         m_models.emplace_back();
         Model& model = m_models.back();
         model.setVALO(&m_valo);
+        model.setSceneBuffer(m_sceneBuffer);
         model.loadGLTF(pathToGltf);
 
         if (model.isLoaded()) {
@@ -926,6 +948,13 @@ public:
         const Mat4f viewProj = proj * view;
         const bool  aboveFloor = m_camera.pos.y > kFloorY + 0.02f;
 
+        // one upload for the whole frame; every command below binds it
+        SceneUniforms scene{};
+        for (int i = 0; i < kLightCount; ++i) scene.lights[i] = m_lights[i];
+        scene.camPos   = m_camera.pos;
+        scene.exposure = m_exposure;
+        m_valo.updateUniformBuffer(m_sceneBuffer, &scene, sizeof(scene));
+
         m_valo.beginFrame();
 
         drawSky();
@@ -935,17 +964,17 @@ public:
         if (m_reflections && m_showFloor && aboveFloor) {
             const Mat4f mirror = Mat4f::translation({0.f, 2.f * kFloorY, 0.f}) * Mat4f::scale({1.f, -1.f, 1.f});
             for (Model& m : m_models) {
-                m.draw(viewProj, mirror, m_camera.pos, m_lights, m_exposure, -1.f, 0.78f, m_emissiveBoost, false, CullMode::Front);
-                m.draw(viewProj, mirror, m_camera.pos, m_lights, m_exposure, -1.f, 0.78f, m_emissiveBoost, true,  CullMode::Front);
+                m.draw(viewProj, mirror, m_camera.pos, -1.f, 0.78f, m_emissiveBoost, false, CullMode::Front);
+                m.draw(viewProj, mirror, m_camera.pos, -1.f, 0.78f, m_emissiveBoost, true,  CullMode::Front);
             }
         }
 
         if (m_showFloor) drawFloor(viewProj);
 
         for (Model& m : m_models)
-            m.draw(viewProj, Mat4f::identity(), m_camera.pos, m_lights, m_exposure, 1.f, 1.f, m_emissiveBoost, false, CullMode::Back);
+            m.draw(viewProj, Mat4f::identity(), m_camera.pos, 1.f, 1.f, m_emissiveBoost, false, CullMode::Back);
         for (Model& m : m_models)
-            m.draw(viewProj, Mat4f::identity(), m_camera.pos, m_lights, m_exposure, 1.f, 1.f, m_emissiveBoost, true,  CullMode::Back);
+            m.draw(viewProj, Mat4f::identity(), m_camera.pos, 1.f, 1.f, m_emissiveBoost, true,  CullMode::Back);
 
         if (m_showOrbs) drawOrbs(viewProj);
 
@@ -1024,6 +1053,7 @@ private:
         m_sky.depthTest  = false;
         m_sky.depthWrite = false;
         m_sky.cullmode   = CullMode::None;
+        m_sky.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
     }
 
     void buildFloor() {
@@ -1037,6 +1067,7 @@ private:
         m_floor.cullmode   = CullMode::None;
         m_floor.blendmode  = BlendMode::Alpha;
         m_floor.depthWrite = true;
+        m_floor.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
     }
 
     void buildOrb() {
@@ -1065,6 +1096,7 @@ private:
         m_orb.blendmode  = BlendMode::Additive;
         m_orb.depthWrite = false;
         m_orb.cullmode   = CullMode::None;
+        m_orb.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
     }
 
     // -----------------------------------------------------------------------
@@ -1075,7 +1107,6 @@ private:
         u.forward    = m_camera.forward;
         u.tanHalfFov = std::tan(m_camera.fov * 0.5f);
         u.aspect     = m_window.getAspect();
-        u.exposure   = m_exposure;
 
         m_sky.setUniforms(u);
         m_valo.submit(m_sky);
@@ -1084,17 +1115,14 @@ private:
     void drawFloor(const Mat4f& viewProj) {
         FloorUniforms u{};
         u.viewProj     = viewProj;
-        u.camPos       = m_camera.pos;
         Vec3f lo, hi;
         if (!worldBounds(lo, hi)) { lo = {-1.f, 0.f, -1.f}; hi = {1.f, 1.f, 1.f}; }
         u.shadowCentre = {(lo.x + hi.x) * 0.5f, kFloorY, (lo.z + hi.z) * 0.5f};
         u.shadowRadius = {std::max((hi.x - lo.x) * 0.62f, 0.2f),
                           std::max((hi.z - lo.z) * 0.62f, 0.2f)};
-        u.exposure     = m_exposure;
         u.fadeStart    = 18.f;
         u.fadeEnd      = 62.f;
         u.gridSpacing  = 1.f;
-        for (int i = 0; i < kLightCount; ++i) u.lights[i] = m_lights[i];
 
         m_floor.setUniforms(u);
         m_valo.submit(m_floor);
@@ -1110,10 +1138,8 @@ private:
             for (int pass = 0; pass < 2; ++pass) {
                 OrbUniforms u{};
                 u.viewProj   = viewProj;
-                u.camPos     = m_camera.pos;
                 u.centre     = l.pos;
                 u.colour     = l.colour;
-                u.exposure   = m_exposure;
                 u.radius     = pass == 0 ? scale : scale * 3.4f;
                 u.brightness = pass == 0 ? 34.f  : 2.2f;
 
@@ -1150,6 +1176,7 @@ private:
     std::deque<Model> m_models;
     RenderCommand m_sky, m_floor, m_orb;
     Light m_lights[kLightCount];
+    UniformBufferID m_sceneBuffer = EMPTY_BUFFER;
 
     Vec3f m_focus       = {0.f, 0.8f, 0.f};
     float m_orbitRadius = 7.f;

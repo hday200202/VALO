@@ -4,9 +4,9 @@ Ordered by what it takes to bring the software renderer to parity with the
 eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
 a gate for the next.
 
-## State (2026-09-23)
+## State (2026-09-26)
 
-~4.2k lines of library, 8 examples, 20/28 feature items done, every feature
+~4.3k lines of library, 9 examples, 21/28 feature items done, every feature
 behind a sanitizer-verified harness. The dev-facing API (Window -> VALO ->
 create* -> RenderCommand -> submit, typed C++ shader callbacks) is settled and
 Vulkan-shaped.
@@ -70,27 +70,77 @@ them now means the API doesn't move later. ~3-5 days.
 - [✅] **`updateTexture(id, data)`** — the only missing dynamic path. UILO font
       atlases and streamed textures need it. Software: memcpy; Vulkan: staging
       copy. Half a day.
-- [ ] **sRGB** — `linear` flag on `createTexture` (decode to linear on load),
-      encode on write to the backbuffer. Vulkan expresses this as `_SRGB` image
-      formats, so it has to be a texture/target property, not shader code.
-      Every PBR demo currently does `pow(2.2)` by hand. Half a day; land it in
-      the shared pixel path (section 2).
+- [✅] **sRGB** — a `srgb` flag on `RenderTarget` (so it covers textures and
+      targets alike, which are the same type here), `createTexture(..., srgb)`,
+      `createTarget(..., srgb)` and `RenderConfig::srgbBackbuffer`. All default
+      false, so nothing that existed before changed.
+
+      Converted **on sample, not on load**: 8 bits of *linear* spends most of
+      its codes above mid-grey and bands visibly in the darks, which is exactly
+      why Vulkan `_SRGB` formats keep the bytes encoded and convert in the
+      sampler. Tables live in `render/common/Srgb.hpp` (`inline`, header-only
+      so `writePixel` can inline them): 256-entry decode, exact; 4097-entry
+      encode (12 bits + 1 so linear 1.0 stays in bounds), ≤1 code of error in
+      the darkest few values. Alpha is never converted.
+
+      Three places had to change, and each is a real bug if skipped:
+      `texture()` decodes the four bilinear taps *before* filtering (averaging
+      encoded bytes averages the wrong quantity - a black/white checker filters
+      to 0.21 instead of 0.5); `writePixel` decodes the destination, blends in
+      linear and re-encodes (the classic muddy-alpha bug); `clearRows` encodes
+      the clear colour.
+
+      Harness `srgbtest` (scratchpad): byte-exact decode→encode round trip,
+      sampling, linear-space bilinear, linear-space alpha blend, clear, and
+      that a non-sRGB target is bit-identical to before. Clean under ASan/UBSan
+      and TSan.
+
+      Not done, deliberately: the examples still do their own gamma
+      (`encodeGamma` / `toneMap`), so flipping `srgbBackbuffer` on them would
+      double-correct. Converting them is its own change.
 - [ ] **Mipmaps** — generate the chain at `createTexture`; LOD from per-triangle
       uv derivatives (`du/dx`, `dv/dy` in `setupTriangle`), `Sampler` gains a
       mip filter. Vulkan samplers assume a chain; without one GPU textures
       shimmer exactly like CPU ones do now. 1-2 days; the one substantive
       rasterizer item left.
-- [ ] **Uniform buffer resource** — `createUniformBuffer` / `updateUniformBuffer`
-      + a `UniformBufferID` the shader can read from. The 1 KB inline
-      `setUniforms` maps to Vulkan push constants badly (128 B guaranteed); bone
-      arrays and light lists want a real buffer. Half a day of API; software
-      side is trivial.
+- [✅] **Uniform buffer resource** — `createUniformBuffer` / `updateUniformBuffer`
+      / `destroyUniformBuffer` on VALO and Renderer, `cmd.bindUniformBuffer(slot, id)`
+      with `MAX_UNIFORM_SLOTS = 8`, and `uniformBuffer<T>(slot)` in the shader.
+      Slot binding rather than a handle in the uniforms, because a GLSL uniform
+      block's type *is* its layout, so handle-indexed UBOs would need one
+      descriptor array per block type plus `shaderUniformBufferArrayNonUniform-
+      Indexing`, which is optional even in Vulkan 1.2. Slots map 1:1 onto
+      descriptor set bindings on any 1.0 device.
+
+      `Renderer::draw` resolves the eight slots to pointers once per draw into
+      a stack array and hands it down through `DrawContext` (which replaced the
+      bare `targets` parameter on `forEachBand` and the three `draw*` funcs, so
+      viewport/scissor/formats can ride along later without moving signatures
+      again). `detail::boundUniforms` is set on the main thread for the vertex
+      stage and per band for the fragment stage, the same two-place pattern
+      `boundTargets` uses.
+
+      Semantics worth remembering: `setUniforms` copies at submit, a uniform
+      buffer is read when the queue executes at `endFrame` — so a UBO holds
+      frame-constant data only, and updating one between two submits gives both
+      draws the later value. Same as Vulkan, which is why push constants exist.
+
+      Harness `ubotest` (scratchpad): vertex + fragment reads, visibility of
+      `updateUniformBuffer`, every worker band bound, per-command binding,
+      free-list reuse. Clean under ASan/UBSan and TSan.
+
+      Landed in the examples: `ShowcaseEngine.hpp` and `pbr.cpp` moved lights
+      (plus camPos/exposure) into a `SceneUniforms` buffer at slot 0. Showcase
+      per-command uniforms: Uniforms 324→196 B, Floor 224→96, Orb 112→96,
+      Sky 48→44; the 128 B scene block is now uploaded once a frame instead of
+      memcpy'd into every command.
 - [ ] **Viewport rect** on `RenderCommand` — draw into a sub-rect of the target.
       Vulkan dynamic viewport. Half a day, alongside the scissor below.
 - [ ] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
       for triangles, pixel test for lines/points). Vulkan dynamic scissor. The
       stencil clip stack stays the general mechanism. Half a day.
-- [ ] **glTF embedded images (`.glb`)** — `GLTFParser::texPath()` returns `""`
+- [ ] **glTF embedded images (`.glb`)** *(parser, not API - does not gate the
+      backend; `utils/` only)* — `GLTFParser::texPath()` returns `""`
       unless `image->uri` is set, so every `.glb` loads fully untextured and
       silently: verified on a 29-material car, 15/15 images live in
       `buffer_view`, 0/29 materials got a texture. Same for `.gltf` files with
@@ -101,7 +151,8 @@ them now means the API doesn't move later. ~3-5 days.
       `std::vector<GLTFImage>` on `GLTF` (decoded pixels + w/h) with materials
       holding `int` indices, so file-backed and embedded land in one place.
       Half a day.
-- [ ] **Tangents in `GLTFVertex`** — it is `{pos, normal, uv}`, so nothing
+- [ ] **Tangents in `GLTFVertex`** *(parser, not API - does not gate the
+      backend; `utils/` only)* — it is `{pos, normal, uv}`, so nothing
       using the shared vertex type can do normal mapping. `gltf.cpp` works
       around it by declaring its own `Vertex` with a `Vec4f tangent` and
       computing the basis at load. That belongs in the parser (MikkTSpace-ish
@@ -132,6 +183,50 @@ them now means the API doesn't move later. ~3-5 days.
       A `me::Uniforms` with two Mat4f + material + light is ~232 B, so 512 is
       not roomy; this is what the uniform-buffer item in section 1 is for.
 
+### Rasterizer correctness
+
+- [~] **Fill rule — landed, but float precision caps it.** Two triangles
+      sharing an edge both pass the edge test on the pixels along it, so every
+      such pixel runs the fragment shader twice and, worse, *blends* twice.
+      Reproduced by `filltest` (scratchpad): one alpha-blended quad (two
+      triangles, shared diagonal) over white on a 4x4 target gives
+      `127 127 127 63 / 127 127 63 127 / ...` - the four diagonal pixels
+      composited twice and came out half as bright. Found while testing sRGB;
+      it is not sRGB-specific and reproduces on a plain target.
+
+      Visible today as a seam along every quad diagonal in anything alpha or
+      additively blended - `clipstack.cpp`'s panels, the showcase floor, the
+      light orbs. Opaque draws only pay the wasted shading.
+
+      **Done (2026-09-26):** `ScreenTri::topLeft[3]` classified in
+      `setupTriangle` from each edge's winding-normalised delta (left edge when
+      delta.y < 0, top edge when delta.y == 0 && delta.x > 0), and
+      `rasterizeTriangle` tests `e > 0 || (e == 0 && topLeft[i])`.
+
+      Results (`covertest`, scratchpad): a fullscreen quad went from 64 doubled
+      pixels to **0**. A 16-triangle fan went from 12 to 6 - halved, not fixed.
+
+      **Why it stops there, and what the real fix is.** The rule needs `e == 0`
+      exactly on a shared edge. With float edge functions that essentially
+      never happens off axis: `edgeprobe` walks a fan's shared edge and finds 0
+      exact zeros in 39 samples, `e_fwd != -e_rev` at all 39, and 5-6 points
+      where *both* triangles compute a small positive value and both claim the
+      pixel. Incremental stepping adds its own drift (2.4e-4 across 64 px), but
+      it is not the root cause - evaluating directly does not agree either,
+      because the two triangles build the edge from different vertices.
+
+      The complete fix is what GPUs do: snap screen positions to a sub-pixel
+      grid and compute edge functions in **fixed point** (24.8 is the usual
+      choice). Then edge values are exact integers, `e_fwd == -e_rev` holds
+      exactly, ties land exactly on zero, and the top-left rule becomes exact.
+      Barycentrics come from the same integer edge values. That is a real
+      rewrite of `setupTriangle` + `rasterizeTriangle`, ~1-2 days, and it is
+      also the prerequisite for any future multisampling.
+
+      Worth doing eventually; not urgent, since the common cases (quads, UI
+      rects, anything axis-aligned) are now exact and the residue is a fraction
+      of a percent of pixels on off-axis blended geometry.
+
 ### Robustness — unchecked indices that fail as segfaults
 
 Not API gaps, but each one costs an afternoon when it bites, and the Vulkan
@@ -152,6 +247,29 @@ backend won't have the same failure modes to compare against.
       down to it).
 
 ## 3. Backend interface extraction
+
+### Semantics the software backend gets away with and Vulkan does not
+
+Both of these are API-visible rules, not implementation details, so they have to
+be decided before the backend rather than discovered during it. Neither costs
+anything in software - the point is that the same dev code stays correct on both.
+
+- [ ] **Deferred destruction.** `destroy*` frees immediately. Vulkan cannot free
+      a buffer or image a submitted frame is still reading. The standard answer
+      is a destroy queue: `destroy*` pushes `(id, currentFrame)` and the resource
+      is actually released once `framesInFlight` frames have retired. Note that
+      `RenderConfig::framesInFlight` is declared (Renderer.hpp) and used nowhere
+      today, so the frame counter it needs does not exist yet either. In software
+      the queue just drains a frame or two late and nothing else changes.
+
+- [ ] **Mutation while queued.** `updateVertexBuffer` / `updateIndexBuffer` /
+      `updateUniformBuffer` are a memcpy, so writing one after `submit` and
+      before `endFrame` silently changes what the queued draw reads - already
+      true for uniform buffers, and the same hazard for the rest. On Vulkan,
+      writing memory the GPU is reading is undefined rather than merely
+      surprising. Decide between documenting "only between frames", or
+      per-frame copies for anything marked dynamic (what Vulkan apps normally
+      do). The choice shows up in the dev-facing contract either way.
 
 - [ ] Split `Renderer` into an abstract interface + `SoftwareRenderer`.
       Everything above `Renderer` (VALO, layers, clip stack, IDs, RenderCommand)
@@ -221,13 +339,18 @@ backend won't have the same failure modes to compare against.
 - `particles.cpp` — galaxy point-particle shader.
 - `sdf.cpp` — iq's raymarched primitives, fullscreen fragment shader, FPS camera.
 - `pbr.cpp` — 62-material Cook-Torrance viewer with fbm bump/displacement and
-  sky/sun environment (port of cool-pbr-test; 1680 -> 330 lines).
+  sky/sun environment (port of cool-pbr-test; 1680 -> 330 lines). Lights and
+  camera live in a `SceneUniforms` uniform buffer at slot 0.
 - `gltf.cpp` — DamagedHelmet / Box through a full glTF PBR shader (base color,
   packed metal-rough, normal map with load-time tangents, AO, emissive).
 - `stencil.cpp` — helmet with a stencil outline (Replace + NotEqual extruded
   shell along smoothed normals) and an SDF circle clip (discard + Incr).
 - `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
   scrolling list with three nested `pushClip`s. `C` toggles clipping.
+- `showcase.cpp` + `ShowcaseEngine.hpp` — the big one: glTF models on a glossy
+  mirrored floor under a procedural sky, four orbiting lights with visible
+  emissive orbs, ACES tonemapping. Lights/camera/exposure in a `SceneUniforms`
+  uniform buffer bound to slot 0 by every shader.
 - `minimal.cpp` + `MinimalEngine.hpp` — smallest embedder: an `Engine` owning
   window/VALO/camera/light and a `Model` that loads a glTF, owns its materials
   and program, and submits one command per primitive. Metallic-roughness

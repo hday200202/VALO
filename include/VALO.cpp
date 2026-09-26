@@ -164,7 +164,8 @@ void VALO::popClip(
 */
 RenderTargetID VALO::createTarget(
     const uint32_t w, 
-    const uint32_t h
+    const uint32_t h,
+    const bool srgb
 ) {
     uint32_t width = w; uint32_t height = h;
     bool tracksWindow = false;
@@ -175,7 +176,7 @@ RenderTargetID VALO::createTarget(
         tracksWindow = true;
     }
 
-    return m_renderer.createTarget(width, height, tracksWindow);
+    return m_renderer.createTarget(width, height, tracksWindow, srgb);
 }
 
 
@@ -259,13 +260,15 @@ void VALO::destroyUniformBuffer(const UniformBufferID buffer)
 TextureID VALO::createTexture(
     const uint32_t w, 
     const uint32_t h,
-    const uint32_t* data
-) { return m_renderer.createTexture(w, h, data); }
+    const uint32_t* data,
+    const bool srgb
+) { return m_renderer.createTexture(w, h, data, srgb); }
 
 
 TextureID VALO::createTexture(
-    const std::string& path
-) { return m_renderer.createTexture(path); }
+    const std::string& path,
+    const bool srgb
+) { return m_renderer.createTexture(path, srgb); }
 
 
 void VALO::updateTexture(const TextureID texture, const uint32_t* data) {

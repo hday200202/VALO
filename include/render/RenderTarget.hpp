@@ -6,6 +6,7 @@
 #include <cassert>
 #include <algorithm>
 #include "common/Math.hpp"
+#include "common/Srgb.hpp"
 
 namespace valo {
 
@@ -52,6 +53,17 @@ public:
     bool tracksWindow() const { return m_trackWindow; }
     void setTrackWindow(const bool trackWindow) { m_trackWindow = trackWindow; }
 
+    /*
+        sRGB is a property of the image, not of the shader - the same thing a
+        Vulkan _SRGB format expresses. The pixels stay sRGB-encoded bytes;
+        texture() decodes them to linear on read and writePixel encodes on
+        write, so shaders only ever see linear values.
+    */
+    bool isSrgb() const { return m_srgb; }
+    void setSrgb(const bool srgb) { m_srgb = srgb; }
+    bool isSRGB() const { return m_srgb; }
+    void setSRGB(const bool srgb) { m_srgb = srgb; }
+
 
 private:
     std::vector<uint32_t>   m_pixels        = {};
@@ -62,6 +74,9 @@ private:
     
     // should this target be resized with window?
     bool                    m_trackWindow   = true;
+
+    // are m_pixels sRGB-encoded? see isSrgb()
+    bool                    m_srgb          = false;
 };
 
 } // namespace valo

@@ -5,6 +5,7 @@
 #include "RenderTarget.hpp"
 #include "RenderCommand.hpp"
 #include "common/Math.hpp"
+#include "common/Srgb.hpp"
 
 namespace valo {
 

@@ -49,7 +49,8 @@ public:
     /* ---- render targets ------------------------------------------------- */
     RenderTargetID createTarget(
         const uint32_t w = 0,
-        const uint32_t h = 0
+        const uint32_t h = 0,
+        const bool srgb = false
     );
     void destroyTarget(const RenderTargetID target);
 
@@ -100,14 +101,22 @@ public:
     );
 
     /* ---- textures ------------------------------------------------------- */
+    /*
+        srgb = the file/bytes are sRGB-encoded, as almost every colour image is
+        (base colour, emissive, anything authored in an image editor). Data
+        textures - normal maps, metal/rough, AO, masks - are NOT sRGB and must
+        be left false or they come back wrong.
+    */
     TextureID createTexture(
         const uint32_t w, 
         const uint32_t h,
-        const uint32_t* data
+        const uint32_t* data,
+        const bool srgb = false
     );
 
     TextureID createTexture(
-        const std::string& path
+        const std::string& path,
+        const bool srgb = false
     );
 
     void updateTexture(const TextureID texture, const uint32_t* data);

@@ -53,6 +53,7 @@ Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
     if (sampler.filter == Filter::Nearest) {
         const uint32_t x = std::min(uint32_t(u), t.width()  - 1);
         const uint32_t y = std::min(uint32_t(v), t.height() - 1);
+        if (t.isSrgb()) return abgr32ToLinear(t.data()[y * t.width() + x]);
         return t.getPixel(x, y);
     }
 
@@ -70,6 +71,14 @@ Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
     const uint32_t  W  = t.width();
     const uint32_t p00 = px[y0 * W + x0], p10 = px[y0 * W + x1];
     const uint32_t p01 = px[y1 * W + x0], p11 = px[y1 * W + x1];
+
+    if (t.isSrgb()) {
+        const Color c00 = abgr32ToLinear(p00), c10 = abgr32ToLinear(p10);
+        const Color c01 = abgr32ToLinear(p01), c11 = abgr32ToLinear(p11);
+        const Color top    = c00 + (c10 - c00) * tx;
+        const Color bottom = c01 + (c11 - c01) * tx;
+        return top + (bottom - top) * ty;
+    }
 
     const uint32_t wx = uint32_t(tx * 256.f + 0.5f);
     const uint32_t wy = uint32_t(ty * 256.f + 0.5f);

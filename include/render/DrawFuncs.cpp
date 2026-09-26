@@ -59,6 +59,15 @@ bool setupTriangle(
     out.area = area * out.sign;
     out.invArea = 1.f / out.area;
 
+    const Vec2f e[3] = {
+        (out.s[1].xy - out.s[0].xy) * out.sign,
+        (out.s[2].xy - out.s[1].xy) * out.sign,
+        (out.s[0].xy - out.s[2].xy) * out.sign,
+    };
+
+    for (int i = 0; i < 3; ++i)
+        out.topLeft[i] = (e[i].y < 0.f) || (e[i].y == 0.f && e[i].x > 0.f);
+
     const Vec2f lo = min(min(out.s[0].xy, out.s[1].xy), out.s[2].xy);
     const Vec2f hi = max(max(out.s[0].xy, out.s[1].xy), out.s[2].xy);
     const int w = int(target->width()), h = int(target->height());
@@ -97,6 +106,15 @@ int clipNear(
     return n;
 }
 
+/*
+    On an sRGB target the stored bytes are encoded, so blending has to decode
+    the destination, combine in linear, and re-encode. Blending encoded values
+    directly is the classic "why is my alpha muddy" bug: a 50% blend of black
+    over white lands at ~0.73 linear instead of 0.5. Vulkan's blend hardware
+    does the same decode/encode around an _SRGB attachment.
+
+    The non-sRGB path is untouched and still goes through set/getPixel.
+*/
 void writePixel(
     RenderTarget* target, 
     const int x, 
@@ -104,6 +122,38 @@ void writePixel(
     const Color& src, 
     const BlendMode mode
 ) {
+    if (target->isSrgb()) {
+        uint32_t* const px = target->data() + (size_t(y) * target->width() + size_t(x));
+
+        switch (mode) {
+            case BlendMode::Opaque: {
+                *px = linearToABGR32Srgb(src);
+                break;
+            }
+
+            case BlendMode::Alpha: {
+                const Color dst = abgr32ToLinear(*px);
+                const float alpha = src.w;
+                Color out = src * alpha + dst * (1.f - alpha);
+                out.w = 1.f;
+                *px = linearToABGR32Srgb(out);
+                break;
+            }
+
+            case BlendMode::Additive: {
+                const Color dst = abgr32ToLinear(*px);
+                const float alpha = src.w;
+                Color out = dst + src * alpha;
+                out.w = 1.f;
+                *px = linearToABGR32Srgb(out);
+                break;
+            }
+
+            default: break;
+        }
+        return;
+    }
+
     switch (mode) {
         case BlendMode::Opaque: {
             target->setPixel(x, y, src); 
@@ -314,7 +364,11 @@ void rasterizeTriangle(
         float e3 = (s1.xy-s3.xy).cross(p0-s3.xy) * sign;
         
         for (int x = xmin; x <= xmax; ++x, e1 += d1, e2 += d2, e3 += d3) {            
-            if (e1 >= 0 && e2 >= 0 && e3 >= 0) {
+            if (
+                (e1 > 0 || (e1 == 0 && tri.topLeft[0])) &&
+                (e2 > 0 || (e2 == 0 && tri.topLeft[1])) &&
+                (e3 > 0 || (e3 == 0 && tri.topLeft[2]))
+            ) {
                 // pixel is inside triangle
 
                 // barycentrics

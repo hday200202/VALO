@@ -26,6 +26,8 @@ namespace valo {
 struct RenderConfig {
     SDL_Window*     sdlWindow       = nullptr;
     bool            vsync           = false;
+    // backbuffer stores sRGB-encoded bytes; shader output is encoded on write
+    bool            srgbBackbuffer  = false;
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
     float           renderScale     = 1.f;
@@ -54,7 +56,7 @@ public:
     void show(const RenderTargetID target = BACKBUFFER);
 
     /* ---- render targets ------------------------------------------------- */
-    RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true);
+    RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true, const bool srgb = false);
     void destroyTarget(const RenderTargetID target);
 
     /* ---- vertex buffers ------------------------------------------------- */
@@ -73,8 +75,8 @@ public:
     void destroyUniformBuffer(const UniformBufferID buffer);
 
     /* ---- textures ------------------------------------------------------- */
-    TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data);
-    TextureID createTexture(const std::string& path);
+    TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb = false);
+    TextureID createTexture(const std::string& path, const bool srgb = false);
     void updateTexture(const TextureID texture, const uint32_t* data);
     void updateTexture(
         const TextureID texture, 

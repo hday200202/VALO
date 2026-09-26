@@ -154,7 +154,9 @@ void RenderTarget::clear(const Color& color) {
 
 
 void RenderTarget::clearRows(const Color& color, const uint32_t y0, const uint32_t y1) {
-    const uint32_t col = colorToABGR32(color);
+    // the clear colour is linear like every other colour a shader sees, so an
+    // sRGB target has to encode it rather than quantise it straight
+    const uint32_t col = m_srgb ? linearToABGR32Srgb(color) : colorToABGR32(color);
     std::fill(m_pixels.begin() + y0 * m_width, m_pixels.begin() + y1 * m_width, col);
     std::fill(m_depth.begin() + y0 * m_width, m_depth.begin() + y1 * m_width, 1.f);
     std::fill(m_stencil.begin() + y0 * m_width, m_stencil.begin() + y1 * m_width, uint8_t(0));

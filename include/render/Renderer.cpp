@@ -14,6 +14,7 @@ bool Renderer::init(const RenderConfig& cfg) {
     int w, h;
     SDL_GetWindowSizeInPixels(cfg.sdlWindow, &w, &h);
     m_targets.push_back(std::make_unique<RenderTarget>(w * m_cfg.renderScale, h * m_cfg.renderScale));
+    m_targets.back()->setSrgb(m_cfg.srgbBackbuffer);
 
     if (!m_sdlRenderer) {
         std::cout << "Renderer: " << SDL_GetError() << std::endl;
@@ -123,8 +124,11 @@ void Renderer::show(const RenderTargetID target) {
     Render targets
 // ========================================================================= */
 
-RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h,const bool tracksWindow) 
-{ return pushTarget(std::make_unique<RenderTarget>(w, h, tracksWindow)); }
+RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {
+    auto target = std::make_unique<RenderTarget>(w, h, tracksWindow);
+    target->setSrgb(srgb);
+    return pushTarget(std::move(target));
+}
 
 
 void Renderer::destroyTarget(const RenderTargetID target) {
@@ -265,17 +269,17 @@ void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
     Textures
 // ========================================================================= */
 
-TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data) {
-    return pushTarget(std::make_unique<RenderTarget>(
-        RenderTarget::loadFromMemory(w, h, data)
-    ));
+TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb) {
+    auto texture = std::make_unique<RenderTarget>(RenderTarget::loadFromMemory(w, h, data));
+    texture->setSrgb(srgb);
+    return pushTarget(std::move(texture));
 }
 
 
-TextureID Renderer::createTexture(const std::string& path) {
-    return pushTarget(std::make_unique<RenderTarget>(
-        RenderTarget::loadImageFromPath(path)
-    ));
+TextureID Renderer::createTexture(const std::string& path, const bool srgb) {
+    auto texture = std::make_unique<RenderTarget>(RenderTarget::loadImageFromPath(path));
+    texture->setSrgb(srgb);
+    return pushTarget(std::move(texture));
 }
 
 
