@@ -26,7 +26,23 @@ struct ScreenTri {
     float invArea;
     bool frontFacing;
     bool topLeft[3];
+    uint32_t state = 0;
 };
+
+inline bool depthPasses(const DepthCompare cmp, const float z, const float stored) {
+    switch (cmp) {
+        case DepthCompare::Less:         return z <  stored;
+        case DepthCompare::LessEqual:    return z <= stored;
+        case DepthCompare::Greater:      return z >  stored;
+        case DepthCompare::GreaterEqual: return z >= stored;
+        case DepthCompare::Equal:        return z == stored;
+        case DepthCompare::NotEqual:     return z != stored;
+        case DepthCompare::Always:       return true;
+        case DepthCompare::Never:        return false;
+    }
+    return false;
+}
+
 
 bool stencilTest(
     const RenderTarget* target, 
@@ -60,6 +76,32 @@ struct DrawContext {
     const std::vector<std::unique_ptr<RenderTarget>>* targets = nullptr;
     const void* const* uniforms = nullptr;
 };
+
+struct DrawState {
+    RenderTarget*   target = nullptr;
+    Program         program = {};
+    RenderCommand   cmd = {};
+    const void*     uniforms[MAX_UNIFORM_SLOTS] = {};
+};
+
+
+// wireframe keeps raw clip verts rather than a ScreenTri, so it batches in its
+// own list; a batch never holds both kinds at once
+struct WireTri {
+    ClipVert v[3];
+    uint32_t state = 0;
+};
+
+struct TriBatch {
+    std::vector<ScreenTri> tris;
+    std::vector<WireTri>   wires;
+    std::vector<DrawState> states;
+    RenderTarget* target = nullptr;
+
+    bool empty() const { return tris.empty() && wires.empty(); }
+};
+
+void flushTriBatch(TriBatch& batch, ThreadPool& pool, const DrawContext& ctx);
 
 template <typename F>
 void forEachBand(
@@ -127,7 +169,8 @@ void drawTriangles(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    const DrawContext& ctx
+    const DrawContext& ctx,
+    TriBatch& batch
 );
 
 

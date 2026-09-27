@@ -5,6 +5,7 @@
 #include "utils/GLTFParser.hpp"
 #include "utils/OBJParser.hpp"
 #include "utils/Clock.hpp"
+#include <limits>
 
 namespace valo {
 
@@ -36,11 +37,13 @@ public:
     /* ---- layers --------------------------------------------------------- */
     LayerID addLayer(
         const RenderTargetID target = Renderer::BACKBUFFER,
-        const Color& clearColor = {0.f, 0.f, 0.f, 1.f}
+        const Color& clearColor = {0.f, 0.f, 0.f, 1.f},
+        const float clearDepth = 0.f
     );
     void removeLayer(const LayerID layer);
     void setLayerOrder(const std::vector<LayerID>& order);
     void setLayerClearColor(const LayerID layer, const Color& color);
+    void setLayerClearDepth(const LayerID layer, const float depth);
 
     /* ---- clip stack ----------------------------------------------------- */
     void pushClip(const RenderCommand& shape, const LayerID layer = BASE_LAYER);
@@ -162,6 +165,7 @@ private:
         std::vector<RenderCommand> cmdQueue;
         RenderTargetID target = Renderer::BACKBUFFER;
         Color clearColor = {0.f, 0.f, 0.f, 1.f};
+        float clearDepth = 0.f;   // reversed depth: far plane
         bool dead = false;
     };
 

@@ -30,6 +30,7 @@ enum class BlendMode    { Opaque, Alpha, Additive };
 enum class FillMode     { Solid, Wireframe };
 enum class StencilTest  { Always, Equal, NotEqual, Less, Greater };
 enum class StencilOp    { Keep, Zero, Replace, Incr, Decr };
+enum class DepthCompare { Less, LessEqual, Greater, GreaterEqual, Equal, NotEqual, Always, Never };
 
 struct RenderCommand {
     VertexBufferID      verts           = EMPTY_BUFFER;
@@ -50,6 +51,7 @@ struct RenderCommand {
     uint8_t             stencilRef      = 0;
 
     bool                depthTest       = true;
+    DepthCompare        depthCompare    = DepthCompare::Greater;   // reversed depth: nearer wins
     bool                depthWrite      = true;
     bool                colorWrite      = true;
 

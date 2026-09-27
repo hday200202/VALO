@@ -26,7 +26,7 @@
 // at 65% internal scale. Press 1 for the beauty shot, 3 to fly around freely.
 
 #include <cstdio>
-#include "ShowcaseEngine.hpp"
+#include "engines/ShowcaseEngine.hpp"
 
 int main(int argc, char** argv) {
     sc::Engine engine;

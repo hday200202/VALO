@@ -148,6 +148,12 @@ template <typename T> struct Mat4 {
     }
 
 
+    /*
+        Reversed depth: near maps to 1, far to 0. Float depth is dense near 0,
+        which is where distant geometry lands, so distant z-fighting largely
+        disappears. This is the only convention VALO has - the depth test,
+        near-plane clip and clear value all assume it.
+    */
     static Mat4 perspective(
         const T fovY, const T aspect,
         const T zNear, const T zFar
@@ -156,8 +162,8 @@ template <typename T> struct Mat4 {
         return {{
             {f / aspect, 0,                         0,  0},
             {         0, f,                         0,  0},
-            {         0, 0,         zFar/(zNear-zFar), -1},
-            {         0, 0, (zNear*zFar)/(zNear-zFar),  0},
+            {         0, 0,         zNear/(zFar-zNear), -1},
+            {         0, 0, (zFar*zNear)/(zFar-zNear),  0},
         }};
     }
 
@@ -171,7 +177,7 @@ template <typename T> struct Mat4 {
             {     2/(r-l),            0,       0, 0},
             {           0,      2/(t-b),       0, 0},
             {           0,            0, 1/(n-f), 0},
-            {-(r+l)/(r-l), -(t+b)/(t-b), n/(n-f), 1}
+            {-(r+l)/(r-l), -(t+b)/(t-b), f/(f-n), 1}
         }};
     }
 

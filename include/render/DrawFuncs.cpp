@@ -83,6 +83,7 @@ bool setupTriangle(
 }
 
 
+// the near plane sits at z == w under reversed depth
 int clipNear(
     const ClipVert in[3], 
     ClipVert out[4], 
@@ -92,7 +93,8 @@ int clipNear(
     for (int i = 0; i < 3; ++i) {
         const ClipVert& a = in[i];
         const ClipVert& b = in[(i + 1) % 3];
-        float da = a.pos.z, db = b.pos.z;
+        float da = a.pos.w - a.pos.z;
+        float db = b.pos.w - b.pos.z;
         if (da >= 0) out[n++] = a;
         if ((da >= 0) != (db >= 0)) {
             float t = da / (da - db);
@@ -208,7 +210,7 @@ void rasterizePoint(
     // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
-    if (!lateZ && cmd.depthTest && screen.z >= target->getDepth(px, py)) return;
+    if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, screen.z, target->getDepth(px, py))) return;
     if (!stencilTest(target, cmd, px, py)) return;
 
     const bool ownsCenter = (py >= bandY0 && py < bandY1);
@@ -256,7 +258,7 @@ void rasterizePoint(
     }
 
     if (!ownsCenter || !centerLive) return;
-    if (lateZ && cmd.depthTest && centerDepth >= target->getDepth(px, py)) return;
+    if (lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, centerDepth, target->getDepth(px, py))) return;
     if (cmd.depthWrite) target->setDepth(px, py, centerDepth);
     stencilApply(target, cmd, px, py);
 }
@@ -293,8 +295,26 @@ void rasterizeLine(
     int steps = int(std::max(std::abs(dx), std::abs(dy)));
 
     const int w = int(target->width());
-    
-    for (int i = 0; i <= steps; ++i) {
+
+    /*
+        Clamp the walk to the steps that actually land in this band. Without
+        this every worker walks the whole line and throws away the pixels
+        outside its rows, so the line is stepped once per band - 80x the work
+        on a default pool. Triangles already clamp via ScreenTri's bbox.
+    */
+    int i0 = 0, i1 = steps;
+    if (std::abs(dy) > 1e-6f) {
+        const float ta = (float(bandY0)     - s1.y) / dy;
+        const float tb = (float(bandY1)     - s1.y) / dy;
+        const float lo = std::min(ta, tb), hi = std::max(ta, tb);
+        i0 = std::max(0,     int(std::floor(lo * float(std::max(steps, 1)))) - 1);
+        i1 = std::min(steps, int(std::ceil (hi * float(std::max(steps, 1)))) + 1);
+        if (i0 > i1) return;
+    } else if (int(s1.y) < bandY0 || int(s1.y) >= bandY1) {
+        return;                                     // horizontal line, wrong band
+    }
+
+    for (int i = i0; i <= i1; ++i) {
         float t = float(i) / std::max(steps, 1);
         float x = s1.x + dx * t;
         float y = s1.y + dy * t;
@@ -303,7 +323,7 @@ void rasterizeLine(
 
         // early z-test (skipped when the shader will write its own depth)
         float z = s1.z + (s2.z - s1.z) * t;
-        if (!lateZ && cmd.depthTest && z >= target->getDepth(px, py)) continue;
+        if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepth(px, py))) continue;
         if (!stencilTest(target, cmd, px, py)) continue;
 
         valo_FragDepth = z;
@@ -326,7 +346,7 @@ void rasterizeLine(
         }
 
         const float depth = std::clamp(valo_FragDepth, 0.f, 1.f);
-        if (lateZ && cmd.depthTest && depth >= target->getDepth(px, py)) continue;
+        if (lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, depth, target->getDepth(px, py))) continue;
 
         if (cmd.depthWrite) target->setDepth(px, py, depth);
         stencilApply(target, cmd, px, py);
@@ -380,8 +400,8 @@ void rasterizeTriangle(
                 // depth; the far-plane reject stays early either way, it is a
                 // clip-space cull rather than a depth comparison)
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
-                if (z > 1.f) continue;
-                if (!lateZ && cmd.depthTest && z >= target->getDepth(x, y)) continue;
+                if (z < 0.f || z > 1.f) continue;
+                if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepth(x, y))) continue;
                 if (!stencilTest(target, cmd, x, y)) continue;
 
                 valo_FragDepth = z;
@@ -407,7 +427,7 @@ void rasterizeTriangle(
                 }
 
                 const float depth = std::clamp(valo_FragDepth, 0.f, 1.f);
-                if (lateZ && cmd.depthTest && depth >= target->getDepth(x, y)) continue;
+                if (lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, depth, target->getDepth(x, y))) continue;
 
                 if (cmd.depthWrite) target->setDepth(x, y, depth);
                 stencilApply(target, cmd, x, y);
@@ -425,7 +445,8 @@ void drawTriangles(
     const Program& program,
     const RenderCommand& cmd,
     ThreadPool& pool,
-    const DrawContext& ctx
+    const DrawContext& ctx,
+    TriBatch& batch
 ) {
     const size_t stride = vb.layout.stride();
 
@@ -434,41 +455,92 @@ void drawTriangles(
         ib.indices.size() : 
         std::min(begin + cmd.indexCount, ib.indices.size());
 
+    // A batch holding ~4096 ScreenTri is about 1.8 MB. Holding a whole scene
+    // would be 100 MB+, so chunking stays - it just spans draws now.
     constexpr size_t CHUNK = 4096;
-    const bool wire = (cmd.fillmode == FillMode::Wireframe);
 
-    // solid: set-up triangles.  wireframe: raw clip verts, 3 per triangle
-    static std::vector<ScreenTri> tris;
-    static std::vector<ClipVert>  wireTris;
-    tris.clear();
-    wireTris.clear();
+    /* ---- wireframe -------------------------------------------------------
 
-    auto rasterChunk = [&]() {
-        forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
-            if (!wire) {
-                for (const ScreenTri& tri : tris)
-                    rasterizeTriangle(target, program, cmd, tri, y0, y1);
-                return;
+        Kept as raw ClipVerts, so it batches into its own list. A batch never
+        mixes the two kinds: switching flushes, which is what keeps a wireframe
+        draw from jumping ahead of a solid one submitted before it.
+    */
+    if (cmd.fillmode == FillMode::Wireframe) {
+        if (!batch.tris.empty() || (batch.target && batch.target != target))
+            flushTriBatch(batch, pool, ctx);
+        batch.target = target;
+
+        DrawState wstate;
+        wstate.target  = target;
+        wstate.program = program;
+        wstate.cmd     = cmd;
+        if (ctx.uniforms)
+            for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) wstate.uniforms[i] = ctx.uniforms[i];
+
+        batch.states.push_back(wstate);
+        uint32_t wi = uint32_t(batch.states.size() - 1);
+
+        for (uint32_t inst = 0; inst < cmd.instanceCount; ++inst) {
+            valo_InstanceIndex = inst;
+
+            for (size_t i = begin; i + 2 < end; i += 3) {
+                const uint8_t* v1 = vb.verts.data() + ib.indices[i + 0] * stride;
+                const uint8_t* v2 = vb.verts.data() + ib.indices[i + 1] * stride;
+                const uint8_t* v3 = vb.verts.data() + ib.indices[i + 2] * stride;
+
+                ClipVert in[3], clipped[4];
+
+                valo_VertexIndex = ib.indices[i];
+                in[0].pos = program.vsThunk(program.vsFn, v1, cmd.uniforms, in[0].vary);
+
+                valo_VertexIndex = ib.indices[i + 1];
+                in[1].pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, in[1].vary);
+
+                valo_VertexIndex = ib.indices[i + 2];
+                in[2].pos = program.vsThunk(program.vsFn, v3, cmd.uniforms, in[2].vary);
+
+                int n = clipNear(in, clipped, program.varyingCount);
+                if (n < 3) continue;
+
+                for (int t = 1; t + 1 < n; ++t) {
+                    WireTri wt;
+                    wt.v[0] = clipped[0];
+                    wt.v[1] = clipped[t];
+                    wt.v[2] = clipped[t + 1];
+                    wt.state = wi;
+                    batch.wires.push_back(wt);
+                }
+
+                if (batch.wires.size() >= CHUNK) {
+                    flushTriBatch(batch, pool, ctx);
+                    batch.target = target;
+                    batch.states.push_back(wstate);
+                    wi = uint32_t(batch.states.size() - 1);
+                }
             }
+        }
+        return;
+    }
 
-            for (size_t k = 0; k + 2 < wireTris.size(); k += 3) {
-                Vec4f pos[3]          = { wireTris[k].pos,  wireTris[k + 1].pos,  wireTris[k + 2].pos  };
-                const float* varys[3] = { wireTris[k].vary, wireTris[k + 1].vary, wireTris[k + 2].vary };
+    /* ---- solid: append to the batch -------------------------------------- */
 
-                Vec4f line1[2] = {pos[0], pos[1]};
-                Vec4f line2[2] = {pos[1], pos[2]};
-                Vec4f line3[2] = {pos[2], pos[0]};
-                const float* varys1[2] = {varys[0], varys[1]};
-                const float* varys2[2] = {varys[1], varys[2]};
-                const float* varys3[2] = {varys[2], varys[0]};
-                rasterizeLine(target, program, cmd, line1, varys1, y0, y1);
-                rasterizeLine(target, program, cmd, line2, varys2, y0, y1);
-                rasterizeLine(target, program, cmd, line3, varys3, y0, y1);
-            }
-        });
-        tris.clear();
-        wireTris.clear();
-    };
+    // the band split comes from the target's height, so one batch serves one
+    // target; a different one has to go out first
+    if (!batch.wires.empty() || (batch.target && batch.target != target))
+        flushTriBatch(batch, pool, ctx);
+    batch.target = target;
+
+    // one state per draw, shared by every triangle this call contributes
+    DrawState state;
+    state.target  = target;
+    state.program = program;
+    state.cmd     = cmd;
+    if (ctx.uniforms) {
+        for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) state.uniforms[i] = ctx.uniforms[i];
+    }
+
+    batch.states.push_back(state);
+    uint32_t stateIndex = uint32_t(batch.states.size() - 1);
 
     for (uint32_t inst = 0; inst < cmd.instanceCount; ++inst) {
         valo_InstanceIndex = inst;
@@ -493,23 +565,72 @@ void drawTriangles(
             if (n < 3) continue;
 
             for (int t = 1; t + 1 < n; ++t) {
-                if (wire) {
-                    wireTris.push_back(clipped[0]);
-                    wireTris.push_back(clipped[t]);
-                    wireTris.push_back(clipped[t + 1]);
-                    continue;
-                }
-
                 ScreenTri st;
-                if (setupTriangle(target, cmd, clipped[0], clipped[t], clipped[t + 1], program.varyingCount, st))
-                    tris.push_back(st);
+                if (setupTriangle(target, cmd, clipped[0], clipped[t], clipped[t + 1], program.varyingCount, st)) {
+                    st.state = stateIndex;
+                    batch.tris.push_back(st);
+                }
             }
 
-            if (tris.size() >= CHUNK || wireTris.size() >= CHUNK * 3) rasterChunk();
+            /*
+                Flushing mid-draw is fine: the state list is rebuilt on the far
+                side and this draw simply appends a fresh entry for the rest of
+                its triangles. Order is still submission order.
+            */
+            if (batch.tris.size() >= CHUNK) {
+                flushTriBatch(batch, pool, ctx);
+                batch.target = target;
+                batch.states.push_back(state);
+                stateIndex = uint32_t(batch.states.size() - 1);   // the list was emptied
+            }
         }
     }
+}
 
-    rasterChunk();
+
+void flushTriBatch(TriBatch& batch, ThreadPool& pool, const DrawContext& ctx) {
+    if (batch.empty() || !batch.target) {
+        batch.tris.clear();
+        batch.wires.clear();
+        batch.states.clear();
+        return;
+    }
+
+    RenderTarget* target = batch.target;
+
+    forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
+        for (const ScreenTri& tri : batch.tris) {
+            const DrawState& st = batch.states[tri.state];
+
+            // per triangle, because the batch spans draws: each one's shader
+            // has to see its own bound uniform buffers
+            detail::boundUniforms = st.uniforms;
+
+            rasterizeTriangle(target, st.program, st.cmd, tri, y0, y1);
+        }
+
+        for (const WireTri& wt : batch.wires) {
+            const DrawState& st = batch.states[wt.state];
+            detail::boundUniforms = st.uniforms;
+
+            const Vec4f  pos[3]   = { wt.v[0].pos,  wt.v[1].pos,  wt.v[2].pos  };
+            const float* varys[3] = { wt.v[0].vary, wt.v[1].vary, wt.v[2].vary };
+
+            Vec4f line1[2] = {pos[0], pos[1]};
+            Vec4f line2[2] = {pos[1], pos[2]};
+            Vec4f line3[2] = {pos[2], pos[0]};
+            const float* varys1[2] = {varys[0], varys[1]};
+            const float* varys2[2] = {varys[1], varys[2]};
+            const float* varys3[2] = {varys[2], varys[0]};
+            rasterizeLine(target, st.program, st.cmd, line1, varys1, y0, y1);
+            rasterizeLine(target, st.program, st.cmd, line2, varys2, y0, y1);
+            rasterizeLine(target, st.program, st.cmd, line3, varys3, y0, y1);
+        }
+    });
+
+    batch.tris.clear();
+    batch.wires.clear();
+    batch.states.clear();
 }
 
 

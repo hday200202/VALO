@@ -1,0 +1,11 @@
+Model Information:
+* title:	Rome River Side
+* source:	https://sketchfab.com/3d-models/rome-river-side-8521d86dcd9043eba0b518ccab430d0f
+* author:	Shahriar Shahrabi (https://sketchfab.com/shahriyarshahrabi)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Rome River Side" (https://sketchfab.com/3d-models/rome-river-side-8521d86dcd9043eba0b518ccab430d0f) by Shahriar Shahrabi (https://sketchfab.com/shahriyarshahrabi) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

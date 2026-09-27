@@ -28,6 +28,7 @@ struct RenderConfig {
     bool            vsync           = false;
     // backbuffer stores sRGB-encoded bytes; shader output is encoded on write
     bool            srgbBackbuffer  = false;
+
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
     float           renderScale     = 1.f;
@@ -51,9 +52,18 @@ public:
     void shutdown();
 
     /* ---- frame ---------------------------------------------------------- */
-    void clear(const Color& clearColor = {0.f, 0.f, 0.f, 1.f}, const RenderTargetID target = BACKBUFFER);
+    void clear(const Color& clearColor = {0.f, 0.f, 0.f, 1.f}, const RenderTargetID target = BACKBUFFER, const float clearDepth = 0.f);
     void draw(const RenderCommand& cmd, const RenderTargetID target = BACKBUFFER);
     void show(const RenderTargetID target = BACKBUFFER);
+
+    /*
+        Rasterises any triangles still sitting in the batch. Called by VALO at
+        the end of each layer, because the layer's command queue is cleared
+        right afterwards and the batch holds pointers into it. clear() and
+        show() flush too, so a caller driving Renderer directly stays correct
+        without knowing the batch exists.
+    */
+    void flush();
 
     /* ---- render targets ------------------------------------------------- */
     RenderTargetID createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow = true, const bool srgb = false);
@@ -156,6 +166,9 @@ protected:
     uint32_t m_texW, m_texH;
 
     ThreadPool m_pool;
+
+    // triangles accumulate here across draws; see TriBatch in DrawFuncs.hpp
+    TriBatch m_batch;
 
     // takes ownership of a target/texture, reusing a freed slot if there is one
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);

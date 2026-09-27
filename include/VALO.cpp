@@ -55,7 +55,7 @@ void VALO::beginFrame() {
         const RenderTargetID target = m_layers[layer].target;
         if (std::find(cleared.begin(), cleared.end(), target) != cleared.end()) continue;
 
-        m_renderer.clear(m_layers[layer].clearColor, target);
+        m_renderer.clear(m_layers[layer].clearColor, target, m_layers[layer].clearDepth);
         cleared.push_back(target);
     }
 }
@@ -79,6 +79,8 @@ void VALO::endFrame(const RenderTargetID displayTarget) {
         auto& currLayer = m_layers[layer];
         for (auto& cmd : currLayer.cmdQueue)
             m_renderer.draw(cmd, currLayer.target);
+            
+        m_renderer.flush();
         currLayer.cmdQueue.clear();
     }
 
@@ -93,9 +95,10 @@ void VALO::endFrame(const RenderTargetID displayTarget) {
 
 LayerID VALO::addLayer(
     const RenderTargetID target,
-    const Color& clearColor
+    const Color& clearColor,
+    const float clearDepth
 ) {
-    m_layers.push_back({{}, target, clearColor});
+    m_layers.push_back({{}, target, clearColor, clearDepth});
     LayerID layer = m_layers.size() - 1;
     m_layerOrder.push_back(layer);
     return layer;
@@ -117,6 +120,11 @@ void VALO::setLayerOrder(const std::vector<LayerID>& order) {
 
 void VALO::setLayerClearColor(const LayerID layer, const Color& color) {
     m_layers[layer].clearColor = clamp(color, 0.f, 1.f);
+}
+
+
+void VALO::setLayerClearDepth(const LayerID layer, const float depth) {
+    m_layers[layer].clearDepth = std::clamp(depth, 0.f, 1.f);
 }
 
 

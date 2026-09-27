@@ -1,17 +1,13 @@
-#include "MinimalEngine.hpp"
+#include "engines/MinimalEngine.hpp"
 
 int main() {
     me::Engine engine;
     if (!engine.init()) return 1;
 
-    /*
-        The car is ~4.7 units long (z +/- 2.36) and sits on y = 0, so with the
-        camera at the origin looking down -z it needs to be far enough out that
-        its near end clears the near plane, and dropped so the body is centred.
-        Left click grabs the mouse to look around, WASD/Space/Shift to fly.
-    */
-    me::Model& car = engine.addModel("examples/gltf/cuda/scene.gltf");
-    car.setPosition({0.f, -0.6f, -5.f});
+    engine.setSkyColor({242.f / 255, 227.f / 255, 217.f / 255, 1.f});
+    me::Model& model = engine.addModel("examples/gltf/sea_keep_lonely_watcher/scene.gltf");
+    // model.setPosition({0.f, -0.6f, -5.f});
+    model.setTransform(valo::Mat4f::scale({0.5f, 0.5f, 0.5f}));
 
     while (engine.isRunning()) {
         engine.update();

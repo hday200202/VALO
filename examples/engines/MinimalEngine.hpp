@@ -18,7 +18,7 @@ using namespace valo;
 */
 struct Camera {
     float pitch = 0.f, yaw = 0.f, roll = 0.f;
-    float nearPlane = 0.1f, farPlane = 500.f, fov = 3.14159265f / 2.f;
+    float nearPlane = 0.1f, farPlane = 1000.f, fov = 3.14159265f / 2.f;
 
     Vec3f pos     = {0.f, 0.f,  0.f};
     Vec3f forward = {0.f, 0.f, -1.f};
@@ -86,10 +86,16 @@ static inline void vs(const GLTFVertex& in, const Uniforms& u, Varyings& out) {
 }
 
 static inline void fs(const Varyings& in, const Uniforms& u) {
-    // texture() indexes the target list unchecked, so never sample EMPTY_TEXTURE
-    valo_FragColor = (u.material.baseColorTex == EMPTY_TEXTURE)
+    Sampler sampler;
+    sampler.filter = Filter::Nearest;
+
+    Color out = (u.material.baseColorTex == EMPTY_TEXTURE)
         ? u.material.baseColor
-        : texture(u.material.baseColorTex, in.uv);
+        : texture(u.material.baseColorTex, in.uv, sampler);
+
+    if (out.a < 0.5f) discard;
+
+    valo_FragColor = out;
 }
 
 
@@ -102,7 +108,7 @@ public:
         just a [firstIndex, indexCount) range into it with its own material.
         One RenderCommand per primitive is what lets each get its own textures.
     */
-    void draw(const Mat4f& viewProj) {
+    void draw(const Mat4f& viewProj, bool wireframe = false) {
         if (!m_valo || !m_loaded) return;
 
         for (const auto& node : m_nodes) {
@@ -117,6 +123,7 @@ public:
                 cmd.program     = m_program;
                 cmd.firstIndex  = prim.firstIndex;
                 cmd.indexCount  = prim.indexCount;
+                cmd.fillmode    = wireframe ? FillMode::Wireframe : FillMode::Solid;
                 cmd.blendmode   = BlendMode::Alpha;
                 cmd.setUniforms(Uniforms{mvp, materialFor(prim.material)});
                 m_valo->submit(cmd);
@@ -150,8 +157,8 @@ public:
         m_materials.clear();
         for (auto& m : gltf.materials) {
             Material mat {
-                .baseColorTex           = loadTexture(m.baseColorTex),
-                .emissiveTex            = loadTexture(m.emissiveTex),
+                .baseColorTex           = loadTexture(m.baseColorTex, true),
+                .emissiveTex            = loadTexture(m.emissiveTex, true),
                 .metallicRoughnessTex   = loadTexture(m.metallicRoughnessTex),
                 .normalTex              = loadTexture(m.normalTex),
                 .occlusionTex           = loadTexture(m.occlusionTex),
@@ -183,9 +190,9 @@ public:
     const std::vector<Material>& getMaterials() const { return m_materials; }
 
 private:
-    TextureID loadTexture(const std::string& path) {
+    TextureID loadTexture(const std::string& path, const bool srgb = false) {
         if (path.empty()) return EMPTY_TEXTURE;
-        const TextureID id = m_valo->createTexture(path);
+        const TextureID id = m_valo->createTexture(path, srgb);
         m_textures.push_back(id);
         return id;
     }
@@ -216,7 +223,8 @@ class Engine {
 public:
     Engine() = default;
 
-    bool init(const RenderConfig& cfg = {}) {
+    bool init(RenderConfig cfg = {}) {
+        cfg.srgbBackbuffer = true;
         m_running = m_window.create("Minimal Engine", {800, 600}) && m_valo.init(m_window, cfg);
         return m_running;   // the camera defaults itself to the origin looking down -z
     }
@@ -239,15 +247,21 @@ public:
         if (!m_running) return;
         if (m_window.wasKeyPressed(Key::Escape)) { m_window.close(); m_running = false; }
 
-        const float moveSpeed = 2.f * m_valo.getDeltaTime();
+        float moveSpeed = 2.f * m_valo.getDeltaTime();
         Vec3f movement = {0.f, 0.f, 0.f};
 
+        if (m_window.isKeyDown(Key::LCtrl))     moveSpeed *= 5.f;
         if (m_window.isKeyDown(Key::W))         { movement.z =  moveSpeed; }
         if (m_window.isKeyDown(Key::S))         { movement.z = -moveSpeed; }
         if (m_window.isKeyDown(Key::A))         { movement.x = -moveSpeed; }
         if (m_window.isKeyDown(Key::D))         { movement.x =  moveSpeed; }
         if (m_window.isKeyDown(Key::LShift))    { movement.y = -moveSpeed; }
         if (m_window.isKeyDown(Key::Space))     { movement.y =  moveSpeed; }
+        if (m_window.wasKeyPressed(Key::Num1))  { m_valo.setRenderScale(1.00f); }
+        if (m_window.wasKeyPressed(Key::Num2))  { m_valo.setRenderScale(0.75f); }
+        if (m_window.wasKeyPressed(Key::Num3))  { m_valo.setRenderScale(0.50f); }
+        if (m_window.wasKeyPressed(Key::Num4))  { m_valo.setRenderScale(0.25f); }
+        if (m_window.wasKeyPressed(Key::Tab))   { m_drawWireframe = !m_drawWireframe; }
 
         bool justGrabbed = false;
         if (m_window.wasMousePressed(MouseButton::Left)) {
@@ -274,7 +288,7 @@ public:
         const Mat4f viewProj = proj * view;
 
         m_valo.beginFrame();
-        for (auto& m : m_models) m.draw(viewProj);
+        for (auto& m : m_models) m.draw(viewProj, m_drawWireframe);
         m_valo.endFrame();
     }
 
@@ -284,6 +298,8 @@ public:
     bool isRunning() const { return m_running; }
     VALO& getVALO()     { return m_valo; }
     Window& getWindow() { return m_window; }
+
+    void setSkyColor(const Color& color) { m_valo.setLayerClearColor(VALO::BASE_LAYER, color); }
 
 private:
     VALO    m_valo;
@@ -296,6 +312,8 @@ private:
     bool m_running = false;
 
     std::deque<Model> m_models;
+
+    bool m_drawWireframe = false;
 };
 
 }

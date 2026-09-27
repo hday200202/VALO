@@ -30,6 +30,12 @@ bool Renderer::init(const RenderConfig& cfg) {
 
 
 void Renderer::shutdown() { 
+    // the batch points into command queues and programs; none of it outlives this
+    m_batch.tris.clear();
+    m_batch.wires.clear();
+    m_batch.states.clear();
+    m_batch.target = nullptr;
+
     SDL_DestroyTexture(m_sdlTexture); 
     SDL_DestroyRenderer(m_sdlRenderer);
     m_sdlTexture = nullptr;
@@ -42,11 +48,21 @@ void Renderer::shutdown() {
     Frame
 // ========================================================================= */
 
-void Renderer::clear(const Color& clearColor, const RenderTargetID target) { 
+void Renderer::flush() {
+    const DrawContext ctx{&m_targets, nullptr};
+    flushTriBatch(m_batch, m_pool, ctx);
+}
+
+
+void Renderer::clear(const Color& clearColor, const RenderTargetID target, const float clearDepth) { 
     assert(m_targets[target] && "Renderer: clear on destroyed target");
+
+    // anything queued was meant to land on the old contents
+    flush();
+
     RenderTarget* tgt = m_targets[target].get();
     forEachBand(m_pool, tgt->height(), {&m_targets, nullptr}, [&](int y0, int y1) {
-        tgt->clearRows(clearColor, uint32_t(y0), uint32_t(y1));
+        tgt->clearRows(clearColor, clearDepth, uint32_t(y0), uint32_t(y1));
     });
     // m_targets[target]->clear(clearColor);
 }
@@ -72,11 +88,13 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
                 m_programs[cmd.program], 
                 cmd,
                 m_pool,
-                ctx
+                ctx,
+                m_batch
             );
             break;
         
         case Topology::Lines:
+            flush();
             drawLines(
                 m_targets[target].get(), 
                 m_vertexBuffers[cmd.verts], 
@@ -89,6 +107,7 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
             break;
         
         case Topology::Points:
+            flush();
             drawPoints(
                 m_targets[target].get(), 
                 m_vertexBuffers[cmd.verts], 
@@ -106,6 +125,8 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
 
 
 void Renderer::show(const RenderTargetID target) {
+    flush();
+
     RenderTarget* tgt = m_targets[target].get();
     assert(tgt && "Renderer: show on destroyed target");
 

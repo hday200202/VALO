@@ -227,6 +227,47 @@ them now means the API doesn't move later. ~3-5 days.
       rects, anything axis-aligned) are now exact and the residue is a fraction
       of a percent of pixels on off-axis blended geometry.
 
+- [✅] **Reversed-Z depth** (2026-09-26) — `RenderCommand::depthCompare`
+      (`VkCompareOp` parity, defaults to `Less` so nothing existing changed),
+      `Mat4f::perspectiveReverseZ`, per-layer clear depth
+      (`addLayer(..., clearDepth)` / `setLayerClearDepth`), and the far-plane
+      reject widened to a `[0,1]` range check so it is correct under both
+      conventions. All depth tests in the three rasterizers go through
+      `depthPasses()`.
+
+      Measured (`depthtest`, scratchpad) — smallest separation at which the
+      nearer surface reliably wins, near=0.1 far=500:
+
+      | distance | standard Z | reversed Z | gain |
+      |---|---|---|---|
+      | 10 | 0.00295 | 0.0000026 | 1153x |
+      | 100 | 0.0193 | 0.000043 | 450x |
+      | 400 | 1.329 | 0.000069 | 19343x |
+
+      One switch: `RenderConfig::reverseZ`. It drives the clip plane, the
+      default depth compare (`DepthCompare::Auto` -> `Greater`) and the default
+      layer clear depth; the caller only has to use `perspectiveReverseZ` for
+      the projection to match. `MinimalEngine` runs it.
+
+      **`clipNear` was the trap.** It clipped on `z >= 0`, which is the near
+      plane under standard Z and the FAR plane under reversed - so enabling
+      reversed-Z disabled near-plane clipping and geometry behind the camera
+      rasterised as huge triangles. It now clips on `w - z >= 0` when reversed.
+      `cliptest` (scratchpad) checks a quad straddling the near plane at seven
+      tilts and requires identical coverage under both conventions.
+
+      Not everything that shimmers is depth: `flicker` (scratchpad) showed
+      98-100% of whole-scene shimmer in `trees/scene.gltf` is texture
+      minification aliasing, unaffected by the depth convention. That one wants
+      mipmaps. Reversed-Z fixes z-fighting between near-coplanar surfaces,
+      which is a different artifact - measure which one you have before
+      reaching for either.
+
+      Note: `Renderer::clear` gained a clear-depth parameter **last**
+      (`clear(color, target, depth)`). Putting it second silently broke existing
+      `clear(color, target)` calls, since `RenderTargetID` converts to float
+      without a warning.
+
 ### Robustness — unchecked indices that fail as segfaults
 
 Not API gaps, but each one costs an afternoon when it bites, and the Vulkan
@@ -311,15 +352,75 @@ anything in software - the point is that the same dev code stays correct on both
       Triangles, lines, points, clear all banded.
 - [✅] Triangle setup once per triangle (`setupTriangle` -> `ScreenTri`);
       barycentrics via `invArea` multiply; bilinear on packed ABGR32.
-- Profile (25^3 cubes, 4K): geometry ~5 ms, raster ~31 ms of which ~20 ms is
-  fragment shading + `writePixel`, ~10 ms per-triangle floor. Band scan is
-  0.03 ms — binning is NOT worth it.
+- [✅] **Batched band dispatch** (2026-09-26) — the big one. `drawTriangles`
+  used to end every call with its own `forEachBand`, so every draw paid a full
+  thread-pool barrier (~10 us median, 30 us p90, 80 bands) however few triangles
+  it had. Triangles now accumulate in a `TriBatch` owned by `Renderer` and go
+  out in chunks of 4096 regardless of which draw produced them; `ScreenTri`
+  carries a `state` index into a parallel `DrawState` list holding that draw's
+  target/program/command/uniforms.
+
+  `DrawState` stores the command and program **by value**. Rasterising is
+  deferred now, so a caller's `RenderCommand` can go out of scope between its
+  `draw()` and the flush - which it does the moment anyone builds one in a
+  block. ~700 B per draw against a ~10 us dispatch is free, and it makes the
+  batch impossible to dangle. (ASan caught exactly this within a minute of the
+  first version, which pointed at the pointers.)
+
+  Flush points: buffer full, target change, `clear()`, `show()`, and
+  `VALO::endFrame` per layer - that last one matters because the layer's command
+  queue is cleared right after. Wireframe keeps the old per-draw path: it buffers
+  raw `ClipVert`s with nowhere to hang a state index, and is never the
+  many-small-draws case. Lines and points flush first, since they are not batched
+  and must not jump ahead of queued triangles.
+
+  Order is preserved: workers own disjoint row bands, and within a band the batch
+  is walked front to back, so later draws still composite over earlier ones and
+  still see their depth writes.
+
+  **Callers driving `Renderer` directly must now call `flush()` before reading
+  pixels back.** Through VALO nothing changes.
+
+  Wireframe joined the batch later (its own `wires` list, since it keeps raw
+  `ClipVert`s rather than `ScreenTri`s); a batch never holds both kinds, and
+  switching flushes so order survives.
+
+  Measured on `minimal.cpp` (trees/scene.gltf, 256,652 tris, 2712 draws, 800x600):
+
+  | | before | after |
+  |---|---|---|
+  | frame | 83.2 ms (12 fps) | **30.9 ms (32 fps)** |
+  | resolution-independent (G) | 67.5 ms | 12.9 ms |
+  | fragment (F) | 15.6 ms | 18.4 ms |
+  | split | 81% geometry / 19% fragment | 41% / 59% |
+
+  Per-draw overhead across 1 -> 2712 draws went from 66 ms (24 us/draw) to
+  **zero** - frame time is now flat in draw count. Merging primitives by
+  material engine-side, which was the planned follow-up, is therefore not worth
+  doing.
+
+- Profile (25^3 cubes, 4K, BEFORE batching): geometry ~5 ms, raster ~31 ms of
+  which ~20 ms is fragment shading + `writePixel`, ~10 ms per-triangle floor.
+  Band scan is 0.03 ms — binning is NOT worth it. The cube lattice was a poor
+  proxy: enormous fill, trivial unique geometry, few draws. `trees/scene.gltf`
+  is the better target.
 - What would close the SwiftShader gap, in order of payoff: (1) shade 4 pixels
   per fragment call so the surrounding loop vectorizes — changes the shader
   contract; (2) explicit SIMD for the fixed parts (edge stepping, depth
   compare, interpolation) — keeps the API, ~1.3x; (3) a JIT — out of scope.
+- [✅] **Line band clamping** (2026-09-26) — `rasterizeLine` stepped the whole
+      DDA in every band and discarded pixels outside its rows, so each line was
+      walked once per band (80x on a default pool). It now solves the step range
+      against the band's y-span first. Wireframe on `trees/scene.gltf`:
+      267 ms -> 146 ms, and batching wireframe took it to **72 ms**. Helps
+      `Topology::Lines` draws equally.
 - [ ] Parallel geometry phase (fixed index range per worker, order preserved).
-- [ ] Vertex cache: shade each unique index once per draw.
+      Now attacks the 12.9 ms G, which is 41% of the frame - worth more than it
+      was before batching, since that 12.9 ms is real per-triangle work rather
+      than barrier overhead.
+- [ ] Vertex cache: shade each unique index once per draw. The trees scene runs
+      769,956 vsThunk calls for 378,154 unique vertices, so roughly half of them
+      are redundant.
 - [ ] Per-phase timing (clear / draw / show) printed with the fps. `Clock` /
       `Timestamp` and `VALO::getDeltaTime()` landed 2026-09-22, so this is now
       just instrumenting the three call sites.

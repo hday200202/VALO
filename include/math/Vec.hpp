@@ -189,6 +189,7 @@ template <typename T> struct Vec4 {
     VALO_SWIZZLE_BEGIN
     union {
         struct { T x = T(0), y = T(0), z = T(0), w = T(0); };
+        struct { T r, g, b, a; };
         Vec2<T> xy;
         Vec3<T> xyz;
         struct { T _sx; Vec2<T> yz; T _sz; };
