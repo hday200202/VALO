@@ -11,9 +11,23 @@ namespace valo {
 
 using TextureID = uint32_t;
 
+inline constexpr uint32_t MAX_VARYINGS = 32;
+
 namespace detail {
     inline thread_local const std::vector<std::unique_ptr<RenderTarget>>* boundTargets = nullptr;
     inline thread_local const void* const* boundUniforms = nullptr;
+
+    struct VaryingDerivs {
+        const float* interp = nullptr;
+        const float* vary[3] = {};
+        float w[3] = {};
+        float dBdx[3] = {}, dBdy[3] = {};
+        float dDenDx = 0.f, dDenDy = 0.f;
+        float invW = 0.f;
+        bool valid = false;
+    };
+
+    inline thread_local VaryingDerivs varyingDerivs;
 }
 
 inline thread_local float       valo_PointSize      = 1.f;
@@ -45,7 +59,6 @@ struct Sampler {
 };
 
 
-uint32_t lerpABGR32(const uint32_t a, const uint32_t b, const uint32_t t);
 Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler = {});
 float textureDepth(const TextureID tex, const Vec2f& uv);
 

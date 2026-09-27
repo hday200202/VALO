@@ -1,0 +1,11 @@
+Model Information:
+* title:	Backrooms VR
+* source:	https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
+* author:	VTX (https://sketchfab.com/VTX_car)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Backrooms VR" (https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149) by VTX (https://sketchfab.com/VTX_car) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -183,13 +183,57 @@ void RenderTarget::update(
         "update: sub-rect out of bounds"
     );
 
-    uint32_t* start = m_pixels.data() + ((y * m_width) + x);
     for (uint32_t row = 0; row < h; ++row) {
         std::memcpy(
             m_pixels.data() + (y + row) * m_width + x,
             data + row * w, 
             sizeof(uint32_t) * w
         );
+    }
+}
+
+
+void RenderTarget::generateMips() {
+    m_mips.clear();
+    m_mipSizes.clear();
+    uint32_t w = m_width, h = m_height;
+    const uint32_t* src = m_pixels.data();
+    uint32_t sw = w;
+
+    while (w > 1 || h > 1) {
+        const uint32_t dw = std::max(1u, w / 2);
+        const uint32_t dh = std::max(1u, h / 2);
+
+        std::vector<uint32_t> level(size_t(dw) * dh);
+
+        for (uint32_t y = 0; y < dh; ++y) {
+            for (uint32_t x = 0; x < dw; ++x) {
+                const uint32_t x0 = std::min(x * 2,     w - 1);
+                const uint32_t x1 = std::min(x * 2 + 1, w - 1);
+                const uint32_t y0 = std::min(y * 2,     h - 1);
+                const uint32_t y1 = std::min(y * 2 + 1, h - 1);
+
+                const uint32_t a = src[y0 * sw + x0], b = src[y0 * sw + x1];
+                const uint32_t c = src[y1 * sw + x0], d = src[y1 * sw + x1];
+
+                uint32_t out;
+                if (m_srgb) {
+                    const Color ca = abgr32ToLinear(a), cb = abgr32ToLinear(b);
+                    const Color cc = abgr32ToLinear(c), cd = abgr32ToLinear(d);
+                    out = linearToABGR32Srgb((ca + cb + cc + cd) * 0.25f);
+                } else out = lerpABGR32(lerpABGR32(a, b, 128), lerpABGR32(c, d, 128), 128);
+                
+                level[y * dw + x] = out;
+            }
+        }
+
+        m_mips.push_back(std::move(level));
+        m_mipSizes.push_back({dw, dh});
+
+        src = m_mips.back().data();
+        sw  = dw;
+        w   = dw;
+        h   = dh;
     }
 }
 

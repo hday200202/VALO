@@ -27,6 +27,8 @@ struct ScreenTri {
     bool frontFacing;
     bool topLeft[3];
     uint32_t state = 0;
+    float dBdx[3], dBdy[3];
+    float dDenDx, dDenDy;
 };
 
 inline bool depthPasses(const DepthCompare cmp, const float z, const float stored) {

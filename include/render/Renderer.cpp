@@ -290,16 +290,18 @@ void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
     Textures
 // ========================================================================= */
 
-TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb) {
+TextureID Renderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadFromMemory(w, h, data));
     texture->setSrgb(srgb);
+    if (mips) texture->generateMips();
     return pushTarget(std::move(texture));
 }
 
 
-TextureID Renderer::createTexture(const std::string& path, const bool srgb) {
+TextureID Renderer::createTexture(const std::string& path, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadImageFromPath(path));
     texture->setSrgb(srgb);
+    if (mips) texture->generateMips();
     return pushTarget(std::move(texture));
 }
 

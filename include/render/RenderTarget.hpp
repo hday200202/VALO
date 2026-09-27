@@ -64,19 +64,32 @@ public:
     bool isSRGB() const { return m_srgb; }
     void setSRGB(const bool srgb) { m_srgb = srgb; }
 
+    void generateMips();
+
+    uint32_t mipCount() const { return uint32_t(m_mips.size()) + 1; }
+
+    const uint32_t* mipData(const uint32_t level) const {
+        return level == 0 ? m_pixels.data() : m_mips[level - 1].data();
+    }
+
+    Vec2u mipSize(const uint32_t level) const {
+        return level == 0 ? Vec2u{m_width, m_height} : m_mipSizes[level - 1];
+    }
 
 private:
-    std::vector<uint32_t>   m_pixels        = {};
-    std::vector<float>      m_depth         = {};
-    std::vector<uint8_t>    m_stencil       = {};
-    uint32_t                m_width         = 0;
-    uint32_t                m_height        = 0;
+    std::vector<uint32_t>                   m_pixels        = {};
+    std::vector<std::vector<uint32_t>>      m_mips          = {};
+    std::vector<Vec2u>                      m_mipSizes      = {};
+    std::vector<float>                      m_depth         = {};
+    std::vector<uint8_t>                    m_stencil       = {};
+    uint32_t                                m_width         = 0;
+    uint32_t                                m_height        = 0;
     
     // should this target be resized with window?
-    bool                    m_trackWindow   = true;
+    bool                                    m_trackWindow   = true;
 
     // are m_pixels sRGB-encoded? see isSrgb()
-    bool                    m_srgb          = false;
+    bool                                    m_srgb          = false;
 };
 
 } // namespace valo

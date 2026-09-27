@@ -34,41 +34,65 @@ constexpr int wrapPixel(int x, int size, Wrap mode) {
 
 }
 
-uint32_t lerpABGR32(const uint32_t a, const uint32_t b, const uint32_t t) {
-    const uint32_t s = 256 - t;
-    const uint32_t r = (( a        & 0xFF) * s + ( b        & 0xFF) * t) >> 8;
-    const uint32_t g = (((a >>  8) & 0xFF) * s + ((b >>  8) & 0xFF) * t) >> 8;
-    const uint32_t bl= (((a >> 16) & 0xFF) * s + ((b >> 16) & 0xFF) * t) >> 8;
-    const uint32_t al= (((a >> 24) & 0xFF) * s + ((b >> 24) & 0xFF) * t) >> 8;
-    return (al << 24) | (bl << 16) | (g << 8) | r;
-}
-
 Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
     assert(detail::boundTargets && "texture() called outside of a draw");
     const RenderTarget& t = *(*detail::boundTargets)[tex];
 
-    float u = wrap(uv.x, sampler.wrapU) * t.width();
-    float v = wrap(uv.y, sampler.wrapV) * t.height();
+    uint32_t level = 0;
+    const auto& dv = detail::varyingDerivs;
+
+    if (dv.valid && dv.interp && t.mipCount() > 1) {
+        const ptrdiff_t k = &uv.x - dv.interp;
+
+        if (k >= 0 && k + 1 < ptrdiff_t(MAX_VARYINGS)) {
+            auto ddx = [&](ptrdiff_t i) {
+                const float dnum = 
+                    dv.dBdx[0] * dv.vary[0][i] * dv.w[0] + 
+                    dv.dBdx[1] * dv.vary[1][i] * dv.w[1] + 
+                    dv.dBdx[2] * dv.vary[2][i] * dv.w[2];
+                return (dnum - dv.interp[i] * dv.dDenDx) / dv.invW;
+            };
+            auto ddy = [&](ptrdiff_t i) {
+                const float dnum = 
+                    dv.dBdy[0] * dv.vary[0][i] * dv.w[0] + 
+                    dv.dBdy[1] * dv.vary[1][i] * dv.w[1] + 
+                    dv.dBdy[2] * dv.vary[2][i] * dv.w[2];
+                return (dnum - dv.interp[i] * dv.dDenDy) / dv.invW;
+            };
+
+            const float tw = float(t.width()), th = float(t.height());
+            const float ux = ddx(k) * tw, vx = ddx(k + 1) * th;
+            const float uy = ddy(k) * tw, vy = ddy(k + 1) * th;
+
+            const float rho = std::max(std::sqrt(ux*ux + vx*vx), std::sqrt(uy*uy + vy*vy));
+            if (rho > 1.f) level = std::min(uint32_t(std::log2(rho) + 0.5f), t.mipCount() - 1);
+        }
+    }
+
+    const Vec2u     ms = t.mipSize(level);
+    const uint32_t* px = t.mipData(level);
+
+    float u = wrap(uv.x, sampler.wrapU) * ms.x;
+    float v = wrap(uv.y, sampler.wrapV) * ms.y;
 
     if (sampler.filter == Filter::Nearest) {
-        const uint32_t x = std::min(uint32_t(u), t.width()  - 1);
-        const uint32_t y = std::min(uint32_t(v), t.height() - 1);
-        if (t.isSrgb()) return abgr32ToLinear(t.data()[y * t.width() + x]);
-        return t.getPixel(x, y);
+        const uint32_t x = std::min(uint32_t(u), ms.x - 1);
+        const uint32_t y = std::min(uint32_t(v), ms.y - 1);
+        const uint32_t p = px[y * ms.x + x];
+        return t.isSrgb() ? abgr32ToLinear(p) : ABGR32ToColor(p);
     }
 
     const float fx = u - 0.5f, fy = v - 0.5f;
     const float x0f = std::floor(fx), y0f = std::floor(fy);
     const float tx = fx - x0f, ty = fy - y0f;
 
-    const int w = int(t.width()), h = int(t.height());
+    const int w = int(ms.x), h = int(ms.y);
     const int x0 = wrapPixel(int(x0f),      w, sampler.wrapU);
     const int x1 = wrapPixel(int(x0f) + 1,  w, sampler.wrapU);
     const int y0 = wrapPixel(int(y0f),      h, sampler.wrapV);
     const int y1 = wrapPixel(int(y0f) + 1,  h, sampler.wrapV);
 
-    const uint32_t* px = t.data();
-    const uint32_t  W  = t.width();
+    const uint32_t  W  = ms.x;
     const uint32_t p00 = px[y0 * W + x0], p10 = px[y0 * W + x1];
     const uint32_t p01 = px[y1 * W + x0], p11 = px[y1 * W + x1];
 

@@ -269,14 +269,16 @@ TextureID VALO::createTexture(
     const uint32_t w, 
     const uint32_t h,
     const uint32_t* data,
-    const bool srgb
-) { return m_renderer.createTexture(w, h, data, srgb); }
+    const bool srgb,
+    const bool mips
+) { return m_renderer.createTexture(w, h, data, srgb, mips); }
 
 
 TextureID VALO::createTexture(
     const std::string& path,
-    const bool srgb
-) { return m_renderer.createTexture(path, srgb); }
+    const bool srgb,
+    const bool mips
+) { return m_renderer.createTexture(path, srgb, mips); }
 
 
 void VALO::updateTexture(const TextureID texture, const uint32_t* data) {

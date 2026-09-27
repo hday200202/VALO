@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+#include <cctype>
 #include <deque>
 #include "../include/VALO.hpp"
 
@@ -87,14 +89,14 @@ static inline void vs(const GLTFVertex& in, const Uniforms& u, Varyings& out) {
 
 static inline void fs(const Varyings& in, const Uniforms& u) {
     Sampler sampler;
-    sampler.filter = Filter::Nearest;
+    sampler.filter = Filter::Linear;
 
     Color out = (u.material.baseColorTex == EMPTY_TEXTURE)
         ? u.material.baseColor
         : texture(u.material.baseColorTex, in.uv, sampler);
 
-    if (out.a < 0.5f) discard;
-
+    if (out.a < 0.1f) discard;
+    out.a = 1.f;
     valo_FragColor = out;
 }
 
@@ -262,6 +264,7 @@ public:
         if (m_window.wasKeyPressed(Key::Num3))  { m_valo.setRenderScale(0.50f); }
         if (m_window.wasKeyPressed(Key::Num4))  { m_valo.setRenderScale(0.25f); }
         if (m_window.wasKeyPressed(Key::Tab))   { m_drawWireframe = !m_drawWireframe; }
+        if (m_window.wasKeyPressed(Key::V))     { m_valo.setVsync(!m_valo.getVsync()); }
 
         bool justGrabbed = false;
         if (m_window.wasMousePressed(MouseButton::Left)) {
@@ -300,6 +303,35 @@ public:
     Window& getWindow() { return m_window; }
 
     void setSkyColor(const Color& color) { m_valo.setLayerClearColor(VALO::BASE_LAYER, color); }
+    void setSkyColor(const std::string_view hex) {
+        std::string h(hex);
+        if (!h.empty() && h.front() == '#') h.erase(0, 1);
+
+        for (char c : h) if (!std::isxdigit(static_cast<unsigned char>(c))) return;
+
+        auto nib = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            return (c | 32) - 'a' + 10;                  // | 32 lowercases A-F
+        };
+
+        // the short forms repeat each digit: "f80" -> "ff8800"
+        const bool shortForm = (h.size() == 3 || h.size() == 4);
+        if (!shortForm && h.size() != 6 && h.size() != 8) return;
+
+        auto channel = [&](const size_t i) {
+            return shortForm ? float(nib(h[i]) * 17) / 255.f
+                             : float(nib(h[i * 2]) * 16 + nib(h[i * 2 + 1])) / 255.f;
+        };
+
+        const size_t count = shortForm ? h.size() : h.size() / 2;
+
+        setSkyColor(Color{
+            channel(0),
+            channel(1),
+            channel(2),
+            count == 4 ? channel(3) : 1.f,
+        });
+    }
 
 private:
     VALO    m_valo;

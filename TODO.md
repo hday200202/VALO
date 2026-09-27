@@ -24,7 +24,7 @@ LLVM-JIT'd 4-wide fragment shading; not something the Vulkan backend inherits.
 ## 1. API parity — things the Vulkan backend would force into the API
 
 These are the gaps that would show up the moment the backend is written. Doing
-them now means the API doesn't move later. ~3-5 days.
+them now means the API doesn't move later. Maybe a day of Harrison-hours.
 
 - [✅] **GLSL built-ins** — shaders now write `valo_Position` / `valo_FragColor`
       (done, mirrors `gl_Position` / fragment `out`). Same thread-local pattern
@@ -69,7 +69,7 @@ them now means the API doesn't move later. ~3-5 days.
         what mipmap LOD needs; do it with mipmaps.
 - [✅] **`updateTexture(id, data)`** — the only missing dynamic path. UILO font
       atlases and streamed textures need it. Software: memcpy; Vulkan: staging
-      copy. Half a day.
+      copy. ~1 hour.
 - [✅] **sRGB** — a `srgb` flag on `RenderTarget` (so it covers textures and
       targets alike, which are the same type here), `createTexture(..., srgb)`,
       `createTarget(..., srgb)` and `RenderConfig::srgbBackbuffer`. All default
@@ -98,11 +98,34 @@ them now means the API doesn't move later. ~3-5 days.
       Not done, deliberately: the examples still do their own gamma
       (`encodeGamma` / `toneMap`), so flipping `srgbBackbuffer` on them would
       double-correct. Converting them is its own change.
-- [ ] **Mipmaps** — generate the chain at `createTexture`; LOD from per-triangle
-      uv derivatives (`du/dx`, `dv/dy` in `setupTriangle`), `Sampler` gains a
-      mip filter. Vulkan samplers assume a chain; without one GPU textures
-      shimmer exactly like CPU ones do now. 1-2 days; the one substantive
-      rasterizer item left.
+- [✅] **Mipmaps** (2026-09-27) — box-filtered chain built in
+      `RenderTarget::generateMips`, called from `createTexture(..., srgb, mips)`
+      (default on; render targets opt out). sRGB textures average in linear
+      space, same reason bilinear does.
+
+      LOD is analytic per triangle, not quad-based: `setupTriangle` stores the
+      barycentric gradients (`dBdx`/`dBdy`, `dDenDx`/`dDenDy`) and
+      `rasterizeTriangle` publishes them plus the pixel's interpolated varyings
+      through `detail::varyingDerivs`. `texture()` infers which varying holds
+      the uv from the address of its `const Vec2f&` argument, so **no API
+      change and no shader change** - which matters because this scaffolding is
+      software-only; Vulkan gets derivatives from hardware. A computed uv falls
+      outside the varying array, is detected, and falls back to level 0.
+
+      Measured (`miptest`, sub-pixel camera nudge on `trees/scene.gltf`):
+
+      | cam dist | no mips | mips | reduction |
+      |---|---|---|---|
+      | 0.2x | 45890 | 13776 | 70% |
+      | 1.5x | 751 | 40 | 95% |
+      | 6.0x | 19 | 0 | 100% |
+
+      The flat-shaded floor at 1.5x is 5 flips, so 40 is close to pure geometry.
+      Frame time went 30.9 -> 29.8 ms: smaller levels sample better from cache.
+
+      Still nearest-mip, not trilinear - a hard switch between levels can show
+      as a visible band on a slowly receding surface. Blending the two adjacent
+      levels is the follow-up.
 - [✅] **Uniform buffer resource** — `createUniformBuffer` / `updateUniformBuffer`
       / `destroyUniformBuffer` on VALO and Renderer, `cmd.bindUniformBuffer(slot, id)`
       with `MAX_UNIFORM_SLOTS = 8`, and `uniformBuffer<T>(slot)` in the shader.
@@ -135,10 +158,10 @@ them now means the API doesn't move later. ~3-5 days.
       Sky 48→44; the 128 B scene block is now uploaded once a frame instead of
       memcpy'd into every command.
 - [ ] **Viewport rect** on `RenderCommand` — draw into a sub-rect of the target.
-      Vulkan dynamic viewport. Half a day, alongside the scissor below.
+      Vulkan dynamic viewport. ~1 hour, alongside the scissor below.
 - [ ] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
       for triangles, pixel test for lines/points). Vulkan dynamic scissor. The
-      stencil clip stack stays the general mechanism. Half a day.
+      stencil clip stack stays the general mechanism. ~1 hour.
 - [ ] **glTF embedded images (`.glb`)** *(parser, not API - does not gate the
       backend; `utils/` only)* — `GLTFParser::texPath()` returns `""`
       unless `image->uri` is set, so every `.glb` loads fully untextured and
@@ -150,17 +173,41 @@ them now means the API doesn't move later. ~3-5 days.
       paths, which can't name an embedded image. Suggest a
       `std::vector<GLTFImage>` on `GLTF` (decoded pixels + w/h) with materials
       holding `int` indices, so file-backed and embedded land in one place.
-      Half a day.
+      ~1 hour.
+- [ ] **glTF alpha modes** *(parser + example, not API)* — `GLTFMaterial` drops
+      `alpha_mode` and `alpha_cutoff`, which cgltf provides
+      (`cgltf.h:572-573`), so an engine cannot tell a cut-out leaf from a
+      transparent light shaft and has to pick one behaviour for the whole
+      scene. The three modes need different state:
+
+      | mode | blend | depth write | shader |
+      |---|---|---|---|
+      | OPAQUE | Opaque | on | no alpha test |
+      | MASK | Opaque | on | `discard` below cutoff, then force `a = 1` |
+      | BLEND | Alpha | off | alpha passes through |
+
+      BLEND draws must also come after every opaque draw, sorted back to front,
+      which is why their depth write is off.
+
+      Symptom without it: forcing alpha to 1 gives correct grass but solid
+      light shafts; leaving alpha blended gives correct shafts but a halo of
+      background colour around every grass blade, because edge texels with
+      alpha 0.5-1.0 composite the sky in. Mipmaps make the halo worse, since
+      averaging alpha down the chain produces more partial-alpha texels.
+
+      Needs: the two parser fields, both carried into the material uniform, and
+      `Model::draw` split into an opaque pass and a sorted blended pass.
+
 - [ ] **Tangents in `GLTFVertex`** *(parser, not API - does not gate the
       backend; `utils/` only)* — it is `{pos, normal, uv}`, so nothing
       using the shared vertex type can do normal mapping. `gltf.cpp` works
       around it by declaring its own `Vertex` with a `Vec4f tangent` and
       computing the basis at load. That belongs in the parser (MikkTSpace-ish
-      per-triangle accumulate) so every consumer gets it. 1 day.
+      per-triangle accumulate) so every consumer gets it. ~2 hours.
 - [ ] **Texture formats** — at least R8 (font atlases, masks) and RGBA32F
       (HDR targets). `createTexture` gains a format; `texture()` unpacks per
       format. Vulkan has these for free; software needs them to exist so the
-      API doesn't change. 1 day.
+      API doesn't change. ~2 hours.
 
 ## 2. Cleanup — before the backend, because the backend duplicates the shape
 
@@ -220,7 +267,7 @@ them now means the API doesn't move later. ~3-5 days.
       choice). Then edge values are exact integers, `e_fwd == -e_rev` holds
       exactly, ties land exactly on zero, and the top-left rule becomes exact.
       Barycentrics come from the same integer edge values. That is a real
-      rewrite of `setupTriangle` + `rasterizeTriangle`, ~1-2 days, and it is
+      rewrite of `setupTriangle` + `rasterizeTriangle`, half a day, and it is
       also the prerequisite for any future multisampling.
 
       Worth doing eventually; not urgent, since the common cases (quads, UI
@@ -270,7 +317,7 @@ them now means the API doesn't move later. ~3-5 days.
 
 ### Robustness — unchecked indices that fail as segfaults
 
-Not API gaps, but each one costs an afternoon when it bites, and the Vulkan
+Not API gaps, but each one costs an hour of confusion when it bites, and the Vulkan
 backend won't have the same failure modes to compare against.
 
 - [ ] `Renderer::draw` does `m_programs[cmd.program]` with no bounds check and
@@ -328,7 +375,7 @@ anything in software - the point is that the same dev code stays correct on both
 - [ ] Layers -> render passes; targets -> framebuffers; `textureDepth` ->
       depth-image sampling; stencil ops verbatim; dynamic viewport/scissor.
 - [ ] `gltf.cpp` running unchanged on both backends is the finish line.
-      Estimate: 3-4 weeks.
+      Estimate: ~1 week.
 
 ## 5. Nice-to-have (either backend, not blocking)
 

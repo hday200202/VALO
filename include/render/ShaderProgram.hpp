@@ -5,9 +5,6 @@
 
 namespace valo {
 
-inline constexpr uint32_t MAX_VARYINGS = 32;
-
-
 using RawFn = void (*)();
 using VsThunk = Vec4f (*)(RawFn fn, const void* vertex, const void* uniforms, float* varyingsOut);
 using FsThunk = Color (*)(RawFn fn, const float* varyings, const void* uniforms);

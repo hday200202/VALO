@@ -65,6 +65,21 @@ bool setupTriangle(
         (out.s[0].xy - out.s[2].xy) * out.sign,
     };
 
+    const float dE1dx = -e[0].y, dE1dy = e[0].x;
+    const float dE2dx = -e[1].y, dE2dy = e[1].x;
+    const float dE3dx = -e[2].y, dE3dy = e[2].x;
+
+    out.dBdx[0] = dE2dx * out.invArea;
+    out.dBdx[1] = dE3dx * out.invArea;
+    out.dBdx[2] = dE1dx * out.invArea;
+
+    out.dBdy[0] = dE2dy * out.invArea;
+    out.dBdy[1] = dE3dy * out.invArea;
+    out.dBdy[2] = dE1dy * out.invArea;
+
+    out.dDenDx = out.dBdx[0] * out.s[0].w + out.dBdx[1] * out.s[1].w + out.dBdx[2] * out.s[2].w;
+    out.dDenDy = out.dBdy[0] * out.s[0].w + out.dBdy[1] * out.s[1].w + out.dBdy[2] * out.s[2].w;
+
     for (int i = 0; i < 3; ++i)
         out.topLeft[i] = (e[i].y < 0.f) || (e[i].y == 0.f && e[i].x > 0.f);
 
@@ -83,7 +98,6 @@ bool setupTriangle(
 }
 
 
-// the near plane sits at z == w under reversed depth
 int clipNear(
     const ClipVert in[3], 
     ClipVert out[4], 
@@ -108,15 +122,6 @@ int clipNear(
     return n;
 }
 
-/*
-    On an sRGB target the stored bytes are encoded, so blending has to decode
-    the destination, combine in linear, and re-encode. Blending encoded values
-    directly is the classic "why is my alpha muddy" bug: a 50% blend of black
-    over white lands at ~0.73 linear instead of 0.5. Vulkan's blend hardware
-    does the same decode/encode around an _SRGB attachment.
-
-    The non-sRGB path is untouched and still goes through set/getPixel.
-*/
 void writePixel(
     RenderTarget* target, 
     const int x, 
@@ -207,7 +212,6 @@ void rasterizePoint(
     int px = int(screen.x), py = int(screen.y);
     if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
 
-    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
     if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, screen.z, target->getDepth(px, py))) return;
@@ -215,7 +219,8 @@ void rasterizePoint(
 
     const bool ownsCenter = (py >= bandY0 && py < bandY1);
 
-    // No fragment stage: depth and stencil only, nothing to shade.
+    detail::varyingDerivs.valid = false;
+
     if (!program.fsThunk) {
         if (ownsCenter) {
             if (cmd.depthWrite) target->setDepth(px, py, screen.z);
@@ -228,9 +233,6 @@ void rasterizePoint(
     const int half = n / 2;
     const int x0   = px - half, y0 = py - half;
 
-    // The sprite is shaded per fragment, not once and splatted, because
-    // valo_PointCoord varies across it. At n == 1 this is the same one call.
-    // Depth and stencil stay a single decision made by the centre sample.
     float centerDepth = screen.z;
     bool  centerLive  = false;
 
@@ -271,7 +273,6 @@ void rasterizeLine(
     const float* varys[2],
     const int bandY0, const int bandY1
 ) {
-    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
     Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
@@ -296,12 +297,6 @@ void rasterizeLine(
 
     const int w = int(target->width());
 
-    /*
-        Clamp the walk to the steps that actually land in this band. Without
-        this every worker walks the whole line and throws away the pixels
-        outside its rows, so the line is stepped once per band - 80x the work
-        on a default pool. Triangles already clamp via ScreenTri's bbox.
-    */
     int i0 = 0, i1 = steps;
     if (std::abs(dy) > 1e-6f) {
         const float ta = (float(bandY0)     - s1.y) / dy;
@@ -310,9 +305,8 @@ void rasterizeLine(
         i0 = std::max(0,     int(std::floor(lo * float(std::max(steps, 1)))) - 1);
         i1 = std::min(steps, int(std::ceil (hi * float(std::max(steps, 1)))) + 1);
         if (i0 > i1) return;
-    } else if (int(s1.y) < bandY0 || int(s1.y) >= bandY1) {
-        return;                                     // horizontal line, wrong band
-    }
+    } else if (int(s1.y) < bandY0 || int(s1.y) >= bandY1)
+        return;
 
     for (int i = i0; i <= i1; ++i) {
         float t = float(i) / std::max(steps, 1);
@@ -321,12 +315,13 @@ void rasterizeLine(
         int px = int(x), py = int(y);
         if (px < 0 || px >= w - 1 || py < bandY0 || py >= bandY1) continue;
 
-        // early z-test (skipped when the shader will write its own depth)
         float z = s1.z + (s2.z - s1.z) * t;
         if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepth(px, py))) continue;
         if (!stencilTest(target, cmd, px, py)) continue;
 
         valo_FragDepth = z;
+
+        detail::varyingDerivs.valid = false;
 
         Color color;
         if (program.fsThunk) {
@@ -365,7 +360,6 @@ void rasterizeTriangle(
     const int ymax = std::min(tri.ymax, bandY1 - 1);
     if (ymin > ymax) return;
 
-    // A depth-writing shader invalidates the early test - see cmd.fragDepthWrite.
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
     const Vec4f& s1 = tri.s[0]; const Vec4f& s2 = tri.s[1]; const Vec4f& s3 = tri.s[2];
@@ -376,6 +370,17 @@ void rasterizeTriangle(
     const float d1 = -(s2.y - s1.y) * sign;
     const float d2 = -(s3.y - s2.y) * sign;
     const float d3 = -(s1.y - s3.y) * sign;
+
+    auto& dv = detail::varyingDerivs;
+    for (int i = 0; i < 3; ++i) {
+        dv.vary[i] = tri.vary[i];
+        dv.w[i]    = tri.s[i].w;
+        dv.dBdx[i] = tri.dBdx[i];
+        dv.dBdy[i] = tri.dBdy[i];
+    }
+    dv.dDenDx = tri.dDenDx;
+    dv.dDenDy = tri.dDenDy;
+    dv.valid  = true;
 
     for (int y = ymin; y <= ymax; ++y) {
         Vec2f p0 = { xmin + 0.5f, y + 0.5f };
@@ -396,9 +401,6 @@ void rasterizeTriangle(
                 float b2 = e3 * tri.invArea;
                 float b3 = e1 * tri.invArea;
 
-                // early z-test (skipped when the shader will write its own
-                // depth; the far-plane reject stays early either way, it is a
-                // clip-space cull rather than a depth comparison)
                 float z = b1 * s1.z + b2 * s2.z + b3 * s3.z;
                 if (z < 0.f || z > 1.f) continue;
                 if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepth(x, y))) continue;
@@ -406,7 +408,6 @@ void rasterizeTriangle(
 
                 valo_FragDepth = z;
 
-                // fragment stage (if the program has one): interpolate, shade, honor discard
                 Color color;
                 if (program.fsThunk) {
                     float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
@@ -422,6 +423,10 @@ void rasterizeTriangle(
                     valo_Discard = false;
                     valo_FragCoord = { x + 0.5f, y + 0.5f, z, invW };
                     valo_FrontFacing = tri.frontFacing;
+
+                    dv.interp = interp;
+                    dv.invW   = invW;
+
                     color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
                     if (valo_Discard) continue;
                 }
@@ -455,16 +460,8 @@ void drawTriangles(
         ib.indices.size() : 
         std::min(begin + cmd.indexCount, ib.indices.size());
 
-    // A batch holding ~4096 ScreenTri is about 1.8 MB. Holding a whole scene
-    // would be 100 MB+, so chunking stays - it just spans draws now.
     constexpr size_t CHUNK = 4096;
 
-    /* ---- wireframe -------------------------------------------------------
-
-        Kept as raw ClipVerts, so it batches into its own list. A batch never
-        mixes the two kinds: switching flushes, which is what keeps a wireframe
-        draw from jumping ahead of a solid one submitted before it.
-    */
     if (cmd.fillmode == FillMode::Wireframe) {
         if (!batch.tris.empty() || (batch.target && batch.target != target))
             flushTriBatch(batch, pool, ctx);
@@ -522,15 +519,10 @@ void drawTriangles(
         return;
     }
 
-    /* ---- solid: append to the batch -------------------------------------- */
-
-    // the band split comes from the target's height, so one batch serves one
-    // target; a different one has to go out first
     if (!batch.wires.empty() || (batch.target && batch.target != target))
         flushTriBatch(batch, pool, ctx);
     batch.target = target;
 
-    // one state per draw, shared by every triangle this call contributes
     DrawState state;
     state.target  = target;
     state.program = program;
@@ -572,16 +564,11 @@ void drawTriangles(
                 }
             }
 
-            /*
-                Flushing mid-draw is fine: the state list is rebuilt on the far
-                side and this draw simply appends a fresh entry for the rest of
-                its triangles. Order is still submission order.
-            */
             if (batch.tris.size() >= CHUNK) {
                 flushTriBatch(batch, pool, ctx);
                 batch.target = target;
                 batch.states.push_back(state);
-                stateIndex = uint32_t(batch.states.size() - 1);   // the list was emptied
+                stateIndex = uint32_t(batch.states.size() - 1);
             }
         }
     }
@@ -601,11 +588,7 @@ void flushTriBatch(TriBatch& batch, ThreadPool& pool, const DrawContext& ctx) {
     forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
         for (const ScreenTri& tri : batch.tris) {
             const DrawState& st = batch.states[tri.state];
-
-            // per triangle, because the batch spans draws: each one's shader
-            // has to see its own bound uniform buffers
             detail::boundUniforms = st.uniforms;
-
             rasterizeTriangle(target, st.program, st.cmd, tri, y0, y1);
         }
 

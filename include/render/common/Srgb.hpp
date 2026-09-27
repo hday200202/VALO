@@ -78,4 +78,13 @@ inline uint32_t linearToABGR32Srgb(const Color& c) {
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 
+inline uint32_t lerpABGR32(const uint32_t a, const uint32_t b, const uint32_t t) {
+    const uint32_t s = 256 - t;
+    const uint32_t r = (( a        & 0xFF) * s + ( b        & 0xFF) * t) >> 8;
+    const uint32_t g = (((a >>  8) & 0xFF) * s + ((b >>  8) & 0xFF) * t) >> 8;
+    const uint32_t bl= (((a >> 16) & 0xFF) * s + ((b >> 16) & 0xFF) * t) >> 8;
+    const uint32_t al= (((a >> 24) & 0xFF) * s + ((b >> 24) & 0xFF) * t) >> 8;
+    return (al << 24) | (bl << 16) | (g << 8) | r;
+}
+
 } // namespace valo

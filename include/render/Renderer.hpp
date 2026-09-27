@@ -85,8 +85,8 @@ public:
     void destroyUniformBuffer(const UniformBufferID buffer);
 
     /* ---- textures ------------------------------------------------------- */
-    TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb = false);
-    TextureID createTexture(const std::string& path, const bool srgb = false);
+    TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb = false, const bool mips = true);
+    TextureID createTexture(const std::string& path, const bool srgb = false, const bool mips = true);
     void updateTexture(const TextureID texture, const uint32_t* data);
     void updateTexture(
         const TextureID texture, 
