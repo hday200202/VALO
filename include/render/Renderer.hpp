@@ -173,6 +173,13 @@ protected:
     // takes ownership of a target/texture, reusing a freed slot if there is one
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
     bool recreateTexture(const uint32_t w, const uint32_t h);
+
+    // EMPTY_BUFFER, DEFAULT_PROGRAM and stale IDs are all out of range
+    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size() && m_targets[id]; }
+    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size(); }
+    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size(); }
+    bool validProgram(const ProgramID id)       const { return id < m_programs.size(); }
+    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size(); }
 };
 
 } // namespace valo

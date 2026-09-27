@@ -60,6 +60,12 @@ void stencilApply(
 );
 
 
+struct PixelRect { int x0, y0, x1, y1; };
+
+Viewport resolveViewport(const RenderTarget* target, const RenderCommand& cmd);
+PixelRect resolveClipRect(const RenderTarget* target, const RenderCommand& cmd);
+
+
 bool setupTriangle(
     const RenderTarget* target,
     const RenderCommand& cmd,

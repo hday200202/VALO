@@ -36,6 +36,13 @@ constexpr int wrapPixel(int x, int size, Wrap mode) {
 
 Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
     assert(detail::boundTargets && "texture() called outside of a draw");
+    assert(detail::boundTargets && tex < detail::boundTargets->size()
+        && (*detail::boundTargets)[tex] && "texture(): unbound or destroyed texture");
+
+    // magenta rather than an out-of-bounds read, so a missing bind is visible
+    if (!detail::boundTargets || tex >= detail::boundTargets->size()
+        || !(*detail::boundTargets)[tex]) return {1.f, 0.f, 1.f, 1.f};
+
     const RenderTarget& t = *(*detail::boundTargets)[tex];
 
     uint32_t level = 0;
@@ -114,6 +121,12 @@ Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
 
 float textureDepth(const TextureID tex, const Vec2f& uv) {
     assert(detail::boundTargets && "textureDepth() called outside of a draw");
+    assert(detail::boundTargets && tex < detail::boundTargets->size()
+        && (*detail::boundTargets)[tex] && "textureDepth(): unbound or destroyed texture");
+
+    if (!detail::boundTargets || tex >= detail::boundTargets->size()
+        || !(*detail::boundTargets)[tex]) return 0.f;   // reversed-Z: far plane
+
     const RenderTarget& t = *(*detail::boundTargets)[tex];
     float u = std::clamp<float>(uv.x, 0, 1) * (t.width() - 1);
     float v = std::clamp<float>(uv.y, 0, 1) * (t.height() - 1);

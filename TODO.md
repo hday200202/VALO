@@ -4,20 +4,30 @@ Ordered by what it takes to bring the software renderer to parity with the
 eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
 a gate for the next.
 
-## State (2026-09-26)
+## State (2026-09-27)
 
-~4.3k lines of library, 9 examples, 21/28 feature items done, every feature
-behind a sanitizer-verified harness. The dev-facing API (Window -> VALO ->
-create* -> RenderCommand -> submit, typed C++ shader callbacks) is settled and
-Vulkan-shaped.
+~5.2k lines of library across 28 files, 9 examples, 18/29 tracked items done
+(sections 1, 2 and 6), every feature behind a sanitizer-verified harness. The
+dev-facing API (Window -> VALO -> create* -> RenderCommand -> submit, typed C++
+shader callbacks) is settled and Vulkan-shaped.
 
-Landed since 2026-09-20: `Renderer.hpp` -> `Renderer.cpp` and `DrawFuncs`
-split (both section-2 items, now checked off); sentinels were already
-`inline constexpr`; `Clock` / `Timestamp` utils + `VALO::getDeltaTime()`;
-`Sampling.cpp` split out; `EMPTY_TEXTURE` sentinel; `minimal.cpp` +
-`MinimalEngine.hpp`. Benchmark (DamagedHelmet, 1280x960, lambert, M4): VALO 8.5 ms,
-SwiftShader 3.0 ms, MoltenVK GPU 0.7 ms. The 2.85x gap to SwiftShader is its
-LLVM-JIT'd 4-wide fragment shading; not something the Vulkan backend inherits.
+**The software renderer is feature-complete for the backend's purposes.** The
+only section-1 item left that is actually API is texture formats; the other
+three are glTF parser gaps explicitly marked as not gating the backend. Section
+3 (interface split + the shader contract decision) is the real gate to Vulkan.
+
+Landed 2026-09-26/27, in order: uniform buffers (slot-bound, `MAX_UNIFORM_SLOTS
+= 8`); sRGB (converted at sample, not at load); the top-left fill rule;
+`Renderer`/`VALO` function reorganisation; batched band dispatch (83.2 -> 30.9 ms
+on the trees scene, per-draw overhead 24 us -> zero); reversed-Z as the sole
+depth convention (smallest resolvable separation at 400 units 1.33 -> 0.000069);
+wireframe 267 -> 72 ms; mipmaps with analytic per-triangle LOD (shimmer -70% near
+to -100% far, and 0.9 ms *faster*); `examples/engines/`; hex `setSkyColor`;
+viewport + scissor rects; and the three robustness items in section 2.
+
+Benchmark (DamagedHelmet, 1280x960, lambert, M4): VALO 8.5 ms, SwiftShader
+3.0 ms, MoltenVK GPU 0.7 ms. The 2.85x gap to SwiftShader is its LLVM-JIT'd
+4-wide fragment shading; not something the Vulkan backend inherits.
 
 ---
 
@@ -157,11 +167,26 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
       per-command uniforms: Uniforms 324→196 B, Floor 224→96, Orb 112→96,
       Sky 48→44; the 128 B scene block is now uploaded once a frame instead of
       memcpy'd into every command.
-- [ ] **Viewport rect** on `RenderCommand` — draw into a sub-rect of the target.
-      Vulkan dynamic viewport. ~1 hour, alongside the scissor below.
-- [ ] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
+- [✅] **Viewport rect** on `RenderCommand` — draw into a sub-rect of the target.
+      Vulkan dynamic viewport.
+      `Viewport { x, y, width, height, minDepth, maxDepth }`; width/height of 0
+      means the whole target, so every existing call is unaffected. Applied in
+      the NDC→screen map of all three paths (`setupTriangle`, `rasterizePoint`,
+      `rasterizeLine`), with `minDepth`/`maxDepth` remapping z.
+- [✅] **Scissor rect** on `RenderCommand` — axis-aligned fast path (bbox clamp
       for triangles, pixel test for lines/points). Vulkan dynamic scissor. The
-      stencil clip stack stays the general mechanism. ~1 hour.
+      stencil clip stack stays the general mechanism.
+      `Scissor { x, y, width, height }`, zero extent = disabled. Both rects
+      resolve through one helper, `resolveClipRect()`, which returns the
+      inclusive `target ∩ viewport ∩ scissor` pixel box; triangles clamp their
+      bbox to it, points test against it, and lines fold it into the band
+      bounds so the DDA skips the scissored span instead of stepping it.
+      Verified by `viewtest` (10 cases: viewport quadrants, overhang, scissor
+      box, viewport∩scissor, disjoint → zero pixels, depth remap, wireframe,
+      points), ASan + UBSan clean. `cliptest`/`filltest`/`covertest`/`miptest`
+      unchanged.
+      Not done: `clear()` ignores the scissor — it is a `Renderer` call, not a
+      `RenderCommand`, so a scissored clear needs its own entry point.
 - [ ] **glTF embedded images (`.glb`)** *(parser, not API - does not gate the
       backend; `utils/` only)* — `GLTFParser::texPath()` returns `""`
       unless `image->uri` is set, so every `.glb` loads fully untextured and
@@ -320,19 +345,35 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
 Not API gaps, but each one costs an hour of confusion when it bites, and the Vulkan
 backend won't have the same failure modes to compare against.
 
-- [ ] `Renderer::draw` does `m_programs[cmd.program]` with no bounds check and
+Every one of these now has a debug `assert` naming the offending call plus a
+release-build early return, since `./build.sh release` defines `NDEBUG` and the
+asserts vanish. Verified by `guardtest` (27 bad-ID calls, built `-DNDEBUG`, none
+crash, ASan + UBSan clean; the same source with asserts on aborts on the
+matching assert, naming the call).
+
+- [✅] `Renderer::draw` does `m_programs[cmd.program]` with no bounds check and
       no handling of `DEFAULT_PROGRAM` (= `UINT32_MAX`), so a command submitted
       without a program indexes ~4e9 past an empty vector. The crash surfaces
       later, inside `drawTriangles` at the `vsThunk` call, which points at the
       wrong file. Same for `m_vertexBuffers[cmd.verts]` / `m_indexBuffers`.
-- [ ] `texture()` does `(*boundTargets)[tex]` unchecked (Sampling.cpp:48, :84),
+      `validTarget/Verts/Indices/Program/Uniform` predicates on `Renderer`;
+      `draw` rejects all four plus a stale uniform slot. `clear`, `show` and
+      both `updateTexture` overloads were the same shape — `show` subscripted
+      before its null check, `updateTexture` bounds-checked but still
+      dereferenced a destroyed target. `VALO` got `validLayer` on `submit`,
+      `removeLayer`, `setLayerClearColor/Depth`, `pushClip`, `popClip`, and
+      `setLayerOrder` now filters instead of storing bad IDs for `beginFrame`.
+- [✅] `texture()` did `(*boundTargets)[tex]` unchecked (was Sampling.cpp:48, :84),
       so sampling `EMPTY_TEXTURE` is an out-of-bounds read rather than a
       diagnosable error. Every shader currently has to guard by hand.
-- [ ] `setupTriangle` clamps with `std::clamp<float>(lo.x, 0, w - 1)` where
+      Returns magenta on a bad ID; `textureDepth()` returns 0 (reversed-Z far).
+- [✅] `setupTriangle` clamps with `std::clamp<float>(lo.x, 0, w - 1)` where
       `w = int(target->width())`. At width 0 that is `clamp(x, 0, -1)` — hi < lo
       is UB. Minor since the loops then no-op, but a zero-sized target is
       reachable (a minimised window reports 0x0, and `renderScale` can round
       down to it).
+      Fixed by the viewport work: `resolveClipRect` yields `x0 > x1` at width 0
+      and `setupTriangle` returns before reaching the clamps.
 
 ## 3. Backend interface extraction
 
@@ -495,11 +536,11 @@ anything in software - the point is that the same dev code stays correct on both
   shell along smoothed normals) and an SDF circle clip (discard + Incr).
 - `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
   scrolling list with three nested `pushClip`s. `C` toggles clipping.
-- `showcase.cpp` + `ShowcaseEngine.hpp` — the big one: glTF models on a glossy
+- `showcase.cpp` + `engines/ShowcaseEngine.hpp` — the big one: glTF models on a glossy
   mirrored floor under a procedural sky, four orbiting lights with visible
   emissive orbs, ACES tonemapping. Lights/camera/exposure in a `SceneUniforms`
   uniform buffer bound to slot 0 by every shader.
-- `minimal.cpp` + `MinimalEngine.hpp` — smallest embedder: an `Engine` owning
+- `minimal.cpp` + `engines/MinimalEngine.hpp` — smallest embedder: an `Engine` owning
   window/VALO/camera/light and a `Model` that loads a glTF, owns its materials
   and program, and submits one command per primitive. Metallic-roughness
   Cook-Torrance with a hemisphere ambient standing in for IBL. Doubles as the

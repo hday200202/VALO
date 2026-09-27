@@ -180,6 +180,10 @@ private:
     double m_deltaTime = 0.5f;
 
     Window* m_window = nullptr;
+
+    bool validLayer(const LayerID layer) const {
+        return layer < m_layers.size() && !m_layers[layer].dead;
+    }
 };
 
 }

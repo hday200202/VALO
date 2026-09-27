@@ -65,6 +65,9 @@ void VALO::submit(
     const RenderCommand& cmd,
     const LayerID layer
 ) {
+    assert(validLayer(layer) && "submit(): invalid or removed layer");
+    if (!validLayer(layer)) return;
+
     if (m_clipStack.empty()) { m_layers[layer].cmdQueue.push_back(cmd); return; }
     RenderCommand c = cmd;
     c.stencilTest   = StencilTest::Equal;
@@ -106,6 +109,9 @@ LayerID VALO::addLayer(
 
 
 void VALO::removeLayer(const LayerID layer) {
+    assert(validLayer(layer) && "removeLayer(): invalid or already removed layer");
+    if (!validLayer(layer)) return;
+
     m_layers[layer].dead = true;
 
     auto it = std::find(m_layerOrder.begin(), m_layerOrder.end(), layer);
@@ -114,16 +120,24 @@ void VALO::removeLayer(const LayerID layer) {
 
 
 void VALO::setLayerOrder(const std::vector<LayerID>& order) {
-    m_layerOrder = order;
+    m_layerOrder.clear();
+    for (const LayerID l : order) {
+        assert(validLayer(l) && "setLayerOrder(): invalid or removed layer");
+        if (validLayer(l)) m_layerOrder.push_back(l);
+    }
 }
 
 
 void VALO::setLayerClearColor(const LayerID layer, const Color& color) {
+    assert(validLayer(layer) && "setLayerClearColor(): invalid or removed layer");
+    if (!validLayer(layer)) return;
     m_layers[layer].clearColor = clamp(color, 0.f, 1.f);
 }
 
 
 void VALO::setLayerClearDepth(const LayerID layer, const float depth) {
+    assert(validLayer(layer) && "setLayerClearDepth(): invalid or removed layer");
+    if (!validLayer(layer)) return;
     m_layers[layer].clearDepth = std::clamp(depth, 0.f, 1.f);
 }
 
@@ -137,6 +151,9 @@ void VALO::pushClip(
     const RenderCommand& shape, 
     const LayerID layer
 ) {
+    assert(validLayer(layer) && "pushClip(): invalid or removed layer");
+    if (!validLayer(layer)) return;
+
     RenderCommand c = shape;
     c.colorWrite    = false;
     c.depthTest     = false;
@@ -152,7 +169,9 @@ void VALO::pushClip(
 void VALO::popClip(
     const LayerID layer
 ) {
-    if (m_clipStack.empty()) return;
+    assert(validLayer(layer) && "popClip(): invalid or removed layer");
+    if (!validLayer(layer) || m_clipStack.empty()) return;
+
     RenderCommand c = m_clipStack.back();
     c.stencilTest   = StencilTest::Equal;
     c.stencilRef    = uint8_t(m_clipStack.size());

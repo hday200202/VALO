@@ -55,7 +55,8 @@ void Renderer::flush() {
 
 
 void Renderer::clear(const Color& clearColor, const RenderTargetID target, const float clearDepth) { 
-    assert(m_targets[target] && "Renderer: clear on destroyed target");
+    assert(validTarget(target) && "Renderer: clear on invalid or destroyed target");
+    if (!validTarget(target)) return;
 
     // anything queued was meant to land on the old contents
     flush();
@@ -69,10 +70,20 @@ void Renderer::clear(const Color& clearColor, const RenderTargetID target, const
 
 
 void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
+    // every draw path indexes all three unconditionally, so a missing or stale
+    // ID has to be rejected here rather than deeper in
+    assert(validTarget(target)        && "draw(): invalid or destroyed render target");
+    assert(validVerts(cmd.verts)      && "draw(): no vertex buffer bound");
+    assert(validIndices(cmd.indices)  && "draw(): no index buffer bound");
+    assert(validProgram(cmd.program)  && "draw(): no program bound");
+    if (!validTarget(target) || !validVerts(cmd.verts)
+     || !validIndices(cmd.indices) || !validProgram(cmd.program)) return;
+
     const void* resolved[MAX_UNIFORM_SLOTS];
     for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) {
         const UniformBufferID id = cmd.uniformBuffers[i];
-        resolved[i] = (id == EMPTY_BUFFER) ? nullptr : m_uniformBuffers[id].data.data();
+        assert((id == EMPTY_BUFFER || validUniform(id)) && "draw(): stale uniform buffer bound");
+        resolved[i] = validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
     }
     
     const DrawContext ctx{&m_targets, resolved};
@@ -127,8 +138,10 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
 void Renderer::show(const RenderTargetID target) {
     flush();
 
+    assert(validTarget(target) && "Renderer: show on invalid or destroyed target");
+    if (!validTarget(target)) return;
+
     RenderTarget* tgt = m_targets[target].get();
-    assert(tgt && "Renderer: show on destroyed target");
 
     if ((tgt->width() != m_texW) || (tgt->height() != m_texH)) 
         recreateTexture(tgt->width(), tgt->height());
@@ -154,7 +167,7 @@ RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h, const 
 
 void Renderer::destroyTarget(const RenderTargetID target) {
     assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
-    assert(target < m_targets.size() && m_targets[target] && "Renderer: invalid or already destroyed target");
+    assert(validTarget(target) && "Renderer: invalid or already destroyed target");
 
     m_targets[target].reset();
     m_freeTargets.push_back(target);
@@ -307,7 +320,8 @@ TextureID Renderer::createTexture(const std::string& path, const bool srgb, cons
 
 
 void Renderer::updateTexture(const TextureID texture, const uint32_t* data) {
-    assert(texture < m_targets.size() && "updateTexture(): Texture ID out of range");
+    assert(validTarget(texture) && "updateTexture(): invalid or destroyed texture");
+    if (!validTarget(texture)) return;
     m_targets[texture]->update(data);
 }
 
@@ -318,14 +332,15 @@ void Renderer::updateTexture(
     const uint32_t w, const uint32_t h, 
     const uint32_t* data
 ) { 
-    assert(texture < m_targets.size() && "updateTexture(): Texture ID out of range");
+    assert(validTarget(texture) && "updateTexture(): invalid or destroyed texture");
+    if (!validTarget(texture)) return;
     m_targets[texture]->update(x, y, w, h, data); 
 }
 
 
 void Renderer::destroyTexture(const TextureID texture) {
     assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
-    assert(texture < m_targets.size() && m_targets[texture] && "Renderer: invalid or already destroyed texture");
+    assert(validTarget(texture) && "Renderer: invalid or already destroyed texture");
 
     m_targets[texture].reset();
     m_freeTargets.push_back(texture);

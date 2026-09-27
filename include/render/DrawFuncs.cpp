@@ -27,6 +27,39 @@ void stencilApply(RenderTarget* target, const RenderCommand& cmd, int x, int y) 
 }
 
 
+Viewport resolveViewport(const RenderTarget* target, const RenderCommand& cmd) {
+    Viewport vp = cmd.viewport;
+    if (vp.width == 0.f) vp.width = float(target->width());
+    if (vp.height == 0.f) vp.height = float(target->height());
+    return vp;
+}
+
+
+PixelRect resolveClipRect(const RenderTarget* target, const RenderCommand& cmd) {
+    const Viewport vp = resolveViewport(target, cmd);
+
+    PixelRect r = {
+        std::max(0, int(std::floor(vp.x))),
+        std::max(0, int(std::floor(vp.y))),
+        std::min(int(target->width()) - 1, int(std::ceil(vp.x + vp.width)) - 1),
+        std::min(int(target->height()) - 1, int(std::ceil(vp.y + vp.height)) - 1)
+    };
+
+    const Scissor& sc = cmd.scissor;
+    if (sc.width) {
+        r.x0 = std::max(r.x0, sc.x);
+        r.x1 = std::min(r.x1, sc.x + int(sc.width) - 1);
+    }
+
+    if (sc.height) {
+        r.y0 = std::max(r.y0, sc.y);
+        r.y1 = std::min(r.y1, sc.y + int(sc.height) - 1);
+    }
+
+    return r;
+}
+
+
 bool setupTriangle(
     const RenderTarget* target,
     const RenderCommand& cmd,
@@ -36,13 +69,16 @@ bool setupTriangle(
 ) {
     const ClipVert* c[3] = { &c0, &c1, &c2 };
 
+    const Viewport vp = resolveViewport(target, cmd);
+
     for (int i = 0; i < 3; ++i) {
         const Vec4f& clip = c[i]->pos;
         const Vec4f ndc = { clip.xyz / clip.w, 1.f / clip.w };
         out.s[i] = {
-            (ndc.x + 1) * 0.5f * target->width(),
-            (1 - ndc.y) * 0.5f * target->height(),
-            ndc.z, ndc.w
+            vp.x + (ndc.x + 1) * 0.5f * vp.width,
+            vp.y + (1 - ndc.y) * 0.5f * vp.height,
+            vp.minDepth + ndc.z * (vp.maxDepth - vp.minDepth),
+            ndc.w
         };
     }
 
@@ -83,13 +119,15 @@ bool setupTriangle(
     for (int i = 0; i < 3; ++i)
         out.topLeft[i] = (e[i].y < 0.f) || (e[i].y == 0.f && e[i].x > 0.f);
 
+    const PixelRect r = resolveClipRect(target, cmd);
+    if (r.x0 > r.x1 || r.y0 > r.y1) return false;
+
     const Vec2f lo = min(min(out.s[0].xy, out.s[1].xy), out.s[2].xy);
     const Vec2f hi = max(max(out.s[0].xy, out.s[1].xy), out.s[2].xy);
-    const int w = int(target->width()), h = int(target->height());
-    out.xmin = int(std::floor(std::clamp<float>(lo.x, 0, w - 1)));
-    out.ymin = int(std::floor(std::clamp<float>(lo.y, 0, h - 1)));
-    out.xmax = int(std::ceil (std::clamp<float>(hi.x, 0, w - 1)));
-    out.ymax = int(std::ceil (std::clamp<float>(hi.y, 0, h - 1)));
+    out.xmin = int(std::floor(std::clamp<float>(lo.x, float(r.x0), float(r.x1))));
+    out.ymin = int(std::floor(std::clamp<float>(lo.y, float(r.y0), float(r.y1))));
+    out.xmax = int(std::ceil (std::clamp<float>(hi.x, float(r.x0), float(r.x1))));
+    out.ymax = int(std::ceil (std::clamp<float>(hi.y, float(r.y0), float(r.y1))));
 
     for (int i = 0; i < 3; ++i)
         std::memcpy(out.vary[i], c[i]->vary, varyingCount * sizeof(float));
@@ -199,18 +237,21 @@ void rasterizePoint(
     const float size,
     const int bandY0, const int bandY1
 ) {
+    const Viewport  vp = resolveViewport(target, cmd);
+    const PixelRect r  = resolveClipRect(target, cmd);
+    if (r.x0 > r.x1 || r.y0 > r.y1) return;
+
     Vec4f ndc = {clip.xyz / clip.w, clip.w};
-    
+
     Vec4f screen = {
-        (ndc.x + 1) * 0.5f * target->width(),
-        (1 - ndc.y) * 0.5f * target->height(),
-        ndc.z, ndc.w
+        vp.x + (ndc.x + 1) * 0.5f * vp.width,
+        vp.y + (1 - ndc.y) * 0.5f * vp.height,
+        vp.minDepth + ndc.z * (vp.maxDepth - vp.minDepth),
+        ndc.w
     };
 
-    const int w = int(target->width()), h = int(target->height());
-
     int px = int(screen.x), py = int(screen.y);
-    if (px < 0 || py < 0 || px >= w - 1 || py >= h - 1) return;
+    if (px < r.x0 || px > r.x1 || py < r.y0 || py > r.y1) return;
 
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
@@ -237,9 +278,9 @@ void rasterizePoint(
     bool  centerLive  = false;
 
     for (int y = y0; y < y0 + n; ++y) {
-        if (y < bandY0 || y >= bandY1) continue;
+        if (y < bandY0 || y >= bandY1 || y < r.y0 || y > r.y1) continue;
         for (int x = x0; x < x0 + n; ++x) {
-            if (x < 0 || x >= w - 1) continue;
+            if (x < r.x0 || x > r.x1) continue;
 
             valo_Discard     = false;
             valo_FragDepth   = screen.z;
@@ -275,19 +316,25 @@ void rasterizeLine(
 ) {
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
+    const Viewport  vp = resolveViewport(target, cmd);
+    const PixelRect r  = resolveClipRect(target, cmd);
+    if (r.x0 > r.x1 || r.y0 > r.y1) return;
+
     Vec4f ndc1 = {clip[0].xyz / clip[0].w, 1.f / clip[0].w};
     Vec4f ndc2 = {clip[1].xyz / clip[1].w, 1.f / clip[1].w};
 
     Vec4f s1 = {
-        (ndc1.x + 1) * 0.5f * target->width(),
-        (1 - ndc1.y) * 0.5f * target->height(),
-        ndc1.z, ndc1.w
+        vp.x + (ndc1.x + 1) * 0.5f * vp.width,
+        vp.y + (1 - ndc1.y) * 0.5f * vp.height,
+        vp.minDepth + ndc1.z * (vp.maxDepth - vp.minDepth),
+        ndc1.w
     };
 
     Vec4f s2 = {
-        (ndc2.x + 1) * 0.5f * target->width(),
-        (1 - ndc2.y) * 0.5f * target->height(),
-        ndc2.z, ndc2.w
+        vp.x + (ndc2.x + 1) * 0.5f * vp.width,
+        vp.y + (1 - ndc2.y) * 0.5f * vp.height,
+        vp.minDepth + ndc2.z * (vp.maxDepth - vp.minDepth),
+        ndc2.w
     };
 
     float dx = s2.x - s1.x;
@@ -295,17 +342,19 @@ void rasterizeLine(
 
     int steps = int(std::max(std::abs(dx), std::abs(dy)));
 
-    const int w = int(target->width());
+    const int by0 = std::max(bandY0, r.y0);
+    const int by1 = std::min(bandY1 - 1, r.y1);
+    if (by0 > by1) return;
 
     int i0 = 0, i1 = steps;
     if (std::abs(dy) > 1e-6f) {
-        const float ta = (float(bandY0)     - s1.y) / dy;
-        const float tb = (float(bandY1)     - s1.y) / dy;
+        const float ta = (float(by0)     - s1.y) / dy;
+        const float tb = (float(by1 + 1) - s1.y) / dy;
         const float lo = std::min(ta, tb), hi = std::max(ta, tb);
         i0 = std::max(0,     int(std::floor(lo * float(std::max(steps, 1)))) - 1);
         i1 = std::min(steps, int(std::ceil (hi * float(std::max(steps, 1)))) + 1);
         if (i0 > i1) return;
-    } else if (int(s1.y) < bandY0 || int(s1.y) >= bandY1)
+    } else if (int(s1.y) < by0 || int(s1.y) > by1)
         return;
 
     for (int i = i0; i <= i1; ++i) {
@@ -313,7 +362,7 @@ void rasterizeLine(
         float x = s1.x + dx * t;
         float y = s1.y + dy * t;
         int px = int(x), py = int(y);
-        if (px < 0 || px >= w - 1 || py < bandY0 || py >= bandY1) continue;
+        if (px < r.x0 || px > r.x1 || py < by0 || py > by1) continue;
 
         float z = s1.z + (s2.z - s1.z) * t;
         if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepth(px, py))) continue;

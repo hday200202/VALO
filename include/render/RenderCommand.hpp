@@ -32,6 +32,17 @@ enum class StencilTest  { Always, Equal, NotEqual, Less, Greater };
 enum class StencilOp    { Keep, Zero, Replace, Incr, Decr };
 enum class DepthCompare { Less, LessEqual, Greater, GreaterEqual, Equal, NotEqual, Always, Never };
 
+struct Viewport {
+    float x         = 0.f,  y           = 0.f;
+    float width     = 0.f,  height      = 0.f;
+    float minDepth  = 0.f,  maxDepth    = 1.f;
+};
+
+struct Scissor {
+    int32_t     x       = 0,    y       = 0;
+    uint32_t    width   = 0,    height  = 0;
+};
+
 struct RenderCommand {
     VertexBufferID      verts           = EMPTY_BUFFER;
     IndexBufferID       indices         = EMPTY_BUFFER;
@@ -54,12 +65,12 @@ struct RenderCommand {
     DepthCompare        depthCompare    = DepthCompare::Greater;   // reversed depth: nearer wins
     bool                depthWrite      = true;
     bool                colorWrite      = true;
-
-    // Set when the fragment shader writes valo_FragDepth. The depth test then
-    // has to run after shading instead of before it, since the interpolated z
-    // the early test would use is not the value that gets written.
     bool                fragDepthWrite  = false;
+    
     FillMode            fillmode        = FillMode::Solid;
+
+    Viewport            viewport        = {};
+    Scissor             scissor         = {};
 
     uint32_t            instanceCount   = 1;
 
