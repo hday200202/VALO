@@ -377,6 +377,9 @@ matching assert, naming the call).
 
 ## 3. Backend interface extraction
 
+**See `PLAN.md`** for the phased Vulkan plan these items feed into, and for the
+shader-contract decision that gates all of it.
+
 ### Semantics the software backend gets away with and Vulkan does not
 
 Both of these are API-visible rules, not implementation details, so they have to
