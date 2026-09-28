@@ -5,6 +5,7 @@
 #include <iostream>
 #include <memory>
 #include <cstring>
+#include <deque>
 
 #include "RenderCommand.hpp"
 #include "RenderTarget.hpp"
@@ -56,13 +57,6 @@ public:
     void draw(const RenderCommand& cmd, const RenderTargetID target = BACKBUFFER);
     void show(const RenderTargetID target = BACKBUFFER);
 
-    /*
-        Rasterises any triangles still sitting in the batch. Called by VALO at
-        the end of each layer, because the layer's command queue is cleared
-        right afterwards and the batch holds pointers into it. clear() and
-        show() flush too, so a caller driving Renderer directly stays correct
-        without knowing the batch exists.
-    */
     void flush();
 
     /* ---- render targets ------------------------------------------------- */
@@ -151,11 +145,19 @@ protected:
     std::vector<std::unique_ptr<RenderTarget>> m_targets;
     SDL_Renderer*                   m_sdlRenderer = nullptr;
     SDL_Texture*                    m_sdlTexture = nullptr;
+    uint64_t                        m_frame = 0;
 
     std::vector<VertexBuffer>       m_vertexBuffers;
     std::vector<IndexBuffer>        m_indexBuffers;
     std::vector<Program>            m_programs;
     std::vector<UniformBuffer>      m_uniformBuffers;
+
+    // Deferred destroy queues
+    std::vector<std::pair<RenderTargetID, uint64_t>>     m_destroyedTargets;
+    std::vector<std::pair<VertexBufferID, uint64_t>>     m_destroyedVertexBuffers;
+    std::vector<std::pair<IndexBufferID, uint64_t>>      m_destroyedIndexBuffers;
+    std::vector<std::pair<ProgramID, uint64_t>>          m_destroyedPrograms;
+    std::vector<std::pair<UniformBufferID, uint64_t>>    m_destroyedUniformBuffers;
 
     std::vector<RenderTargetID>     m_freeTargets;
     std::vector<VertexBufferID>     m_freeVertexBuffers;
@@ -174,12 +176,50 @@ protected:
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
     bool recreateTexture(const uint32_t w, const uint32_t h);
 
+    bool destroyed(const std::vector<std::pair<uint32_t, uint64_t>>& destroyQueue, uint32_t id) const {
+        for (auto& [t, frame] : destroyQueue) if (t == id) return true;
+        return false;
+    }
+
     // EMPTY_BUFFER, DEFAULT_PROGRAM and stale IDs are all out of range
-    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size() && m_targets[id]; }
-    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size(); }
-    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size(); }
-    bool validProgram(const ProgramID id)       const { return id < m_programs.size(); }
-    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size(); }
+    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size() && !destroyed(m_destroyedTargets, id); }
+    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size() && !destroyed(m_destroyedVertexBuffers, id); }
+    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size() && !destroyed(m_destroyedIndexBuffers, id); }
+    bool validProgram(const ProgramID id)       const { return id < m_programs.size() && !destroyed(m_destroyedPrograms, id); }
+    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id); }
+
+    template <typename Queue, typename FreeList, typename Release>
+    void retireQueue(Queue& queue, FreeList& freeList, Release release, const bool force) {
+        size_t keep = 0;
+        for (size_t i = 0; i < queue.size(); ++i) {
+            const auto [id, frame] = queue[i];
+            if (force || m_frame - frame >= m_cfg.framesInFlight) {
+                release(id);
+                freeList.push_back(id);
+            } else queue[keep++] = queue[i];
+        }
+        queue.resize(keep);
+    }
+
+    // force: ignore the age check and release everything (shutdown)
+    void destroyAllQueued(const bool force = false) {
+        retireQueue(m_destroyedTargets, m_freeTargets,
+            [this](RenderTargetID id)  { m_targets[id].reset(); }, force);
+
+        retireQueue(m_destroyedVertexBuffers, m_freeVertexBuffers,
+            [this](VertexBufferID id)  { m_vertexBuffers[id] = VertexBuffer{}; }, force);
+
+        retireQueue(m_destroyedIndexBuffers, m_freeIndexBuffers,
+            [this](IndexBufferID id)   { m_indexBuffers[id] = IndexBuffer{}; }, force);
+
+        retireQueue(m_destroyedPrograms, m_freePrograms,
+            [this](ProgramID id)       { m_programs[id] = Program{}; }, force);
+
+        retireQueue(m_destroyedUniformBuffers, m_freeUniformBuffers,
+            [this](UniformBufferID id) { m_uniformBuffers[id] = UniformBuffer{}; }, force);
+    }
+
+    friend class VALO;
 };
 
 } // namespace valo

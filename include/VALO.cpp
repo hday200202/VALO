@@ -46,6 +46,8 @@ void VALO::beginFrame() {
     m_deltaTime = m_dtClock.elapsed().asSeconds();
     m_dtClock.reset();
     m_dtClock.start();
+
+    m_renderer.destroyAllQueued();
     
     if (m_window && m_window->resized()) resize();
     m_clipStack.clear();

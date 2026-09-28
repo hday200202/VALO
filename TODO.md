@@ -386,15 +386,18 @@ Both of these are API-visible rules, not implementation details, so they have to
 be decided before the backend rather than discovered during it. Neither costs
 anything in software - the point is that the same dev code stays correct on both.
 
-- [ ] **Deferred destruction.** `destroy*` frees immediately. Vulkan cannot free
-      a buffer or image a submitted frame is still reading. The standard answer
-      is a destroy queue: `destroy*` pushes `(id, currentFrame)` and the resource
-      is actually released once `framesInFlight` frames have retired. Note that
-      `RenderConfig::framesInFlight` is declared (Renderer.hpp) and used nowhere
-      today, so the frame counter it needs does not exist yet either. In software
-      the queue just drains a frame or two late and nothing else changes.
+- [x] **Deferred destruction** (2026-09-28) - `destroy*` enqueues `(id, m_frame)`;
+      `destroyAllQueued()` drains from `VALO::beginFrame` once an entry has aged
+      `framesInFlight` frames; `shutdown()` forces a full drain. `m_frame`
+      increments in `show()`, so `RenderConfig::framesInFlight` finally does
+      something. One `retireQueue` template covers all five resource types.
 
-- [ ] **Mutation while queued.** `updateVertexBuffer` / `updateIndexBuffer` /
+      The rule that matters: **the ID is deferred along with the object.**
+      Recycling a handle while a queued draw still names it resolves that draw
+      to a different resource - wrong pixels, no crash. See `PLAN.md` phase 0a
+      for the two bugs this took on the way in.
+
+- [ ] **Mutation while queued.** *(next)* `updateVertexBuffer` / `updateIndexBuffer` /
       `updateUniformBuffer` are a memcpy, so writing one after `submit` and
       before `endFrame` silently changes what the queued draw reads - already
       true for uniform buffers, and the same hazard for the rest. On Vulkan,

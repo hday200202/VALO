@@ -95,8 +95,8 @@ static inline void fs(const Varyings& in, const Uniforms& u) {
         ? u.material.baseColor
         : texture(u.material.baseColorTex, in.uv, sampler);
 
-    if (out.a < 0.1f) discard;
-    out.a = 1.f;
+    // if (out.a < 0.1f) discard;
+    // out.a = 1.f;
     valo_FragColor = out;
 }
 
@@ -228,6 +228,7 @@ public:
     bool init(RenderConfig cfg = {}) {
         cfg.srgbBackbuffer = true;
         m_running = m_window.create("Minimal Engine", {800, 600}) && m_valo.init(m_window, cfg);
+        m_valo.setVsync(true);
         return m_running;   // the camera defaults itself to the origin looking down -z
     }
 

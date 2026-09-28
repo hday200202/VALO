@@ -29,7 +29,9 @@ bool Renderer::init(const RenderConfig& cfg) {
 }
 
 
-void Renderer::shutdown() { 
+void Renderer::shutdown() {
+    destroyAllQueued(true);   // nothing is in flight any more
+
     // the batch points into command queues and programs; none of it outlives this
     m_batch.tris.clear();
     m_batch.wires.clear();
@@ -138,6 +140,8 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
 void Renderer::show(const RenderTargetID target) {
     flush();
 
+    ++m_frame;
+
     assert(validTarget(target) && "Renderer: show on invalid or destroyed target");
     if (!validTarget(target)) return;
 
@@ -168,9 +172,7 @@ RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h, const 
 void Renderer::destroyTarget(const RenderTargetID target) {
     assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
     assert(validTarget(target) && "Renderer: invalid or already destroyed target");
-
-    m_targets[target].reset();
-    m_freeTargets.push_back(target);
+    m_destroyedTargets.push_back({target, m_frame});
 }
 
 
@@ -219,9 +221,7 @@ void Renderer::updateVertexBuffer(
 
 void Renderer::destroyVertexBuffer(const VertexBufferID buffer) {
     assert(buffer < m_vertexBuffers.size() && "Renderer: invalid vertex buffer");
-
-    m_vertexBuffers[buffer] = VertexBuffer{}; // releases the byte storage
-    m_freeVertexBuffers.push_back(buffer);
+    m_destroyedVertexBuffers.push_back({buffer, m_frame});
 }
 
 
@@ -254,9 +254,7 @@ void Renderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* da
 
 void Renderer::destroyIndexBuffer(const IndexBufferID buffer) {
     assert(buffer < m_indexBuffers.size() && "Renderer: invalid index buffer");
-
-    m_indexBuffers[buffer] = IndexBuffer{}; // releases the index storage
-    m_freeIndexBuffers.push_back(buffer);
+    m_destroyedIndexBuffers.push_back({buffer, m_frame});
 }
 
 
@@ -292,9 +290,7 @@ void Renderer::updateUniformBuffer(const UniformBufferID buffer, const void* dat
 
 void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
     assert(buffer < m_uniformBuffers.size() && "destroyUniformBuffer(): Uniform buffer ID out of range");
-
-    m_uniformBuffers[buffer] = UniformBuffer{};
-    m_freeUniformBuffers.push_back(buffer);
+    m_destroyedUniformBuffers.push_back({buffer, m_frame});
 }
 
 
@@ -341,9 +337,7 @@ void Renderer::updateTexture(
 void Renderer::destroyTexture(const TextureID texture) {
     assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
     assert(validTarget(texture) && "Renderer: invalid or already destroyed texture");
-
-    m_targets[texture].reset();
-    m_freeTargets.push_back(texture);
+    m_destroyedTargets.push_back({texture, m_frame});
 }
 
 
@@ -354,9 +348,7 @@ void Renderer::destroyTexture(const TextureID texture) {
 
 void Renderer::destroyProgram(const ProgramID program) {
     assert(program < m_programs.size() && "Renderer: invalid program");
-
-    m_programs[program] = Program{}; // null out the function pointers
-    m_freePrograms.push_back(program);
+    m_destroyedPrograms.push_back({program, m_frame});
 }
 
 

@@ -2,42 +2,83 @@
 
 Written 2026-09-27, when the software renderer went feature-complete.
 
-Finish line, from TODO section 4: **`gltf.cpp` runs unchanged on both backends.**
-Everything below is ordered so that each phase is independently verifiable and
-nothing above `Renderer` ever moves.
+Finish line: **the same app code, the same `RenderCommand` state, and a matching
+frame on both backends.** The shader source differs by backend and always will -
+see below. Everything here is ordered so each phase is independently verifiable
+and nothing above `Renderer` ever moves.
 
 ---
 
-## The one decision: the shader contract
+## Shader contract: two implementations, one spec
 
-Everything else in this plan is backend-independent. This is not, and it has to
-be settled first because it decides whether "unchanged" in the finish line is
-achievable at all.
+**The software and hardware shaders are separate by design, and stay separate.**
+A C++ function pointer cannot become SPIR-V, and pretending otherwise (a
+dual-compile macro layer, a shared source file) buys nothing here. `createProgram`
+is simply overloaded: C++ callbacks for the software backend, GLSL/SPIR-V for the
+Vulkan one. The app picks at creation; nothing downstream cares, because a
+`ProgramID` is an opaque integer either way.
 
-Today a program is two C++ function pointers. A function pointer cannot become
-SPIR-V, so something has to give.
+This is not a compromise. The software renderer was built first and shaped the
+way Vulkan wants, so that the interface would already be the right shape when the
+backend arrived. The shaders are the one place the two languages genuinely
+diverge, and forcing them together would drag that divergence into every uniform
+struct and varying declaration.
 
-| | Dev writes | Software path | Vulkan path | Cost |
-|---|---|---|---|---|
-| **A. Both by hand** | C++ *and* GLSL per shader | unchanged | glslang → SPIR-V | every shader twice, they drift; `gltf.cpp` is no longer "unchanged" |
-| **B. Dual-compile header** | one file, compiles as C++ *and* GLSL | unchanged | glslang → SPIR-V | a macro layer, and two real friction points (below) |
-| **C. SPIR-V only** | GLSL | SPIR-V interpreter | native | deletes the dual-source problem and the typed C++ shader API with it; the interpreter is its own multi-week project |
+**The endgame is a translator: write shaders in C++, emit GLSL.** That is what the
+parity work was for, and it is why the duplication is not waste - each hand-written
+pair is an input/expected-output example for the translator's test corpus, written
+before the compiler, which is the right order.
 
-**B is what your own finish line implies** — it is the only one where the example
-file does not change. Its two sharp edges, both known in advance:
+Parity already in place that the translator will not have to special-case:
 
-1. **Uniform layout.** `Vec3f` is 12 bytes in C++; a `vec3` in a std140 block is
-   padded to 16. Shared uniform structs need explicit padding, or std430 plus
-   `VK_EXT_scalar_block_layout`. Not hard, but it silently corrupts data if missed.
-2. **Texture binding.** Your `texture(TextureID, uv)` takes a `uint32_t` ID.
-   GLSL needs a bound `sampler2D`. Needs an ID → descriptor-slot mapping, which
-   is a real design step, not a macro.
+- built-ins named to mirror GLSL (`valo_Position`, `valo_FragColor`,
+  `valo_FragCoord`, `valo_FrontFacing`, `valo_VertexIndex`, `valo_FragDepth`,
+  `valo_PointCoord`, `valo_Discard`) - one `#define` each
+- reversed-Z as the sole depth convention, so no conversion layer
+- sRGB converted at sample, matching a Vulkan `_SRGB` sampler
+- uniform **slots** rather than handles, mapping 1:1 onto descriptor bindings
 
-Neither is a blocker; both are cheaper to face now than mid-backend.
+**The cost of separation is drift**, and the only defence is the conformance diff
+harness. Pull it forward from phase 6 to phase 3, the moment a textured quad
+renders, so it grows with the backend instead of arriving after it. Keep each
+shader pair in sibling files with matching names so a divergence is visible side
+by side.
 
-**Recommendation: B, but prove it on one shader before committing.** Take
-`minimal.cpp`'s shader, make it compile both ways, and run it through glslang.
-An afternoon, and it either works or it tells you to fall back to A.
+---
+
+## What splits, what stays, what is software-only
+
+The question this plan exists to answer. Short version: **the ID + free-list model
+is already the abstraction layer**, so far less needs to become polymorphic than
+it looks.
+
+**Only `Renderer` becomes virtual.** `SoftwareRenderer : public Renderer` and
+`VulkanRenderer : public Renderer`. Every resource is reached exclusively through
+an opaque integer ID - verified: `RenderTarget`, `Program`, `VertexBuffer`,
+`IndexBuffer` and `UniformBuffer` never appear in `VALO`'s public signatures. So
+they do **not** need a class hierarchy. Each backend stores whatever it likes in
+its own vectors: `SoftwareRenderer` keeps `vector<RenderTarget>`,
+`VulkanRenderer` keeps `vector<VulkanImage>`. The ID is the abstraction, and this
+keeps virtual dispatch off anything per-pixel.
+
+| | Verdict |
+|---|---|
+| `VALO` (layers, clip stack, queue, ordering) | **shared, unchanged** |
+| `RenderCommand` + its enums, `Viewport`, `Scissor` | **shared** - pure state description; every field maps to Vulkan state |
+| all `*ID` typedefs, `RenderConfig` | **shared** |
+| `math/` (`Vec`, `Mat`, `Quat`), `Color` | **shared** |
+| `VtxLayout` / `VtxAttrib` | **shared** - describes a layout, both backends consume it |
+| `utils/` (glTF, OBJ, `Clock`, `Timestamp`) | **shared** - no rendering |
+| `Window` | **shared**, plus one hook: Vulkan needs a `VkSurfaceKHR` from the same SDL window |
+| `Renderer` | **splits** - the one abstract interface |
+| `RenderTarget`, `Program`, `VertexBuffer`, `IndexBuffer`, `UniformBuffer` | **backend-private storage**, not subclasses - they never cross the ID boundary |
+| `DrawFuncs` (three rasterizers, `ScreenTri`, `ClipVert`) | **software-only**, no Vulkan equivalent |
+| `Sampling` (`texture()`, thread-local shader env, `boundTargets`, `varyingDerivs`) | **software-only** - on the GPU these are language built-ins |
+| `ThreadPool`, `common/Srgb.hpp` tables | **software-only** |
+
+Every operation means the same thing on both sides; Vulkan just does more of the
+work on its side of the call. `createTexture` uploads and builds mips either way -
+one memcpys and box-filters, the other stages and blits.
 
 ---
 
@@ -46,15 +87,41 @@ An afternoon, and it either works or it tells you to fall back to A.
 These are API-visible rules. Doing them in software first means the Vulkan
 backend inherits correct semantics instead of retrofitting them.
 
-**0a. Deferred destruction.** `destroy*` currently frees immediately; Vulkan
-cannot free what a submitted frame is still reading. `destroy*` pushes
-`(id, frameIndex)`; the resource is released once `framesInFlight` frames retire.
-`RenderConfig::framesInFlight` is already declared (Renderer.hpp:33) and used
-nowhere, so the frame counter it needs does not exist yet either — add it here.
-In software the queue just drains a frame or two late.
-*Verify:* destroy a texture mid-frame, keep sampling it, no crash, no ASan report.
+**0a. Deferred destruction - DONE (2026-09-28).** `destroy*` now only enqueues
+`(id, m_frame)`; `destroyAllQueued()` runs from `VALO::beginFrame` and releases
+anything that has aged `framesInFlight` frames; `shutdown()` forces an
+unconditional drain. `m_frame` increments in `show()`, so
+`RenderConfig::framesInFlight` finally does something.
 
-**0b. Mutation-while-queued rule.** `update*Buffer` is a memcpy, so writing after
+The subtle part: **the free list has to be deferred too, not just the object.**
+Keeping the resource alive is not enough if the ID is reusable - a draw submitted
+against texture 5, then `destroyTexture(5)`, then a `createTexture` that recycles
+ID 5, resolves the queued draw to the *new* texture at `endFrame`. Wrong pixels,
+no crash. So the ID only reaches the free list at the moment the resource is
+actually released.
+
+Five near-identical loops collapsed into one `retireQueue(queue, freeList,
+release, force)` template with a per-type `release` lambda. Two bugs worth
+remembering: the validity predicates went in inverted (`!= end()` instead of
+`== end()`), which rejected every live resource and made every example render
+nothing *silently*, because release builds early-return instead of asserting;
+and an early draft cleared the queues unconditionally after the age check, which
+dropped un-retired entries without ever freeing them.
+
+*Verified:* destroy then create does not recycle the ID; after `framesInFlight`
+frames it does; destroy mid-frame survives; shutdown drains clean.
+
+**0a-bis. `boundUniforms` lifetime.** `Renderer::draw` resolves the eight uniform
+slots into a *local* array and stores its address in `detail::boundUniforms`
+(Renderer.cpp:93), which outlives the call - GCC flags `-Wdangling-pointer=`.
+The batched triangle path is safe (`DrawState::uniforms` is an array, so it
+copies the eight heap pointers by value and `flushTriBatch` re-sets the
+thread-local per state), but points and lines rasterize immediately and the
+stale pointer stays live between calls. Fix: make the array a member rather than
+a local. ~5 minutes, and worth doing before the split so it is not carried into
+two backends.
+
+**0b. Mutation-while-queued rule - NEXT.** `update*Buffer` is a memcpy, so writing after
 `submit` and before `endFrame` changes what the queued draw reads. Already true
 for uniform buffers. Pick one: document "only between frames", or per-frame
 copies for anything marked dynamic. Write the choice into the header comment —
@@ -62,9 +129,11 @@ it is a dev-facing contract either way.
 *Verify:* a harness that mutates a buffer between submit and endFrame and asserts
 the documented behaviour.
 
-**0c. Interface split.** `Renderer` (36 public methods) becomes an abstract
-`IRenderer` + `SoftwareRenderer`. `VALO`, layers, clip stack, IDs and
-`RenderCommand` stay byte-identical. `RenderTarget` becomes backend-owned.
+**0c. Interface split.** `Renderer` (~48 public declarations) becomes an abstract
+base + `SoftwareRenderer`. `VALO`, layers, clip stack, IDs and `RenderCommand`
+stay byte-identical. Resource storage moves into the backend (see the table
+above) but stays plain types, not subclasses. `createProgram` is the one method
+that is *not* on the abstract base - each backend declares its own overload.
 *Verify:* all 9 examples build and run untouched. This is the whole point of the
 phase — if any example needs an edit, the split is wrong.
 
@@ -75,9 +144,16 @@ phase — if any example needs an edit, the split is wrong.
 Instance, physical-device pick, queues, surface, swapchain, frames-in-flight,
 sync primitives. `VulkanRenderer::clear()` and `show()` and nothing else.
 
-Do it **headless first** against SwiftShader (already vendored for the bench):
-faster iteration, and validation-layer output is the actual product of this phase.
-Validation layers on from the first line of code, not added later.
+**Prerequisites, neither present on the Windows machine as of 2026-09-28:**
+SwiftShader is not in `ext/` and has never been committed (it lives on the Mac,
+untracked), and there is no Vulkan SDK here - `vulkaninfo` exists from the GPU
+driver, but `VULKAN_SDK` is unset and there is no `glslangValidator` / `glslc`,
+so GLSL cannot be compiled to SPIR-V and validation layers cannot be enabled.
+Install the SDK before starting this phase.
+
+On a machine with a real GPU, headless SwiftShader is optional. Validation layers
+are not - on from the first line of code, not added later. They are the actual
+product of this phase.
 
 *Verify:* a window that clears to a colour, zero validation warnings, clean
 resize, clean shutdown.
@@ -136,11 +212,14 @@ layers, depth sampling, all in one scene.
 
 ## Phase 6 — the finish line (~4 h)
 
-`gltf.cpp` unchanged on both backends, switched by a runtime flag. Then a
-backend-agnostic conformance harness: render the same scene on both, diff the
-framebuffers, allow a small per-pixel tolerance for filtering and precision.
+`gltf.cpp`'s scene on both backends, switched by a runtime flag: same app code,
+same `RenderCommand` state, one C++ shader and one GLSL shader implementing the
+same spec. Then extend the conformance harness started in phase 3 to the full
+scene - diff the framebuffers, small per-pixel tolerance for filtering and
+precision.
 
-That diff harness is the thing that keeps the two backends honest afterward.
+That harness is what keeps the two shader implementations honest afterwards, and
+later becomes the acceptance test for the C++ -> GLSL translator.
 
 ---
 
