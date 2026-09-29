@@ -281,6 +281,10 @@ the interface, which is why it is the stopping point.
 
 ## Phase 1 — device bring-up, clears only (~6 h)
 
+**Step-by-step working doc: `VULKAN_SETUP.md`.** Nine steps from the instance to
+a clearing window, with the per-step traps and verifications. The rest of this
+section is the why; that file is the how.
+
 Instance, physical-device pick, queues, surface, swapchain, frames-in-flight,
 sync primitives. `VulkanRenderer::clear()` and `show()` and nothing else.
 
