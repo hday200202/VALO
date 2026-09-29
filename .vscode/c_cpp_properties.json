@@ -8,7 +8,11 @@
                 "${workspaceFolder}/ext/stb",
                 "${workspaceFolder}/ext/SDL3-install/include",
                 "${workspaceFolder}/ext/tinyobjloader",
-                "${workspaceFolder}/ext/cgltf"
+                "${workspaceFolder}/ext/cgltf",
+                "${workspaceFolder}/ext/vma",
+                "${workspaceFolder}/ext/vulkan/macOS/include",
+                "${workspaceFolder}/ext/vulkan/Include",
+                "${workspaceFolder}/ext/vulkan/*/x86_64/include"
             ],
             "browse": {
                 "path": [
@@ -17,11 +21,17 @@
                     "${workspaceFolder}/ext/stb",
                     "${workspaceFolder}/ext/SDL3-install/include",
                     "${workspaceFolder}/ext/tinyobjloader",
-                    "${workspaceFolder}/ext/cgltf"
+                    "${workspaceFolder}/ext/cgltf",
+                    "${workspaceFolder}/ext/vma",
+                    "${workspaceFolder}/ext/vulkan/macOS/include",
+                    "${workspaceFolder}/ext/vulkan/Include",
+                    "${workspaceFolder}/ext/vulkan/*/x86_64/include"
                 ],
                 "limitSymbolsToIncludedHeaders": true
             },
-            "defines": [],
+            "defines": [
+                "VALO_HAS_VULKAN=1"
+            ],
             "compilerPath": "/usr/bin/clang++",
             "cStandard": "c17",
             "cppStandard": "c++20",

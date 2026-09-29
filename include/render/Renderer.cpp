@@ -81,14 +81,13 @@ void Renderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
     if (!validTarget(target) || !validVerts(cmd.verts)
      || !validIndices(cmd.indices) || !validProgram(cmd.program)) return;
 
-    const void* resolved[MAX_UNIFORM_SLOTS];
     for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) {
         const UniformBufferID id = cmd.uniformBuffers[i];
         assert((id == EMPTY_BUFFER || validUniform(id)) && "draw(): stale uniform buffer bound");
-        resolved[i] = validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
+        m_resolvedUniforms[i] = validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
     }
     
-    const DrawContext ctx{&m_targets, resolved};
+    const DrawContext ctx{&m_targets, m_resolvedUniforms};
     detail::boundTargets = ctx.targets;
     detail::boundUniforms = ctx.uniforms;
 

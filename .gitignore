@@ -4,6 +4,8 @@ ext/SDL3-install/
 ext/stb/
 ext/tinyobjloader/
 ext/cgltf/
+ext/vulkan/
+ext/vma/
 lib/*
 !lib/.gitkeep
 bin/*

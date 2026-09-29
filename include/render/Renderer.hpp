@@ -171,6 +171,7 @@ protected:
 
     // triangles accumulate here across draws; see TriBatch in DrawFuncs.hpp
     TriBatch m_batch;
+    const void* m_resolvedUniforms[MAX_UNIFORM_SLOTS] = {};
 
     // takes ownership of a target/texture, reusing a freed slot if there is one
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
@@ -181,12 +182,18 @@ protected:
         return false;
     }
 
+    template <typename FreeList>
+    bool inFreeList(const FreeList& freeList, const uint32_t id) const {
+        for (auto& i : freeList) if (id == i) return true;
+        return false;
+    }
+
     // EMPTY_BUFFER, DEFAULT_PROGRAM and stale IDs are all out of range
-    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size() && !destroyed(m_destroyedTargets, id); }
-    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size() && !destroyed(m_destroyedVertexBuffers, id); }
-    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size() && !destroyed(m_destroyedIndexBuffers, id); }
-    bool validProgram(const ProgramID id)       const { return id < m_programs.size() && !destroyed(m_destroyedPrograms, id); }
-    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id); }
+    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size()        && !destroyed(m_destroyedTargets, id)           && m_targets[id] && !inFreeList(m_freeTargets, id); }
+    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size()  && !destroyed(m_destroyedVertexBuffers, id)     && !inFreeList(m_freeVertexBuffers, id); }
+    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size()   && !destroyed(m_destroyedIndexBuffers, id)      && !inFreeList(m_freeIndexBuffers, id); }
+    bool validProgram(const ProgramID id)       const { return id < m_programs.size()       && !destroyed(m_destroyedPrograms, id)          && !inFreeList(m_freePrograms, id); }
+    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id)    && !inFreeList(m_freeUniformBuffers, id); }
 
     template <typename Queue, typename FreeList, typename Release>
     void retireQueue(Queue& queue, FreeList& freeList, Release release, const bool force) {

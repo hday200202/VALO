@@ -63,6 +63,38 @@ if(NOT EXISTS "${VALO_CGLTF_DIR}/cgltf.h")
 endif()
 
 # ---------------------------------------------------------------------------
+# Vulkan (vendored prebuilt SDK in ext/vulkan, fetched by build.sh)
+# ---------------------------------------------------------------------------
+# Detected, never required: with no ext/vulkan the software renderer builds
+# exactly as before. The include dir goes on the VALO target so it lands in
+# compile_commands.json, which is what clangd and the VS Code C/C++ extension
+# read - that is the whole of the intellisense setup.
+if(APPLE)
+    set(VALO_VULKAN_ROOT "${CMAKE_SOURCE_DIR}/ext/vulkan/macOS")
+elseif(WIN32)
+    set(VALO_VULKAN_ROOT "${CMAKE_SOURCE_DIR}/ext/vulkan")
+else()
+    file(GLOB VALO_VULKAN_CANDIDATES "${CMAKE_SOURCE_DIR}/ext/vulkan/*/x86_64")
+    list(GET VALO_VULKAN_CANDIDATES 0 VALO_VULKAN_ROOT)
+endif()
+
+set(VALO_VMA_DIR "${CMAKE_SOURCE_DIR}/ext/vma")
+
+if(VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulkan/vulkan.h")
+    set(VALO_HAS_VULKAN ON)
+    if(WIN32)
+        find_library(VALO_VULKAN_LIB NAMES vulkan-1 PATHS "${VALO_VULKAN_ROOT}/Lib" NO_DEFAULT_PATH)
+    else()
+        find_library(VALO_VULKAN_LIB NAMES vulkan PATHS "${VALO_VULKAN_ROOT}/lib" NO_DEFAULT_PATH)
+    endif()
+    message(STATUS "VALO: vendored Vulkan SDK at ${VALO_VULKAN_ROOT}")
+    message(STATUS "VALO: vulkan loader ${VALO_VULKAN_LIB}")
+else()
+    set(VALO_HAS_VULKAN OFF)
+    message(STATUS "VALO: no vendored Vulkan SDK (run ./build.sh to fetch it) - software renderer only")
+endif()
+
+# ---------------------------------------------------------------------------
 # VALO library: everything under include/ is the library
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE VALO_SOURCES CONFIGURE_DEPENDS
@@ -85,6 +117,13 @@ if(VALO_SOURCES)
     target_include_directories(VALO PUBLIC "${CMAKE_SOURCE_DIR}/include")
     target_include_directories(VALO SYSTEM PUBLIC "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}" "${VALO_CGLTF_DIR}")
     target_link_libraries(VALO PUBLIC SDL3::SDL3-static)
+    if(VALO_HAS_VULKAN)
+        target_include_directories(VALO SYSTEM PUBLIC "${VALO_VULKAN_ROOT}/include" "${VALO_VMA_DIR}")
+        target_compile_definitions(VALO PUBLIC VALO_HAS_VULKAN=1)
+        if(VALO_VULKAN_LIB)
+            target_link_libraries(VALO PUBLIC "${VALO_VULKAN_LIB}")
+        endif()
+    endif()
     target_compile_options(VALO PRIVATE
         $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
@@ -105,6 +144,13 @@ else()
     target_include_directories(VALO INTERFACE "${CMAKE_SOURCE_DIR}/include")
     target_include_directories(VALO SYSTEM INTERFACE "${VALO_STB_DIR}" "${VALO_TINYOBJ_DIR}" "${VALO_CGLTF_DIR}")
     target_link_libraries(VALO INTERFACE SDL3::SDL3-static)
+    if(VALO_HAS_VULKAN)
+        target_include_directories(VALO SYSTEM INTERFACE "${VALO_VULKAN_ROOT}/include" "${VALO_VMA_DIR}")
+        target_compile_definitions(VALO INTERFACE VALO_HAS_VULKAN=1)
+        if(VALO_VULKAN_LIB)
+            target_link_libraries(VALO INTERFACE "${VALO_VULKAN_LIB}")
+        endif()
+    endif()
 endif()
 
 add_library(VALO::VALO ALIAS VALO)
