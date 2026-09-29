@@ -21,6 +21,7 @@ enum class WinFlags : uint64_t {
     HiDPI           = 0x00002000,
     AlwaysOnTop     = 0x00010000,
     // skip metal
+    Vulkan          = 0x10000000,
     Transparent     = 0x40000000,
 };
 

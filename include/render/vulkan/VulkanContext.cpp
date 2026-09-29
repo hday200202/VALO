@@ -6,6 +6,8 @@
 #include <cstring>
 #include <vector>
 
+#include <SDL3/SDL_vulkan.h>
+
 namespace valo {
 
 namespace {
@@ -32,7 +34,7 @@ bool hasLayer(const char* name) {
 
 } // namespace
 
-bool VulkanContext::init(const bool validation) {
+bool VulkanContext::init(Window& window, const bool validation) {
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
 
     std::vector<const char*> layers;
@@ -72,6 +74,12 @@ bool VulkanContext::init(const bool validation) {
         .apiVersion         = VK_API_VERSION_1_3
     };
 
+    uint32_t sdlCount = 0;
+    const char* const* sdlExts = SDL_Vulkan_GetInstanceExtensions(&sdlCount);
+
+    for (uint32_t i = 0; sdlExts && i < sdlCount; ++i)
+        extensions.push_back(sdlExts[i]);
+
     VkInstanceCreateInfo ci{
         .sType                      = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pNext                      = useValidation ? &dbg : nullptr,
@@ -94,6 +102,14 @@ bool VulkanContext::init(const bool validation) {
         if (create) create(m_instance, &dbg, nullptr, &m_debug);
     }
 
+    if (!SDL_Vulkan_CreateSurface(window.sdlHandle(), m_instance, nullptr, &m_surface)) {
+        std::fprintf(stderr, "[vulkan] SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+        return false;
+    }
+
+    if (!pickPhysicalDevice()) return false;
+    if (!createLogicalDevice()) return false;
+
     return true;
 }
 
@@ -105,10 +121,140 @@ void VulkanContext::shutdown() {
         m_debug = VK_NULL_HANDLE;
     }
 
+    if (m_device) {
+        vkDeviceWaitIdle(m_device);
+        vkDestroyDevice(m_device, nullptr);
+        m_device = VK_NULL_HANDLE;
+    }
+
+    if (m_surface) { 
+        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr); 
+        m_surface = VK_NULL_HANDLE;
+    }
+
     if (m_instance) {
         vkDestroyInstance(m_instance, nullptr);
         m_instance = VK_NULL_HANDLE;
     }
+}
+
+bool VulkanContext::pickPhysicalDevice() {
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
+    if (count == 0) {
+        std::fprintf(stderr, "[vulkan] no physical devices\n");
+        return false;
+    }
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(m_instance, &count, devices.data());
+
+    int bestScore = -1;
+
+    for (auto dev : devices) {
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(dev, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> exts(extCount);
+        vkEnumerateDeviceExtensionProperties(dev, nullptr, &extCount, exts.data());
+
+        bool hasSwapchain = false, hasPortability = false;
+        for (const auto& ext : exts) {
+            if (!std::strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME))   hasSwapchain    = true;
+            if (!std::strcmp(ext.extensionName, "VK_KHR_portability_subset"))       hasPortability  = true;
+        }
+        if (!hasSwapchain) continue;
+
+        uint32_t qCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(qCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, families.data());
+
+        uint32_t graphics = UINT32_MAX, present = UINT32_MAX;
+        for (uint32_t i = 0; i < qCount; ++i) {
+            const bool canGraphics = families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+            VkBool32 canPresent = VK_FALSE;
+            vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, m_surface, &canPresent);
+
+            if (canGraphics && canPresent) { graphics = present = i; break; }
+
+            if (canGraphics && graphics == UINT32_MAX) graphics = i;
+            if (canPresent  && present  == UINT32_MAX) present  = i;
+        }
+
+        if (graphics == UINT32_MAX || present == UINT32_MAX) continue;
+
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(dev, &props);
+
+        int score = 0;
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)   score += 1000;
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) score += 100;
+        if (graphics == present)                                        score += 10;
+
+        if (score > bestScore) {
+            bestScore           = score;
+            m_physical          = dev;
+            m_graphicsFamily    = graphics;
+            m_presentFamily     = present;
+            m_portabilitySubset = hasPortability;
+        }
+    }
+
+    if (m_physical == VK_NULL_HANDLE) {
+        std::fprintf(stderr, "[vulkan] no device with graphics + present + swapchain\n");
+        return false;
+    }
+
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(m_physical, &props);
+    std::fprintf(
+        stderr, "[vulkan] using %s (graphics q=%u, present q=%u)\n", 
+        props.deviceName, m_graphicsFamily, m_presentFamily
+    );
+    return true;
+}
+
+bool VulkanContext::createLogicalDevice() {
+    std::vector<VkDeviceQueueCreateInfo> queueInfos;
+    const float priority = 1.f;
+
+    uint32_t families[2] = { m_graphicsFamily, m_presentFamily };
+    const uint32_t familyCount = (m_graphicsFamily == m_presentFamily) ? 1 : 2;
+
+    for (uint32_t i = 0; i < familyCount; ++i) {
+        VkDeviceQueueCreateInfo q{
+            .sType              = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex   = families[i],
+            .queueCount         = 1,
+            .pQueuePriorities   = &priority
+        };
+
+        queueInfos.push_back(q);
+    }
+
+    std::vector<const char*> deviceExts = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+    if (m_portabilitySubset) deviceExts.push_back("VK_KHR_portability_subset");
+
+    VkPhysicalDeviceFeatures features{};
+
+    VkDeviceCreateInfo ci{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = uint32_t(queueInfos.size()),
+        .pQueueCreateInfos = queueInfos.data(),
+        .enabledExtensionCount = uint32_t(deviceExts.size()),
+        .ppEnabledExtensionNames = deviceExts.data(),
+        .pEnabledFeatures = &features
+    };
+
+    if (vkCreateDevice(m_physical, &ci, nullptr, &m_device) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vkCreateDevice failed\n");
+        return false;
+    }
+
+    vkGetDeviceQueue(m_device, m_graphicsFamily, 0, &m_graphicsQueue);
+    vkGetDeviceQueue(m_device, m_presentFamily,  0, &m_presentQueue);
+    return true;
 }
 
 } // namespace valo
