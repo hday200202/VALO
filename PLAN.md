@@ -288,6 +288,18 @@ section is the why; that file is the how.
 Instance, physical-device pick, queues, surface, swapchain, frames-in-flight,
 sync primitives. `VulkanRenderer::clear()` and `show()` and nothing else.
 
+**Progress 2026-09-29: steps 1-3 done** (instance, debug messenger, surface,
+physical device, queue families, logical device, queues) - all verified with
+validation on and zero output. Next is the swapchain, then sync, then the frame
+loop. Write swapchain creation as its own re-callable function from the start:
+resize needs to run it twice, and retrofitting that means unpicking the frame
+loop.
+
+**0c is the wall.** The swapchain can live in `VulkanContext`, but
+`VulkanRenderer::clear()`/`show()` needs a `Renderer` base class to inherit
+from - so the interface split lands before those, while the Vulkan side is
+still one file.
+
 The triangle already covered all of this. It is transcription: the same objects
 in the same order, now behind your own interface instead of in `main()`.
 

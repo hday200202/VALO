@@ -52,7 +52,25 @@ is safe.
 
 ---
 
-## Step 2 — physical device, logical device, graphics queue
+## Step 2 — physical device, logical device, graphics queue — DONE (2026-09-29)
+
+`pickPhysicalDevice()` scores devices, rejecting any without a graphics queue,
+a present-capable queue and `VK_KHR_swapchain`. `createLogicalDevice()` emits
+one `VkDeviceQueueCreateInfo` per *unique* family and enables
+`VK_KHR_portability_subset` when the device advertises it. On this machine:
+`AMD Radeon(TM) 890M Graphics (graphics q=0, present q=0)`.
+
+Two bugs this cost, both caught by validation rather than by reading:
+
+- `(m_graphicsFamily = m_presentFamily)` — a single `=` in the dedupe test, so
+  the unified case emitted two identical queue infos and tripped
+  `VUID-VkDeviceCreateInfo-queueFamilyIndex-02802`. It also silently clobbered
+  `m_graphicsFamily` on hardware where the families genuinely differ.
+- The debug messenger was created *last* in `init()`, so that error printed as
+  the layer's raw `Validation Error:` instead of through the callback. The
+  messenger now comes straight after `vkCreateInstance`, which is the point of
+  having it first.
+
 
 Pick a device, find a graphics queue family, create the logical device, retrieve
 the queue.
@@ -98,7 +116,32 @@ clean shutdown.
 
 ---
 
-## Step 3 — surface
+## Step 3 — surface — DONE (2026-09-29)
+
+Instance extensions come from `SDL_Vulkan_GetInstanceExtensions()` rather than
+being hardcoded, so the platform surface extension is right on all three OSes.
+
+Two traps, both hit:
+
+- The SDL extensions were appended to the vector *after* `VkInstanceCreateInfo`
+  was constructed, so `enabledExtensionCount` was stale **and**
+  `extensions.data()` dangled after the reallocation. It surfaced as
+  `loader_validate_instance_extensions: ... string that is too long or is badly
+  formed`, which does not sound like an ordering bug at all. Build the full
+  list before the struct that points at it.
+- SDL needs `SDL_WINDOW_VULKAN` at **creation** time; it cannot be added
+  afterwards. `WinFlags::Vulkan = 0x10000000` now exists. Note `Window.cpp`
+  recreates the window elsewhere — that path has to carry the flag too, or a
+  resize silently drops Vulkan support.
+
+Still open: `VK_KHR_portability_enumeration` is requested unconditionally at
+instance level. It works on Windows only because the loader implements it;
+an older loader would fail with `VK_ERROR_EXTENSION_NOT_PRESENT`. It wants the
+same availability check the layer already gets. `vkCreateInstance`'s `VkResult`
+is also discarded — it distinguishes LAYER_NOT_PRESENT from
+EXTENSION_NOT_PRESENT from INCOMPATIBLE_DRIVER, which are three different
+fixes on someone else's machine.
+
 
 SDL owns the window, so it creates the surface:
 `SDL_Vulkan_CreateSurface(window, instance, nullptr, &surface)`.
