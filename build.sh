@@ -24,8 +24,12 @@
 #   3. otherwise                   -> SDL3 step is skipped entirely
 #
 # Vulkan handling (vendored, prebuilt - no source build):
-#   ext/vulkan missing -> download the LunarG SDK for the host platform and
-#                         install it headlessly into ext/vulkan, then prune the
+#   ext/vulkan missing -> download the LunarG SDK for the host platform. macOS
+#                         and Linux install/untar it into ext/vulkan; Windows
+#                         unpacks the 7z payload straight out of the installer
+#                         binary (its "core" component demands admin otherwise)
+#                         and pulls headers from the matching Khronos tag. Then
+#                         prune the
 #                         tooling VALO never calls (2.6 GB -> ~520 MB).
 #                         Gives loader + validation layers + glslc +
 #                         glslangValidator + headers, and MoltenVK on macOS.
@@ -80,6 +84,9 @@ CGLTF_DIR="ext/cgltf"
 # nothing installed system-wide: loader, MoltenVK (macOS ICD), validation layers,
 # glslc/glslangValidator and the headers all come from here.
 VULKAN_VERSION="${VULKAN_VERSION:-1.4.363.0}"
+# Windows takes its headers straight from Khronos: only Bin/ is embedded in
+# the LunarG installer binary, the rest is fetched by the installer at runtime.
+VULKAN_HEADERS_TAG="${VULKAN_HEADERS_TAG:-vulkan-sdk-$VULKAN_VERSION}"
 VULKAN_DIR="ext/vulkan"
 
 # VMA is not in the SDK; single header, pinned tag
@@ -191,6 +198,26 @@ vulkan_platform_paths() {
     esac
 }
 
+vulkan_need_7z() {
+    # The payload is a plain 7z stream appended to the installer .exe. The msys
+    # p7zip package ships wrappers pointing at binaries it does not install, so
+    # probe for one that actually runs before falling back to installing 7zip.
+    local c
+    for c in "${MSYSTEM_PREFIX:-/ucrt64}/bin/7z.exe" 7z 7za 7zz; do
+        if command -v "$c" >/dev/null 2>&1 && "$c" i >/dev/null 2>&1; then
+            VK_7Z="$c"; return
+        fi
+    done
+    echo "==> no working 7z found, installing mingw-w64-ucrt-x86_64-7zip"
+    # no -Sy: refreshing the db without a full -Syu is the partial-upgrade trap
+    pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-7zip >/dev/null 2>&1 || true
+    VK_7Z="${MSYSTEM_PREFIX:-/ucrt64}/bin/7z.exe"
+    if ! "$VK_7Z" i >/dev/null 2>&1; then
+        echo "error: need 7z to unpack the Vulkan SDK; run 'pacman -Syu' then retry" >&2
+        exit 1
+    fi
+}
+
 vulkan_prune() {
     # Roughly 2.6 GB as installed; the bulk is tooling VALO never calls.
     # libshaderc_combined.a alone is 1.4 GB and only matters if you statically
@@ -207,6 +234,12 @@ vulkan_prune() {
            "$root/lib/libdxcompiler."* "$root/lib/libdxil."* 2>/dev/null || true
     rm -rf "$root/lib/slang-standard-module-"* 2>/dev/null || true
     rm -f  "$root/bin/gfxrecon-"* "$root/bin/slangc" "$root/bin/vkconfig" 2>/dev/null || true
+
+    # Windows unpack lands in Bin/ with different casing and a lot of ballast
+    rm -rf "$root/Bin/slang-standard-module-"* 2>/dev/null || true
+    rm -f  "$root/Bin/"*.pdb "$root/Bin/dxc.exe" "$root/Bin/dxcompiler.dll" \
+           "$root/Bin/dxil.dll" "$root/Bin/slangc.exe" "$root/Bin/slang"*.dll \
+           "$root/Bin/gfxrecon"* "$root/Bin/vkconfig"* 2>/dev/null || true
 }
 
 if [[ "$WITH_VULKAN" == "1" ]]; then
@@ -249,12 +282,57 @@ if [[ "$WITH_VULKAN" == "1" ]]; then
                 tar -xf "$VK_ARCHIVE" -C "$VULKAN_DIR"
                 ;;
             MINGW*|MSYS*|CYGWIN*)
+                # The Windows SDK is a Qt Installer Framework bundle whose
+                # "core" component is flagged Always Installed and demands
+                # elevation regardless of --root, so it cannot be driven into a
+                # local prefix the way the macOS one can - it extracts fine and
+                # then rolls the whole thing back with "Cannot elevate access
+                # rights while running from command line".
+                #
+                # Nothing about that is needed here: the payload is a 7z stream
+                # appended to the binary, so unpack it directly. No installer,
+                # no elevation, nothing touched outside ext/.
                 VK_ARCHIVE="$VK_TMP/vulkan_sdk.exe"
                 [[ -f "$VK_ARCHIVE" ]] || curl -fL "${VK_CURL_PROGRESS[@]}" \
                     "https://sdk.lunarg.com/sdk/download/$VULKAN_VERSION/windows/vulkan_sdk.exe" -o "$VK_ARCHIVE"
-                echo "==> installing headlessly into $VULKAN_DIR"
-                "./$VK_ARCHIVE" --root "$(cygpath -w "$PWD/$VULKAN_DIR" 2>/dev/null || echo "$PWD/$VULKAN_DIR")" \
-                    --accept-licenses --default-answer --confirm-command install
+
+                vulkan_need_7z
+                echo "==> unpacking the SDK payload into $VULKAN_DIR (no installer, no admin)"
+                mkdir -p "$VULKAN_DIR"
+                "$VK_7Z" x -y -o"$VULKAN_DIR" "$VK_ARCHIVE" >/dev/null
+
+                if [[ ! -d "$VULKAN_DIR/Bin" ]]; then
+                    echo "error: unpacking $VK_ARCHIVE produced no Bin/" >&2; exit 1
+                fi
+
+                # Only Bin/ rides inside the binary (glslc, glslangValidator,
+                # spirv-*, and every layer .dll beside its .json manifest). The
+                # headers are a separate component the installer would have
+                # fetched, so take them from the matching Khronos tag instead.
+                echo "==> downloading Vulkan headers ($VULKAN_HEADERS_TAG)"
+                VK_HDR="$VK_TMP/vulkan-headers.tar.gz"
+                [[ -f "$VK_HDR" ]] || curl -fL "${VK_CURL_PROGRESS[@]}" \
+                    "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/$VULKAN_HEADERS_TAG.tar.gz" \
+                    -o "$VK_HDR"
+                rm -rf "$VK_TMP/headers"; mkdir -p "$VK_TMP/headers"
+                tar -xf "$VK_HDR" -C "$VK_TMP/headers" --strip-components=1
+                mkdir -p "$VULKAN_DIR/Include"
+                cp -r "$VK_TMP/headers/include/." "$VULKAN_DIR/Include/"
+
+                # The loader itself ships with the GPU driver rather than the
+                # SDK, so copy it in to keep ext/ self-contained. mingw links
+                # against a bare .dll directly, no import library needed.
+                mkdir -p "$VULKAN_DIR/Lib"
+                for VK_LOADER in /c/Windows/System32/vulkan-1.dll "$SYSTEMROOT/System32/vulkan-1.dll"; do
+                    if [[ -f "$VK_LOADER" ]]; then
+                        cp -f "$VK_LOADER" "$VULKAN_DIR/Lib/vulkan-1.dll"
+                        echo "==> vendored the loader from $VK_LOADER"
+                        break
+                    fi
+                done
+                if [[ ! -f "$VULKAN_DIR/Lib/vulkan-1.dll" ]]; then
+                    echo "==> WARNING: no vulkan-1.dll found; install a GPU driver with Vulkan support" >&2
+                fi
                 ;;
         esac
 
@@ -285,16 +363,30 @@ if [[ "$WITH_VULKAN" == "1" ]]; then
         cat > "$VULKAN_DIR/env.sh" <<ENVEOF
 # Generated by build.sh - source this before running anything that uses Vulkan.
 export VULKAN_SDK="$VK_ABS"
-export PATH="\$VULKAN_SDK/bin:\$PATH"
-export VK_ADD_LAYER_PATH="\$VULKAN_SDK/share/vulkan/explicit_layer.d"
-export VK_LAYER_PATH="\$VULKAN_SDK/share/vulkan/explicit_layer.d"
 ENVEOF
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*)
+                # unpacked layout: tools and layer manifests both live in Bin/
+                cat >> "$VULKAN_DIR/env.sh" <<'ENVEOF'
+export PATH="$VULKAN_SDK/Bin:$PATH"
+export VK_ADD_LAYER_PATH="$VULKAN_SDK/Bin"
+export VK_LAYER_PATH="$VULKAN_SDK/Bin"
+ENVEOF
+                ;;
+            *)
+                cat >> "$VULKAN_DIR/env.sh" <<'ENVEOF'
+export PATH="$VULKAN_SDK/bin:$PATH"
+export VK_ADD_LAYER_PATH="$VULKAN_SDK/share/vulkan/explicit_layer.d"
+export VK_LAYER_PATH="$VULKAN_SDK/share/vulkan/explicit_layer.d"
+ENVEOF
+                ;;
+        esac
         if [[ "$(uname -s)" == "Darwin" ]]; then
             cat >> "$VULKAN_DIR/env.sh" <<'ENVEOF'
 export VK_ICD_FILENAMES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
 export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib:${DYLD_LIBRARY_PATH:-}"
 ENVEOF
-        else
+        elif [[ "$(uname -s)" == "Linux" ]]; then
             cat >> "$VULKAN_DIR/env.sh" <<'ENVEOF'
 export LD_LIBRARY_PATH="$VULKAN_SDK/lib:${LD_LIBRARY_PATH:-}"
 ENVEOF

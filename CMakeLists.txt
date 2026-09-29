@@ -84,6 +84,11 @@ if(VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulkan/vulkan.h")
     set(VALO_HAS_VULKAN ON)
     if(WIN32)
         find_library(VALO_VULKAN_LIB NAMES vulkan-1 PATHS "${VALO_VULKAN_ROOT}/Lib" NO_DEFAULT_PATH)
+        # No import library is unpacked from the SDK payload, but mingw can
+        # link the loader .dll directly, so fall back to the vendored copy.
+        if(NOT VALO_VULKAN_LIB AND EXISTS "${VALO_VULKAN_ROOT}/Lib/vulkan-1.dll")
+            set(VALO_VULKAN_LIB "${VALO_VULKAN_ROOT}/Lib/vulkan-1.dll" CACHE FILEPATH "" FORCE)
+        endif()
     else()
         find_library(VALO_VULKAN_LIB NAMES vulkan PATHS "${VALO_VULKAN_ROOT}/lib" NO_DEFAULT_PATH)
     endif()
