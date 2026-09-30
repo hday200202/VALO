@@ -1,7 +1,7 @@
 #include <VALO.hpp>
 #include <iostream>
 
-#include "MinimalEngine.hpp"
+#include "engines/MinimalEngine.hpp"
 
 using namespace valo;
 

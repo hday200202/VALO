@@ -2,7 +2,7 @@
     "configurations": [
         {
             "name": "default",
-            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "compileCommands": "${workspaceFolder}/build/release-static/compile_commands.json",
             "includePath": [
                 "${workspaceFolder}/include",
                 "${workspaceFolder}/ext/stb",

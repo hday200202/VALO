@@ -454,7 +454,11 @@ echo "==> building VALO"
 cmake --build "$BUILD_DIR" --parallel "$JOBS"
 
 # Keep a stable compile_commands.json at the root for clangd / IDEs.
-ln -sf "$BUILD_DIR/compile_commands.json" compile_commands.json
+# cp, not ln -s: MSYS2 without developer mode turns ln -s into a copy anyway,
+# and a half-working symlink is worse than an honest copy. Note this only
+# refreshes when build.sh runs - .vscode/c_cpp_properties.json points straight
+# at the build dir so IntelliSense never sees a stale database.
+cp -f "$BUILD_DIR/compile_commands.json" compile_commands.json
 
 echo
 echo "==> done"

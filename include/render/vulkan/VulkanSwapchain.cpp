@@ -95,6 +95,29 @@ bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsy
     m_images.resize(n);
     vkGetSwapchainImagesKHR(ctx.device(), m_swapchain, &n, m_images.data());
 
+    m_views.resize(m_images.size());
+
+    for (size_t i = 0; i < m_images.size(); ++i) {
+        const VkImageViewCreateInfo vi{
+            .sType              = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image              = m_images[i],
+            .viewType           = VK_IMAGE_VIEW_TYPE_2D,
+            .format             = m_format,
+            .subresourceRange   = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            }
+        };
+
+        if (vkCreateImageView(ctx.device(), &vi, nullptr, &m_views[i]) != VK_SUCCESS) {
+            std::fprintf(stderr, "[vulkan] vkCreateImageView failed for image %zu\n", i);
+            return false;
+        }
+    }
+
     std::fprintf(
         stderr, "[vulkan] swapchain %ux%u, %u images, %s\n",
         m_extent.width, m_extent.height, n,
@@ -105,6 +128,13 @@ bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsy
 }
 
 void VulkanSwapchain::shutdown() {
+    if (m_ctx) {
+        for (auto v : m_views)
+            if (v) vkDestroyImageView(m_ctx->device(), v, nullptr);
+    }
+
+    m_views.clear();
+
     if (m_swapchain && m_ctx) {
         vkDestroySwapchainKHR(m_ctx->device(), m_swapchain, nullptr);
         m_swapchain = VK_NULL_HANDLE;
