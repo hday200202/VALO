@@ -441,10 +441,14 @@ if [[ "$CLEAN" == "1" ]]; then
 fi
 
 echo "==> configuring VALO  type=$BUILD_TYPE  linkage=$LINKAGE  dir=$BUILD_DIR"
+VALO_VULKAN_OPT="ON"
+[[ "$WITH_VULKAN" == "0" ]] && VALO_VULKAN_OPT="OFF"
+
 cmake -S . -B "$BUILD_DIR" \
     "${GENERATOR_ARGS[@]}" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DVALO_SHARED="$VALO_SHARED"
+    -DVALO_SHARED="$VALO_SHARED" \
+    -DVALO_VULKAN="$VALO_VULKAN_OPT"
 
 echo "==> building VALO"
 cmake --build "$BUILD_DIR" --parallel "$JOBS"

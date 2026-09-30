@@ -21,6 +21,12 @@ public:
 
     VkInstance instance() const { return m_instance; }
     VkSurfaceKHR surface() const { return m_surface; }
+    VkPhysicalDevice physicalDevice() const { return m_physical; }
+    VkDevice device() const { return m_device; }
+    VkQueue graphicsQueue() const { return m_graphicsQueue; }
+    VkQueue presentQueue() const { return m_presentQueue; }
+    uint32_t graphicsFamily() const { return m_graphicsFamily; }
+    uint32_t presentFamily() const { return m_presentFamily; }
 
 private:
     VkInstance                  m_instance          = VK_NULL_HANDLE;

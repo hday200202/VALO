@@ -13,6 +13,9 @@ project(VALO
 # VALO_SHARED=OFF -> lib/libVALO.a     (static, default)
 option(VALO_SHARED          "Build VALO as a shared library" OFF)
 option(VALO_BUILD_EXAMPLES  "Build the example programs in examples/" ON)
+# OFF ignores ext/vulkan even when it is present, so ./build.sh no-vulkan
+# produces a genuinely Vulkan-free build rather than just skipping the download.
+option(VALO_VULKAN          "Use the vendored Vulkan SDK if present" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -80,7 +83,7 @@ endif()
 
 set(VALO_VMA_DIR "${CMAKE_SOURCE_DIR}/ext/vma")
 
-if(VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulkan/vulkan.h")
+if(VALO_VULKAN AND VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulkan/vulkan.h")
     set(VALO_HAS_VULKAN ON)
     if(WIN32)
         find_library(VALO_VULKAN_LIB NAMES vulkan-1 PATHS "${VALO_VULKAN_ROOT}/Lib" NO_DEFAULT_PATH)
@@ -96,7 +99,11 @@ if(VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulkan/vulkan.h")
     message(STATUS "VALO: vulkan loader ${VALO_VULKAN_LIB}")
 else()
     set(VALO_HAS_VULKAN OFF)
-    message(STATUS "VALO: no vendored Vulkan SDK (run ./build.sh to fetch it) - software renderer only")
+    if(NOT VALO_VULKAN)
+        message(STATUS "VALO: Vulkan disabled (VALO_VULKAN=OFF) - software renderer only")
+    else()
+        message(STATUS "VALO: no vendored Vulkan SDK (run ./build.sh to fetch it) - software renderer only")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

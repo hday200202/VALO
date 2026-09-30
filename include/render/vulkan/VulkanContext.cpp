@@ -114,13 +114,6 @@ bool VulkanContext::init(Window& window, const bool validation) {
 }
 
 void VulkanContext::shutdown() {
-    if (m_debug) {
-        auto destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)
-            vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT");
-        if (destroy) destroy(m_instance, m_debug, nullptr);
-        m_debug = VK_NULL_HANDLE;
-    }
-
     if (m_device) {
         vkDeviceWaitIdle(m_device);
         vkDestroyDevice(m_device, nullptr);
@@ -130,6 +123,13 @@ void VulkanContext::shutdown() {
     if (m_surface) { 
         SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr); 
         m_surface = VK_NULL_HANDLE;
+    }
+
+    if (m_debug) {
+        auto destroy = (PFN_vkDestroyDebugUtilsMessengerEXT)
+            vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (destroy) destroy(m_instance, m_debug, nullptr);
+        m_debug = VK_NULL_HANDLE;
     }
 
     if (m_instance) {
@@ -236,15 +236,25 @@ bool VulkanContext::createLogicalDevice() {
 
     if (m_portabilitySubset) deviceExts.push_back("VK_KHR_portability_subset");
 
-    VkPhysicalDeviceFeatures features{};
+    VkPhysicalDeviceVulkan13Features f13{
+        .sType              = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2   = VK_TRUE,
+        .dynamicRendering   = VK_TRUE
+    };
+
+    VkPhysicalDeviceFeatures2 features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &f13,
+        .features = { .fillModeNonSolid = VK_TRUE }
+    };
 
     VkDeviceCreateInfo ci{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &features,
         .queueCreateInfoCount = uint32_t(queueInfos.size()),
         .pQueueCreateInfos = queueInfos.data(),
         .enabledExtensionCount = uint32_t(deviceExts.size()),
         .ppEnabledExtensionNames = deviceExts.data(),
-        .pEnabledFeatures = &features
     };
 
     if (vkCreateDevice(m_physical, &ci, nullptr, &m_device) != VK_SUCCESS) {
