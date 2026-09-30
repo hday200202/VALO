@@ -46,39 +46,156 @@ by side.
 
 ---
 
-## What splits, what stays, what is software-only
+## Backend dispatch: a function-pointer table, not a class hierarchy
 
-The question this plan exists to answer. Short version: **the ID + free-list model
-is already the abstraction layer**, so far less needs to become polymorphic than
-it looks.
+Decided 2026-09-30. `Renderer` stays **one concrete class** and the public API
+does not move. What changes is that the bodies of its methods are reached
+through a table of function pointers, populated at `init()` from whichever
+backend the config asks for.
 
-**Only `Renderer` becomes virtual.** `SoftwareRenderer : public Renderer` and
-`VulkanRenderer : public Renderer`. Every resource is reached exclusively through
-an opaque integer ID - verified: `RenderTarget`, `Program`, `VertexBuffer`,
-`IndexBuffer` and `UniformBuffer` never appear in `VALO`'s public signatures. So
-they do **not** need a class hierarchy. Each backend stores whatever it likes in
-its own vectors: `SoftwareRenderer` keeps `vector<RenderTarget>`,
-`VulkanRenderer` keeps `vector<VulkanImage>`. The ID is the abstraction, and this
-keeps virtual dispatch off anything per-pixel.
+Why not an abstract base: `Renderer`'s declarations already *are* the interface
+- the only difference between backends is what the bodies do. Extracting a base
+class would mean duplicating ~40 declarations to express something the class
+already expresses. Why not `#ifdef` gating: it forces one backend per binary,
+and the phase 6 finish line wants a runtime flag and a conformance harness that
+renders the same scene on both backends in one process.
 
-| | Verdict |
+The shape this is already in helps: `Renderer::draw` is a dispatcher, and the
+real work lives in `DrawFuncs` as **free functions**, not members. That was
+deliberate and it is most of the split already done.
+
+### The table
+
+```cpp
+struct RendererBackend {
+    // frame
+    void (*clear)(Renderer&, const Color&, RenderTargetID, float);
+    void (*draw)(Renderer&, const RenderCommand&, RenderTargetID);
+    void (*show)(Renderer&, RenderTargetID);
+    void (*flush)(Renderer&);
+
+    // resources
+    RenderTargetID (*createTarget)(Renderer&, uint32_t, uint32_t, bool, bool);
+    void (*destroyTarget)(Renderer&, RenderTargetID);
+    // ... one per create/update/destroy
+
+    // programs - the erased form; see below
+    ProgramID (*createProgramFromCallbacks)(Renderer&, const Program&);
+    ProgramID (*createProgramFromFiles)(Renderer&, const std::string&, const std::string&);
+
+    // state
+    void (*resize)(Renderer&, uint32_t, uint32_t);
+    void (*setVsync)(Renderer&, bool);
+
+    // queries
+    uint32_t (*width)(const Renderer&);
+    uint32_t (*height)(const Renderer&);
+};
+```
+
+Every entry takes `Renderer&` as its first parameter - that is the `this` a
+member function would have had, made explicit. Backend state hangs off
+`Renderer` (see *What has to be added* below), so the functions reach it the
+same way member functions do today.
+
+### What becomes a pointer
+
+Everything whose *implementation* differs. Signatures are copied verbatim from
+today's `Renderer`; nothing is redesigned.
+
+| group | entries |
 |---|---|
-| `VALO` (layers, clip stack, queue, ordering) | **shared, unchanged** |
-| `RenderCommand` + its enums, `Viewport`, `Scissor` | **shared** - pure state description; every field maps to Vulkan state |
-| all `*ID` typedefs, `RenderConfig` | **shared** |
-| `math/` (`Vec`, `Mat`, `Quat`), `Color` | **shared** |
-| `VtxLayout` / `VtxAttrib` | **shared** - describes a layout, both backends consume it |
-| `utils/` (glTF, OBJ, `Clock`, `Timestamp`) | **shared** - no rendering |
-| `Window` | **shared**, plus one hook: Vulkan needs a `VkSurfaceKHR` from the same SDL window |
-| `Renderer` | **splits** - the one abstract interface |
-| `RenderTarget`, `Program`, `VertexBuffer`, `IndexBuffer`, `UniformBuffer` | **backend-private storage**, not subclasses - they never cross the ID boundary |
-| `DrawFuncs` (three rasterizers, `ScreenTri`, `ClipVert`) | **software-only**, no Vulkan equivalent |
-| `Sampling` (`texture()`, thread-local shader env, `boundTargets`, `varyingDerivs`) | **software-only** - on the GPU these are language built-ins |
-| `ThreadPool`, `common/Srgb.hpp` tables | **software-only** |
+| frame | `clear`, `draw`, `show`, `flush` |
+| targets | `createTarget`, `destroyTarget` |
+| vertex buffers | `createVertexBuffer`, `updateVertexBuffer`, `destroyVertexBuffer` |
+| index buffers | `createIndexBuffer`, `updateIndexBuffer`, `destroyIndexBuffer` |
+| uniform buffers | `createUniformBuffer`, `updateUniformBuffer`, `destroyUniformBuffer` |
+| textures | `createTexture` (x2), `updateTexture` (x2), `destroyTexture` |
+| programs | `createProgramFromCallbacks`, `createProgramFromFiles`, `destroyProgram` |
+| state | `resize`, `setVsync` |
+| queries | `width`, `height` |
+| lifecycle | `shutdown` (not `init` - see below) |
 
-Every operation means the same thing on both sides; Vulkan just does more of the
-work on its side of the call. `createTexture` uploads and builds mips either way -
-one memcpys and box-filters, the other stages and blits.
+`init` is **not** in the table. It is what *chooses* the table, so it stays an
+ordinary method that switches on `RenderConfig::backend` and installs the right
+set of pointers.
+
+### What stays exactly as it is
+
+- **The whole `VALO` -> `Renderer` interface.** `VALO` still holds a
+  `Renderer` by value, still calls `m_renderer.draw(...)`. No `unique_ptr`, no
+  pointer indirection at that level, no call-site edits.
+- **`RenderCommand`** and its enums, `Viewport`, `Scissor` - pure state
+  description; every field maps to real Vulkan state.
+- **All `*ID` typedefs and the ID + free-list model.** The free lists, the
+  deferred-destroy queues and the `valid*` predicates are backend-agnostic
+  bookkeeping and stay on `Renderer` itself. Only what the released resource
+  *is* differs.
+- **`BACKBUFFER`**, `getVsync`, `getRenderScale`, `setRenderScale` - config
+  reads and writes, no backend involvement.
+- **`math/`**, `Color`, `VtxLayout` / `VtxAttrib`, `utils/` (glTF, OBJ, Clock).
+- **`Window`**, plus one addition: `WinFlags::Vulkan` has to be set at creation
+  when the Vulkan backend is selected, and `Window.cpp`'s recreate path has to
+  carry it too.
+
+### The one thing that cannot be a plain pointer: `createProgram`
+
+The two public overloads are templated on `<V, U, Vy>`, and a template cannot
+be stored as a single function pointer any more than it can be virtual.
+
+The fix is the same either way and is invisible to callers: the templated
+`createProgram` stays an ordinary non-virtual method that calls `makeProgram()`
+to erase the types, then dispatches through
+`backend.createProgramFromCallbacks(*this, program)`. The public API keeps the
+two overloads described in the shader-contract section.
+
+One prerequisite: the vs-only overload currently builds its `Program` inline.
+That construction has to move into a `makeProgram(vs)` overload in
+`ShaderProgram.hpp` alongside the existing two-argument one, so both overloads
+can forward the same way.
+
+### What has to be added to `Renderer`
+
+Backend-specific state has to live somewhere, and with one concrete class it
+lives on `Renderer` behind a pointer:
+
+```cpp
+    RendererBackend  m_backend{};      // installed by init()
+    void*            m_backendState;   // SoftwareState* or VulkanState*
+```
+
+- **`SoftwareState`** takes what is on `Renderer` today: `m_targets`,
+  `m_vertexBuffers`, `m_indexBuffers`, `m_programs`, `m_uniformBuffers`,
+  `m_sdlRenderer`, `m_sdlTexture`, `m_texW/H`, `ThreadPool m_pool`,
+  `TriBatch m_batch`, `m_resolvedUniforms`.
+- **`VulkanState`** takes `VulkanContext`, `VulkanSwapchain`, `VulkanFrames`,
+  the `VmaAllocator`, and per-ID vectors of `VkBuffer` / `VkImage` / pipelines.
+
+Also needed:
+
+- **`RenderConfig::backend`** - a `Backend { Software, Vulkan }` enum defaulting
+  to `Software`, so every existing call keeps working untouched.
+- **`RenderConfig::validation`** - `VulkanRenderer::init` currently takes it as
+  a parameter; `sdlWindow` and `framesInFlight` are already in `RenderConfig`,
+  this is the only one missing.
+- **Render targets are not optional on Vulkan.** Nothing in `examples/` calls
+  `createTarget` today, but layers can target one and phase 5 depends on it.
+  `RenderTargetID` keeps working; only the backing changes, `RenderTarget` ->
+  `VkImage` + view + memory.
+
+### What stays software-only
+
+`DrawFuncs` (the three rasterizers, `ScreenTri`, `ClipVert`, `TriBatch`),
+`Sampling` (`texture()`, the thread-local shader environment, `boundTargets`,
+`varyingDerivs`), `ThreadPool`, and `common/Srgb.hpp`'s tables. None of it has
+a Vulkan counterpart - on the GPU those are language built-ins and fixed-
+function hardware.
+
+### Verify
+
+All 9 examples build and run untouched, with no edit to any file in
+`examples/`. That is the whole test: the table is an implementation detail, and
+if a caller can tell it exists, it is wrong.
 
 ---
 

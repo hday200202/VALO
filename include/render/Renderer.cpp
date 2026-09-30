@@ -408,4 +408,17 @@ bool Renderer::recreateTexture(const uint32_t w, const uint32_t h) {
     return true;
 }
 
+
+Renderer::RenderBackend Renderer::fetchBackendFuncs() {
+    switch (m_cfg.backend) {
+        case Backend::Software: return RenderBackend{
+            
+        };
+        
+        case Backend::Vulkan:   return RenderBackend{
+
+        };
+    }
+}
+
 } // namespace valo

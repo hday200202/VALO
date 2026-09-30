@@ -24,6 +24,8 @@ struct SDL_Window;
 
 namespace valo {
 
+enum class Backend { Software, Vulkan };
+
 struct RenderConfig {
     SDL_Window*     sdlWindow       = nullptr;
     bool            vsync           = false;
@@ -33,6 +35,8 @@ struct RenderConfig {
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
     float           renderScale     = 1.f;
+
+    Backend         backend         = Backend::Software;
 };
 
 
@@ -225,6 +229,48 @@ protected:
         retireQueue(m_destroyedUniformBuffers, m_freeUniformBuffers,
             [this](UniformBufferID id) { m_uniformBuffers[id] = UniformBuffer{}; }, force);
     }
+
+    struct RenderBackend {
+        void (*clear)(Renderer&, const Color&, RenderTargetID, float);
+        void (*draw)(Renderer&, const RenderCommand&, RenderTargetID);
+        void (*show)(Renderer&, RenderTargetID);
+        void (*flush)(Renderer&);
+
+        RenderTargetID (*createTarget)(Renderer&, uint32_t, uint32_t, bool, bool);
+        void (*destroyTarget)(Renderer&, RenderTargetID);
+
+        VertexBufferID (*createVertexBuffer)(Renderer&, const void*, const size_t, const VtxLayout&);
+        void (*updateVertexBuffer)(Renderer&, VertexBufferID, const void*, const size_t, const VtxLayout&);
+        void (*destroyVertexBuffer)(Renderer&, VertexBufferID);
+
+        IndexBufferID (*createIndexBuffer)(Renderer&, const uint32_t*, const size_t);
+        void (*updateIndexBuffer)(Renderer&, IndexBufferID, const uint32_t*, size_t);
+        void (*destroyIndexBuffer)(Renderer&, IndexBufferID);
+
+        UniformBufferID (*createUniformBuffer)(Renderer&, const void*, const size_t);
+        void (*updateUniformBuffer)(Renderer&, UniformBufferID, const void*, const size_t);
+        void (*destroyUniformBuffer)(Renderer&, UniformBufferID);
+
+        TextureID (*createTexture)(Renderer&, uint32_t, uint32_t, const uint32_t*, bool, bool);
+        TextureID (*createTextureFromFile)(Renderer&, const std::string&, bool, bool);
+        void (*updateTexture)(Renderer&, TextureID, const uint32_t*);
+        void (*updateTextureRect)(Renderer&, TextureID, uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t*);
+        void (*destroyTexture)(Renderer&, TextureID);
+
+        ProgramID (*createProgramFromCallbacks)(Renderer&, const Program&);
+        ProgramID (*createProgramFromFiles)(Renderer&, const std::string&, const std::string&);
+        void (*destroyProgram)(Renderer&, ProgramID);
+
+        void (*resize)(Renderer&, uint32_t, uint32_t);
+        void (*setVsync)(Renderer&, bool);
+
+        uint32_t (*width)(const Renderer&);
+        uint32_t (*height)(const Renderer&);
+
+        void (*shutdown)(Renderer&);
+    } m_backendFuncs;
+
+    RenderBackend fetchBackendFuncs();
 
     friend class VALO;
 };
