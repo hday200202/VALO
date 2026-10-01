@@ -267,6 +267,7 @@ bool VulkanContext::createLogicalDevice() {
     std::vector<const char*> deviceExts = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
     if (m_portabilitySubset) deviceExts.push_back("VK_KHR_portability_subset");
+    deviceExts.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
 
     VkPhysicalDeviceVulkan13Features f13{
         .sType              = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,

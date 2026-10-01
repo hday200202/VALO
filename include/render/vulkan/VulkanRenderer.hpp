@@ -140,13 +140,16 @@ private:
     bool            m_renderingOpen = false;
     bool            m_needsRecreate = false;
 
-    uint32_t        m_pushConstantSize = 128;
+    uint32_t        m_pushConstantSize = 0;
 
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_uniformSetLayout = VK_NULL_HANDLE;
+    PFN_vkCmdPushDescriptorSetKHR m_pushDescriptorSet = nullptr;
 
     std::vector<std::pair<GPUBuffer, uint64_t>> m_retiredBuffers;
     std::vector<GPUBuffer> m_vertexBuffers;
     std::vector<GPUBuffer> m_indexBuffers;
+    std::vector<GPUBuffer> m_uniformBuffers;
     std::vector<GPUProgram> m_programs;
     std::vector<std::pair<PipelineKey, VkPipeline>> m_pipelines;
     std::vector<DepthBuffer> m_depth;

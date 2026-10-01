@@ -158,6 +158,7 @@ bool VulkanRenderer::uploadBuffer(
     const VkBufferUsageFlags usage,
     GPUBuffer& out
 ) {
+    if (bytes == 0) return false;
     const VmaAllocator alloc = m_ctx.allocator();
 
     const VkBufferCreateInfo stagingCi{
@@ -225,7 +226,6 @@ bool VulkanRenderer::recreateSwapchain() {
 
     if (zeroSized) return true;
 
-    std::fprintf(stderr, "[vulkan] PROBE recreateSwapchain, cfg.vsync=%d\n", int(m_owner->m_cfg.vsync));
 
     vkDeviceWaitIdle(m_ctx.device());
 
@@ -607,10 +607,17 @@ void VulkanRenderer::shutdown() {
         m_pipelineLayout = VK_NULL_HANDLE;
     }
 
+    if (m_uniformSetLayout) {
+        vkDestroyDescriptorSetLayout(m_ctx.device(), m_uniformSetLayout, nullptr);
+        m_uniformSetLayout = VK_NULL_HANDLE;
+    }
+
     const VmaAllocator alloc = m_ctx.allocator();
     for (auto& b : m_vertexBuffers)
         if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
     for (auto& b : m_indexBuffers)
+        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
+    for (auto& b : m_uniformBuffers)
         if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
 
     for (auto& p : m_programs) {
@@ -620,6 +627,7 @@ void VulkanRenderer::shutdown() {
 
     m_vertexBuffers.clear();
     m_indexBuffers.clear();
+    m_uniformBuffers.clear();
     m_programs.clear();
 
     m_frames.shutdown();
@@ -669,8 +677,40 @@ bool VulkanRenderer::init() {
         .size       = m_pushConstantSize
     };
 
+    VkDescriptorSetLayoutBinding bindings[MAX_UNIFORM_SLOTS]{};
+    for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) {
+        bindings[i] = {
+            .binding            = i,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount    = 1,
+            .stageFlags         = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        };
+    }
+
+    const VkDescriptorSetLayoutCreateInfo dsl{
+        .sType          = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .flags          = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+        .bindingCount   = MAX_UNIFORM_SLOTS,
+        .pBindings      = bindings
+    };
+
+    if (vkCreateDescriptorSetLayout(m_ctx.device(), &dsl, nullptr, &m_uniformSetLayout) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vkCreateDescriptorSetLayout failed\n");
+        return false;
+    }
+
+    m_pushDescriptorSet = (PFN_vkCmdPushDescriptorSetKHR)
+        vkGetDeviceProcAddr(m_ctx.device(), "vkCmdPushDescriptorSetKHR");
+
+    if (!m_pushDescriptorSet) {
+        std::fprintf(stderr, "[vulkan] vkCmdPushDescriptorSetKHR not available\n");
+        return false;
+    }
+
     const VkPipelineLayoutCreateInfo li{
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount         = 1,
+        .pSetLayouts            = &m_uniformSetLayout,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges    = &range
     };
@@ -739,6 +779,34 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
             cmd.uniforms
         );
     }
+
+    VkDescriptorBufferInfo infos[MAX_UNIFORM_SLOTS]{};
+    VkWriteDescriptorSet writes[MAX_UNIFORM_SLOTS]{};
+    uint32_t writeCount = 0;
+
+    for (uint32_t slot = 0; slot < MAX_UNIFORM_SLOTS; ++slot) {
+        const UniformBufferID id = cmd.uniformBuffers[slot];
+        if (id == EMPTY_BUFFER || id >= m_uniformBuffers.size()) continue;
+        if (!m_uniformBuffers[id].buffer) continue;
+
+        infos[writeCount] = {
+            .buffer = m_uniformBuffers[id].buffer,
+            .offset = 0,
+            .range  = VK_WHOLE_SIZE
+        };
+
+        writes[writeCount] = {
+            .sType              = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding         = slot,
+            .descriptorCount    = 1,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pBufferInfo        = &infos[writeCount]
+        };
+        ++writeCount;
+    }
+
+    if (writeCount)
+        m_pushDescriptorSet(buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, writeCount, writes);
 
     const VkExtent2D extent = m_swapchain.extent();
 
@@ -989,15 +1057,25 @@ void VulkanRenderer::updateIndexBuffer(const IndexBufferID indices, const uint32
 // ========================================================================= */
 
 UniformBufferID VulkanRenderer::createUniformBuffer(const void* data, const size_t bytes) {
-    (void)data; (void)bytes;
-    todo(__func__);
-    return EMPTY_BUFFER;
+    GPUBuffer buffer;
+    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, buffer))
+        return EMPTY_BUFFER;
+
+    return m_owner->allocSlot(m_uniformBuffers, m_owner->m_freeUniformBuffers, std::move(buffer));
 }
 
 
 void VulkanRenderer::updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes) {
-    (void)buffer; (void)data; (void)bytes;
-    todo(__func__);
+    if (buffer >= m_uniformBuffers.size()) {
+        std::fprintf(stderr, "[vulkan] updateUniformBuffer(): ID out of range\n");
+        return;
+    }
+
+    GPUBuffer fresh;
+    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, fresh)) return;
+
+    retireBuffer(m_uniformBuffers[buffer]);
+    m_uniformBuffers[buffer] = fresh;
 }
 
 
@@ -1091,7 +1169,10 @@ void VulkanRenderer::releaseIndexBuffer(const IndexBufferID id) {
 }
 
 
-void VulkanRenderer::releaseUniformBuffer(const UniformBufferID id) { (void)id; todo(__func__); }
+void VulkanRenderer::releaseUniformBuffer(const UniformBufferID id) { 
+    if (id < m_uniformBuffers.size()) retireBuffer(m_uniformBuffers[id]); 
+}
+
 void VulkanRenderer::releaseProgram(const ProgramID id) { 
     if (m_programs[id].vs) vkDestroyShaderModule(m_ctx.device(), m_programs[id].vs, nullptr);
     if (m_programs[id].fs) vkDestroyShaderModule(m_ctx.device(), m_programs[id].fs, nullptr);

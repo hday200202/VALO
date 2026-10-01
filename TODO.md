@@ -6,33 +6,59 @@ a gate for the next.
 
 ## State (2026-10-01)
 
-~6.8k lines of library across 38 files (1.5k of that Vulkan), 11 examples,
+~7.8k lines of library across 39 files (2.2k of that Vulkan), 12 examples,
 every feature behind a sanitizer-verified harness. The dev-facing API (Window ->
 VALO -> create* -> RenderCommand -> submit, typed C++ shader callbacks) is
 settled and Vulkan-shaped.
 
-**Section 3 is done and the Vulkan backend is live.** `Renderer` dispatches
-every public method through a 28-entry function-pointer table, both backends
-fill all 28, and `Backend::Vulkan` currently brings up a real window that clears
-and presents through `VALO`. Section 1's only remaining API item is texture
-formats; the other three are glTF parser gaps that do not gate the backend.
+**The Vulkan backend draws.** `Renderer` dispatches every public method through
+a 28-entry function-pointer table; both backends fill all 28. `vk-triangle`
+runs a rotating, depth-tested, push-constant-driven triangle entirely through
+the public `VALO` interface. **Six of the 28 Vulkan entries are still `todo()`
+stubs: four texture functions and the two render-target ones.**
 
-Landed 2026-09-28/10-01:
+Landed 2026-10-01 (the Vulkan draw path, in order):
 
-- **Deferred destruction** - `destroy*` enqueues, `destroyAllQueued()` drains
-  after `framesInFlight` frames, IDs deferred along with the objects.
-- **Vulkan bring-up, all 9 steps of `VULKAN_SETUP.md`** - instance, validation
-  layers, surface, device, swapchain, image views, command pool, sync, the
-  frame loop and resize. `vk-clear` runs 400 frames clean; a scripted resize
-  across 8 sizes including 1x1 passes; zero validation output anywhere.
-- **The whole SDK vendored** into `ext/vulkan` (~520 MB after pruning) -
-  loader, layers, `glslc`, MoltenVK, headers, plus `ext/vma`. Clone and go.
-- **Backend dispatch table** - 28 entries, software and Vulkan both complete.
-  `allocSlot` and the five `release*` entries came out of that work.
-- **`VulkanRenderer::drawFrame` split** into `beginFrameIfNeeded` / `clear` /
-  `recordDraw` / `present`, because VALO drives a frame as
-  clear -> draw* -> flush -> show and a Vulkan clear is `loadOp` on *beginning*
-  rendering, not an operation of its own.
+- **Shader modules** - `createProgram(vsPath, fsPath)` from GLSL or SPIR-V,
+  compiling through `glslc` and caching the `.spv` beside the source when the
+  source is newer. Passed through to `VALO` as a third `createProgram`
+  overload; the software backend rejects it and the Vulkan backend rejects the
+  callback overloads, which is the two-implementations contract working.
+- **The graphics pipeline**, plus a cache keyed on
+  `(program, packed state, vertex layout)`. `packPipelineState` folds the nine
+  `RenderCommand` fields `createPipeline` actually reads into one word.
+  **The layout is stored by value, not by pointer** - layouts live inside
+  `GPUBuffer` and `m_vertexBuffers` reallocates, so a cached pointer dangles
+  and, worse, a later buffer at the same address makes the key falsely match.
+- **`draw`** - pipeline lookup, dynamic viewport/scissor, vertex and index
+  binding, `vkCmdDraw` / `vkCmdDrawIndexed`. Handles all three `UINT32_MAX`
+  sentinels: no vertex buffer (shader-generated positions), no index buffer
+  (`indexCount` becomes a vertex count), and `ALL_INDICES`.
+- **Push constants** for the `RenderCommand::uniforms` blob, clamped to the
+  device limit. **The spec guarantees only 128 bytes**; this hardware reports
+  256, and `MAX_UNIFORM_BYTES` is 512 - so the blob is the reason uniform
+  buffers had to exist rather than a nice-to-have.
+- **Depth** - a combined depth/stencil image per frame in flight, recreated
+  with the swapchain. Format picked from `D32_SFLOAT_S8_UINT` /
+  `D24_UNORM_S8_UINT` rather than plain `D32_SFLOAT`, so stencil does not force
+  a rebuild later. `storeOp = DONT_CARE` with an `UNDEFINED` oldLayout, so the
+  buffer never makes a round trip to memory.
+- **Uniform buffers** via **`VK_KHR_push_descriptor`** - a deviation from
+  `PLAN.md`, which assumed a descriptor pool. Push descriptors write the set
+  inline into the command buffer exactly like push constants: no pool, no
+  allocation, no third lifetime to get wrong. `RenderCommand`'s eight uniform
+  slots map straight onto bindings 0-7, which is the slot design paying off.
+  `vkCmdPushDescriptorSetKHR` is **not exported by the loader** and has to come
+  from `vkGetDeviceProcAddr`.
+- **`resize` / `setVsync`** - both just set `m_needsRecreate` and let the next
+  `beginFrameIfNeeded` rebuild, so a resize drag rebuilds once rather than per
+  event. The width and height arguments are deliberately ignored: the surface's
+  `currentExtent` is the authority, and `Window::getSize()` keeps reporting the
+  restored size while a minimized surface goes to 0x0.
+
+Verified state: `vk-test` covers context, swapchain, programs, uniform buffers
+and the pipeline state tables; `vk-triangle` and `vk-clear` run clean with zero
+validation output; VMA reports all allocations freed on close.
 
 Landed 2026-09-26/27, in order: uniform buffers (slot-bound, `MAX_UNIFORM_SLOTS
 = 8`); sRGB (converted at sample, not at load); the top-left fill rule;
@@ -468,42 +494,84 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       first line. `renderFinished` is per swapchain *image* while
       `imageAvailable`/`inFlight` are per frame in flight - different counts,
       and conflating them is the classic bug.
-      *Verified:* `vk-test` 20 assertions; `vk-clear --frames 400` clean;
-      scripted resize across 8 sizes including 1x1.
 
-- [~] **A window clearing through `VALO`** - `Backend::Vulkan` brings up a real
-      window and presents. `vulkanClear` and `vulkanShow` are wired to
-      `VulkanRenderer::clear` / `::present`; `vulkanFlush` is correctly a no-op
-      (it runs once per *layer*, so anything that submits belongs in `show`).
-      21 of the 28 Vulkan entries are still `todo()` stubs.
+- [x] **A window clearing through `VALO`** (2026-09-30). `vk-clear` runs
+      clean; `flush` is correctly a no-op, since it runs once per *layer* and
+      anything that submits belongs in `show`.
 
-- [ ] **One triangle** - the first thing needing real SPIR-V, so it is where the
-      shader contract stops being theoretical. Needs `createProgramFromFiles`,
-      a pipeline, and a vertex buffer.
-- [ ] Resources: buffers (staging upload), images + samplers, uniform buffers,
-      descriptor sets. Uniform padding is the trap: `Vec3f` is 12 bytes in C++,
-      a std140 `vec3` pads to 16. `VK_EXT_scalar_block_layout` is available on
-      this hardware if you want C++ rules instead.
-- [ ] Pipeline cache keyed on `(program, RenderCommand state, vertex layout)`.
-- [ ] Layers -> dynamic-rendering blocks; targets -> images + views;
-      `textureDepth` -> depth-image sampling; stencil ops verbatim; dynamic
-      viewport/scissor. This is the image-layout phase, the one concept with no
-      software analogue.
+- [x] **One triangle** (2026-10-01). Shader modules, the pipeline, the pipeline
+      cache, `draw`, push constants and depth. `vk-triangle` is a full `VALO`
+      example: rotating, depth-tested, cull-mode-switchable, vsync-togglable,
+      fps in the title.
+
+- [x] **Buffers** (2026-10-01). Vertex, index and uniform, all through one
+      `uploadBuffer` staging path. Updates retire the old allocation onto a
+      `(buffer, frame)` queue drained from `show()` after `framesInFlight`
+      frames, so a frame still in flight never reads freed memory.
+
+- [x] **Uniform buffers / descriptor sets** (2026-10-01) - as push descriptors.
+      See the State section for why that beat a pool.
+
+- [x] **Pipeline cache** keyed on `(program, packed state, vertex layout)`.
+
+- [ ] **Textures** - the last large piece. Images and views (the depth buffer
+      already has that shape), plus samplers, layout transitions, staging
+      uploads and mipmap generation.
+
+      **Decide the descriptor model first.** `main.cpp` puts a `TextureID`
+      *inside* the uniform struct and the shader does `texture(u.tex, uv)`.
+      Conventional Vulkan cannot do that - a `sampler2D` is a bound slot, not a
+      value - so matching it needs descriptor indexing: one unsized
+      `sampler2D textures[]` array, `TextureID` as the index. Probed and
+      supported here (`VK_EXT_descriptor_indexing`,
+      `maxDescriptorSetUpdateAfterBindSampledImages` effectively unbounded).
+      The alternative is explicit per-draw texture bindings on
+      `RenderCommand`, which would make the two backends diverge in their
+      public API. Bindless goes in **set 1**; set 0 is push descriptors and
+      cannot be update-after-bind.
+
+- [ ] **Render targets** - offscreen colour images with `VkRenderingInfo`
+      pointing at them instead of the swapchain, then layers as one
+      dynamic-rendering block per distinct target. This is the image-layout
+      phase: a target written by one layer and sampled by the next needs
+      `COLOR_ATTACHMENT_OPTIMAL` -> `SHADER_READ_ONLY_OPTIMAL` in between.
+
+- [ ] **Stencil** - `RenderCommand` carries `stencilTest`/`stencilOp`/
+      `stencilRef` and the software backend honours them; `createPipeline` sets
+      no `VkStencilOpState` at all. The depth format already carries a stencil
+      aspect, so this is pipeline state plus adding the fields to
+      `packPipelineState` (they are deliberately excluded today, because
+      keying on state the pipeline ignores would split the cache for nothing).
+
 - [ ] `gltf.cpp`'s scene on both backends, switched by a runtime flag, is the
       finish line - same app code and `RenderCommand` state, one C++ shader and
       one GLSL shader implementing the same spec.
 
 ### Known gaps, deliberately left
 
+- **Every `valid*` predicate is false on Vulkan.** All five on
+  `Renderer.hpp:186-190` begin with `m_software &&`, so ID validation is
+  effectively off for the Vulkan backend. Harmless today only because the
+  `destroy*` methods assert rather than early-return, and asserts are compiled
+  out of RelWithDebInfo. `destroyTexture` will hit this the moment textures
+  exist.
+- **`draw` opens a frame with `LOAD_OP_LOAD` but the barrier always uses
+  `oldLayout = UNDEFINED`**, which discards. An app that draws without clearing
+  first loads garbage, colour and depth both. Invisible today because every
+  example clears first; the fix is tracking whether the frame was cleared.
 - `recreateSwapchain()` errors out if the new swapchain reports a different
   image count, because `VulkanFrames` sized `renderFinished` from the old one.
-  Never fired on MoltenVK (3 images at every size tested); a driver that varies
-  it would hit this. Fix is to rebuild `VulkanFrames` alongside the swapchain.
-- `vulkanClear` ignores its `target`, so a clear to a non-backbuffer target
-  silently hits the backbuffer. Only reachable via render-to-texture.
-- `vulkanDraw` does not call `VulkanRenderer::recordDraw()` yet, so a frame with
-  draws but no clear never opens and never presents. Not reachable through
-  `VALO`, which always clears first.
+  Never observed; a driver that varies it would hit this. Fix is to rebuild
+  `VulkanFrames` alongside the swapchain.
+- `clear` and `draw` ignore their `target`, so anything but the backbuffer
+  silently hits the backbuffer. Closes with render targets.
+- `uploadBuffer` has no zero-size guard, so `createUniformBuffer(data, 0)`
+  reaches `vmaCreateBuffer` with `size = 0` - a validation error. One-line
+  early return.
+- No validation-error counter. The debug messenger prints and returns
+  `VK_FALSE`, so `vk-test`'s draw sections have no automatic oracle - clean
+  stderr *is* the pass condition. A counter on `VulkanContext` would let the
+  harness gate on it.
 
 ## 5. Nice-to-have (either backend, not blocking)
 

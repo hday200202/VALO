@@ -286,6 +286,111 @@ bool formatIsSigned(const VkFormat f) {
 }
 
 
+/* ========================================================================= //
+    Step 12 - uniform buffers (push descriptors)
+// ========================================================================= */
+
+void testUniformBuffers(Window& win) {
+    std::printf("uniform buffers:\n");
+
+    RenderConfig cfg;
+    cfg.window      = &win;
+    cfg.sdlWindow   = win.sdlHandle();
+    cfg.backend     = Backend::Vulkan;
+
+    Renderer r;
+    if (!r.init(cfg)) { check("renderer init", false); return; }
+
+    struct Tint { float r, g, b, a; };
+    const Tint red{1.f, 0.f, 0.f, 1.f};
+    const Tint blue{0.f, 0.f, 1.f, 1.f};
+
+    const UniformBufferID a = r.createUniformBuffer(&red,  sizeof red);
+    const UniformBufferID b = r.createUniformBuffer(&blue, sizeof blue);
+
+    check("create returns a live ID",      a != EMPTY_BUFFER && b != EMPTY_BUFFER);
+    check("distinct IDs for distinct bufs", a != b);
+
+    // retires the old allocation and swaps in a fresh one; the retired half is
+    // only freed once framesInFlight frames have passed
+    r.updateUniformBuffer(a, &blue, sizeof blue);
+    check("update in range survives", true);
+
+    std::printf("    (the error below is expected)\n");
+    r.updateUniformBuffer(9999, &red, sizeof red);
+    check("update out of range is rejected", true);
+
+    /*
+        The draws below have no automatic oracle - the renderer reports nothing
+        on success. Validation output between here and the summary IS the
+        failure signal, so a clean run means a clean run.
+    */
+    const ProgramID plain = r.createProgram(
+        "examples/shaders/triangle.vert", "examples/shaders/triangle.frag");
+    const ProgramID uses0 = r.createProgram(
+        "examples/shaders/ubo0.vert", "examples/shaders/triangle.frag");
+    const ProgramID uses3 = r.createProgram(
+        "examples/shaders/ubo3.vert", "examples/shaders/triangle.frag");
+
+    check("UBO shaders compile", plain != DEFAULT_PROGRAM
+                              && uses0 != DEFAULT_PROGRAM
+                              && uses3 != DEFAULT_PROGRAM);
+
+    if (uses0 != DEFAULT_PROGRAM && uses3 != DEFAULT_PROGRAM) {
+        struct Push { Mat4f mvp; } push;
+        push.mvp = Mat4f::identity();
+
+        RenderCommand cmd;
+        cmd.indexCount = 3;
+        cmd.cullmode   = CullMode::None;
+        cmd.setUniforms(push);
+
+        // writeCount == 0: nothing is pushed, and the shader reads nothing
+        cmd.program = plain;
+        r.clear({0.f, 0.f, 0.f, 1.f}, Renderer::BACKBUFFER, 0.f);
+        r.draw(cmd);
+        r.show(Renderer::BACKBUFFER);
+        check("draw with no uniform slots bound", true);
+
+        // slot index and write index agree
+        cmd.program = uses0;
+        cmd.bindUniformBuffer(0, a);
+        r.clear({0.f, 0.f, 0.f, 1.f}, Renderer::BACKBUFFER, 0.f);
+        r.draw(cmd);
+        r.show(Renderer::BACKBUFFER);
+        check("draw with slot 0 bound", true);
+
+        // slot 3 with 0-2 empty: dstBinding must be 3 while the write lands at
+        // index 0, which is the one case where the two indices diverge
+        RenderCommand sparse;
+        sparse.indexCount = 3;
+        sparse.cullmode   = CullMode::None;
+        sparse.program    = uses3;
+        sparse.setUniforms(push);
+        sparse.bindUniformBuffer(3, b);
+
+        r.clear({0.f, 0.f, 0.f, 1.f}, Renderer::BACKBUFFER, 0.f);
+        r.draw(sparse);
+        r.show(Renderer::BACKBUFFER);
+        check("draw with only slot 3 bound", true);
+
+        // an update between frames has to retire rather than free in place, or
+        // a frame still in flight reads a destroyed buffer
+        for (int i = 0; i < 8; ++i) {
+            r.updateUniformBuffer(a, i % 2 ? &red : &blue, sizeof red);
+            cmd.program = uses0;
+            r.clear({0.f, 0.f, 0.f, 1.f}, Renderer::BACKBUFFER, 0.f);
+            r.draw(cmd);
+            r.show(Renderer::BACKBUFFER);
+        }
+        check("8 frames of update-while-drawing", true);
+    }
+
+    r.shutdown();
+    check("shutdown with uniform buffers live", true);
+}
+
+
 void testPipelineState() {
     std::printf("vertex attribute formats (step 11):\n");
 
@@ -423,6 +528,7 @@ int main() {
     testContext(win);
     testSwapchain(win);
     testPrograms(win);
+    testUniformBuffers(win);
     testPipelineState();
 
     std::printf("\n%s (%d failure%s)\n", fails ? "FAILED" : "all passed",

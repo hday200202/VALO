@@ -1,6 +1,9 @@
 # VALO — Vulkan backend plan
 
 Written 2026-09-27, when the software renderer went feature-complete.
+Phase status last reconciled against the code 2026-10-01: phases 0-2 and 4
+done, phase 3 half done (buffers and uniforms yes, textures no), phases 5-6
+open. Where the code diverged from the plan, the phase sections say so.
 
 Finish line: **the same app code, the same `RenderCommand` state, and a matching
 frame on both backends.** The shader source differs by backend and always will -
@@ -475,89 +478,90 @@ people ignore on the first pass. Handle `VK_ERROR_OUT_OF_DATE_KHR` and
 loop. `Window::resized()` already exists and `VALO::resize()` already calls
 through, so the hook is in place.
 
-## Phase 2 — one triangle (~4 h) — NEXT
+## Phase 2 — one triangle — DONE (2026-10-01)
 
-Hardcoded vertex buffer, hardcoded SPIR-V, one pipeline, no state, no uniforms.
+Landed as `vk-triangle`, and it went further than the phase scoped: not a
+hardcoded triangle but the whole draw path, because the pieces turned out not
+to be separable.
 
-Where it picks up: `Backend::Vulkan` already clears and presents through `VALO`.
-`VulkanRenderer::drawFrame` was split into `beginFrameIfNeeded` / `clear` /
-`recordDraw` / `present`, because VALO drives a frame as
-clear -> draw* -> flush -> show while a Vulkan clear is `loadOp` on *beginning*
-rendering. `recordDraw()` opens the frame with `LOAD` and records nothing yet -
-that is the hole this phase fills. 21 of the 28 Vulkan table entries are still
-`todo()` stubs.
+- **Shader modules.** `createProgram(vsPath, fsPath)` compiles GLSL through
+  `glslc` and caches the `.spv` beside the source, comparing timestamps, or
+  loads a `.spv` directly. Magic-number checked before it reaches the driver.
+- **The pipeline**, with viewport and scissor dynamic so a resize does not
+  invalidate every pipeline, and `VkPipelineRenderingCreateInfo` in place of a
+  render pass.
+- **`draw`.** Pipeline lookup, dynamic state, buffer binding, draw call.
+- **Push constants** for the `RenderCommand::uniforms` blob.
+- **Depth**, because `depthTestEnable` is a validation error without a declared
+  `depthAttachmentFormat`, so it could not be deferred.
 
-This is also the first point that needs real SPIR-V, so the shader contract
-stops being theoretical: `createProgramFromFiles` has to do something.
-This is the phase that proves the command-buffer and submit plumbing.
+**On the Y axis.** The check this phase called for found something, though not
+what it expected. Vulkan's framebuffer Y points *down*, so the signed area of a
+triangle has the opposite sign from the one intuition suggests - the standard
+tutorial vertex triple is *clockwise* by Vulkan's reckoning. `DrawFuncs.cpp:88`
+calls a negative 2D cross product counter-clockwise, in screen space with Y
+down. **The two backends agree**, which is the property that had to hold:
+`VtxWinding::CCW` means one thing across the library. No conversion layer was
+needed, and `Mat4f::perspective` is unchanged.
 
-**Check the Y axis here, at the one point where it is trivial to see.** Vulkan's
-clip space has +Y pointing *down*, opposite to OpenGL. `Mat4f::perspective` was
-written for Vulkan conventions, but "written for" is not "verified against" -
-confirm with an asymmetric triangle whose top and bottom differ, not a symmetric
-one that looks identical either way. Getting this wrong shows up much later as
-everything being subtly mirrored.
+**Reversed-Z bit immediately**, exactly where expected. With clear depth 0 (far)
+and `DepthCompare::Greater`, a triangle at `z = 0.0` fails `0.0 > 0.0` and
+vanishes entirely. Worth knowing as the first symptom of depth working rather
+than failing.
 
-Depth needs no such check: Vulkan's depth range is natively `[0,1]`, and reversed-Z
-already puts you there.
+## Phase 3 — resources — PARTIALLY DONE (2026-10-01)
 
-*Verify:* a triangle, right way up. Then resize the window fifty times and
-confirm no leak and no validation warning.
+**Buffers: done.** One `uploadBuffer` staging path serves vertex, index and
+uniform buffers. The ID + free-list model carried over directly, as predicted.
+Updates retire rather than free in place, onto a `(buffer, frame)` queue drained
+from `show()` once `framesInFlight` frames have passed.
 
-## Phase 3 — resources (~8 h)
+**Uniform buffers: done, but not the way this phase assumed.** The plan called
+for a descriptor pool. It uses **`VK_KHR_push_descriptor`** instead:
+`vkCmdPushDescriptorSetKHR` writes the set inline into the command buffer, the
+same way push constants work. No pool, no allocation, no per-frame reset, and
+no third lifetime to get wrong - the set dies with the command buffer.
+`RenderCommand`'s eight uniform slots map straight onto bindings 0-7.
 
-Buffers with staging upload, images + samplers, uniform buffers, descriptor sets.
-The ID + free-list model carries over directly - that part of the design already
-matches Vulkan, which is why it was built that way.
+Two things that are easy to get wrong here: the function is **not exported by
+the loader** and must come from `vkGetDeviceProcAddr`; and the
+`VkWriteDescriptorSet` array must be indexed by write count, not slot number,
+since `pBufferInfo` points into a parallel array.
 
-Descriptor sets are the genuinely new idea: a shader does not take a texture ID,
-it reads through a binding slot that you populate ahead of the draw. Your uniform
-**slots** already have this shape, which is why slot-binding beat handle-indexing
-back when that was decided. Textures need the same treatment - an ID → binding
-mapping, built per draw.
+**Textures: not started.** The remaining work, and the reason this phase is the
+one still open. See TODO section 4 for the descriptor-model decision that gates
+it - the short version is that `TextureID` living inside the uniform struct
+means descriptor indexing, not conventional bindings, if the two backends are
+to keep meaning the same thing. Bindless textures go in set 1, because set 0 is
+push descriptors and a push-descriptor set cannot be update-after-bind.
 
-Mipmaps: you already generate the chain on the CPU. Either upload all levels or
-`vkCmdBlitImage` on the GPU; uploading is less code and this is not a hot path.
+**Uniform padding** is still the trap this phase warned about, and is still
+undecided. Nothing has hit it yet because every block so far is a single `mat4`.
 
-**Uniform padding is the trap.** A `Vec3f` is 12 bytes in C++; a `vec3` in a
-std140 block is padded to 16. A struct that works in the software backend will
-read shifted garbage on the GPU. Either pad the shared structs explicitly, or
-enable `VK_EXT_scalar_block_layout` and use `scalar` layout so the rules match C++.
-Decide once, write it in the header next to `setUniforms`.
+## Phase 4 — pipeline cache and state — MOSTLY DONE (2026-10-01)
 
-*Verify:* a textured quad, sampled with each wrap mode, matching the software
-backend pixel-for-pixel on a flat sample. **Start the conformance diff harness
-here** - the shader-contract section explains why it moves up from phase 6.
+Keyed on `(program, packed state, vertex layout)`. `packPipelineState` folds
+nine `RenderCommand` fields into one word - deliberately *not* the uniform blob,
+the viewport, the scissor or the index range, since those change per draw and
+would give every draw its own pipeline.
 
-## Phase 4 — pipeline cache and state (~5 h)
+**The layout is held by value in the key, not by pointer.** Layouts live inside
+`GPUBuffer`, and `m_vertexBuffers` reallocates as buffers are created - a cached
+pointer dangles, and a later buffer landing on the same address makes the key
+falsely match a pipeline built for a different layout. Comparing by value also
+means two buffers declaring the same attributes share a pipeline.
 
-Key on `(program, the state fields of RenderCommand, vertex layout)`. Every
-`RenderCommand` field maps to real Vulkan state:
+Everything in the state table is wired **except stencil**: `createPipeline` sets
+no `VkStencilOpState`. The stencil fields are also excluded from the cache key
+for now, because keying on state the pipeline ignores splits the cache for
+nothing. They go in together.
 
-| RenderCommand | Vulkan |
-|---|---|
-| `cullmode`, `winding` | rasterization state |
-| `blendmode` | colour blend attachment |
-| `depthTest/Write/Compare` | depth-stencil state |
-| `stencilTest/Op/Ref` | stencil op state |
-| `fillmode` | `polygonMode` (needs the `fillModeNonSolid` device feature) |
-| `viewport`, `scissor` | `vkCmdSetViewport` / `vkCmdSetScissor`, dynamic |
-| `instanceCount` | `vkCmdDrawIndexed` instance count |
-| `topology` | input assembly |
+`fillModeNonSolid` is enabled. Reversed-Z carried over with no conversion layer,
+as predicted.
 
-Viewport and scissor are *dynamic* state - set per draw without a new pipeline,
-which is exactly why they went on `RenderCommand` rather than becoming bound
-state on `Renderer`. Everything else in that table bakes into the pipeline, so it
-belongs in the cache key.
+*Still to verify:* `stencil.cpp` and `clipstack.cpp`, once stencil is wired.
 
-Reversed-Z is already the only convention, so `depthCompare = Greater` and clear
-depth 0 carry straight over - no conversion layer, which is exactly why making it
-the sole convention was worth doing.
-
-*Verify:* `stencil.cpp` and `clipstack.cpp`. They exercise stencil ops and the
-nested clip stack, which is the state path's hardest case.
-
-## Phase 5 — targets and layers (~6 h)
+## Phase 5 — targets and layers (~6 h) — NEXT, after textures
 
 Render targets → images + image views. Layers → one dynamic-rendering block per
 distinct target, in layer order. `textureDepth()` → sampling a depth image.
@@ -619,6 +623,23 @@ is ordinary work in a codebase you know, with references open.
 
 The number that matters is still phase 0: if the interface split needs example
 edits, stop and fix the split before going further.
+
+### Where it actually landed (2026-10-01)
+
+Phases 0, 1, 2 and 4 are done; phase 3 is half done. Six of the 28 table entries
+remain: four texture functions and the two render-target ones.
+
+The estimate's shape held up better than its order. Descriptor sets *were* one of
+the two expensive ideas - but push descriptors turned most of that cost into
+nothing, because the hard part of a descriptor pool is lifetime, and inline
+writes have none. Layout transitions are still ahead, and still the item with no
+software analogue, so the phase 5 budget stands.
+
+What the estimate missed is that phase 2 could not be done as scoped. "One
+triangle, no state, no uniforms" is not reachable: `depthTestEnable` is a
+validation error without a declared depth format, so depth came along with the
+triangle, and the pipeline needs every state field anyway because they all bake
+into the same object. Phase 2 and phase 4 effectively merged.
 
 ## Not in scope
 
