@@ -810,11 +810,26 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
 
     const VkExtent2D extent = m_swapchain.extent();
 
+    const float vpX = cmd.viewport.width  > 0.f ? cmd.viewport.x : 0.f;
+    const float vpY = cmd.viewport.height > 0.f ? cmd.viewport.y : 0.f;
+    const float vpW = cmd.viewport.width  > 0.f ? cmd.viewport.width  : float(extent.width);
+    const float vpH = cmd.viewport.height > 0.f ? cmd.viewport.height : float(extent.height);
+
+    /*
+        Negative height, so the viewport transform flips Y. VALO's clip space is
+        Y-up: Mat4f::perspective does not negate Y, and the software backend
+        flips at DrawFuncs.cpp:79 with (1 - ndc.y). Vulkan's is natively Y-down
+        and would not flip, which renders mirrored AND reverses the sign of the
+        signed area - so the same mesh culls the opposite way on each backend.
+
+        Flipping here rather than in the projection keeps one matrix meaning one
+        thing on both backends. VK_KHR_maintenance1, core since 1.1.
+    */
     const VkViewport viewport{
-        .x          = cmd.viewport.width    > 0.f ? cmd.viewport.x : 0.f,
-        .y          = cmd.viewport.height   > 0.f ? cmd.viewport.y : 0.f,
-        .width      = cmd.viewport.width    > 0.f ? cmd.viewport.width : float(extent.width),
-        .height     = cmd.viewport.height   > 0.f ? cmd.viewport.height : float(extent.height),
+        .x          = vpX,
+        .y          = vpY + vpH,
+        .width      = vpW,
+        .height     = -vpH,
         .minDepth   = cmd.viewport.minDepth,
         .maxDepth   = cmd.viewport.maxDepth
     };

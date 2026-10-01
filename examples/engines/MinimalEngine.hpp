@@ -154,7 +154,19 @@ public:
         m_meshes = gltf.meshes;
 
         // setProgram() before loading wins, otherwise fall back to the built-ins
-        if (m_program == DEFAULT_PROGRAM) m_program = m_valo->createProgram(vs, fs);
+        /*
+            The two backends implement different halves of the same shader
+            spec, so which createProgram to call is a property of the backend,
+            not of the model. me::vs/me::fs are the C++ half; the .vert/.frag
+            pair is the GLSL half.
+        */
+        if (m_program == DEFAULT_PROGRAM) {
+            m_program = m_backend == Backend::Vulkan
+                ? m_valo->createProgram(
+                    "examples/shaders/minimal.vert",
+                    "examples/shaders/minimal.frag")
+                : m_valo->createProgram(vs, fs);
+        }
 
         m_materials.clear();
         for (auto& m : gltf.materials) {
@@ -176,6 +188,7 @@ public:
     }
 
     void setVALO(VALO* valo) { m_valo = valo; }
+    void setBackend(const Backend backend) { m_backend = backend; }
 
     /*
         A custom program's shaders still have to take me::Uniforms and
@@ -217,6 +230,7 @@ private:
     Mat4f                           m_transform;    // identity until moved
 
     VALO*                           m_valo = nullptr;
+    Backend                         m_backend = Backend::Software;
     bool                            m_loaded = false;
 };
 
@@ -227,7 +241,15 @@ public:
 
     bool init(RenderConfig cfg = {}) {
         cfg.srgbBackbuffer = true;
-        m_running = m_window.create("Minimal Engine", {800, 600}) && m_valo.init(m_window, cfg);
+        m_backend = cfg.backend;
+
+        // SDL has to be told at creation; a window made without this cannot
+        // have a Vulkan surface attached to it afterwards
+        WinFlags flags = WinFlags::Resize | WinFlags::HiDPI;
+        if (cfg.backend == Backend::Vulkan) flags = flags | WinFlags::Vulkan;
+
+        m_running = m_window.create("Minimal Engine", {800, 600}, flags)
+                 && m_valo.init(m_window, cfg);
         m_valo.setVsync(true);
         return m_running;   // the camera defaults itself to the origin looking down -z
     }
@@ -241,6 +263,7 @@ public:
         m_models.emplace_back();
         Model& model = m_models.back();
         model.setVALO(&m_valo);
+        model.setBackend(m_backend);
         model.loadGLTF(pathToGltf);
         return model;
     }
@@ -343,6 +366,8 @@ private:
     const Vec3f m_worldUp   = {0.f, 1.f, 0.f};
 
     bool m_running = false;
+
+    Backend m_backend = Backend::Software;
 
     std::deque<Model> m_models;
 

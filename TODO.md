@@ -6,16 +6,22 @@ a gate for the next.
 
 ## State (2026-10-01)
 
-~7.8k lines of library across 39 files (2.2k of that Vulkan), 12 examples,
+~7.9k lines of library across 39 files (2.2k of that Vulkan), 13 examples,
 every feature behind a sanitizer-verified harness. The dev-facing API (Window ->
 VALO -> create* -> RenderCommand -> submit, typed C++ shader callbacks) is
 settled and Vulkan-shaped.
 
-**The Vulkan backend draws.** `Renderer` dispatches every public method through
-a 28-entry function-pointer table; both backends fill all 28. `vk-triangle`
-runs a rotating, depth-tested, push-constant-driven triangle entirely through
-the public `VALO` interface. **Six of the 28 Vulkan entries are still `todo()`
-stubs: four texture functions and the two render-target ones.**
+**The Vulkan backend renders a glTF scene.** `Renderer` dispatches every public
+method through a 28-entry function-pointer table; both backends fill all 28.
+`minimal.exe --vulkan` loads `sea_keep_lonely_watcher` and draws it through the
+same `Engine`, the same `RenderCommand` state and the same camera as the
+software path - which is `PLAN.md`'s phase 6 finish line, reached early and
+minus textures. **Six of the 28 Vulkan entries are still `todo()` stubs: four
+texture functions and the two render-target ones.**
+
+Vulkan examples: `vk-clear` (presentation), `vk-triangle` (rotating, depth-
+tested, push constants), `vk-cubes` (instanced grid, vertex/index buffers,
+perspective, wireframe), `vk-test` (the harness), and `minimal --vulkan`.
 
 Landed 2026-10-01 (the Vulkan draw path, in order):
 
@@ -55,6 +61,44 @@ Landed 2026-10-01 (the Vulkan draw path, in order):
   event. The width and height arguments are deliberately ignored: the surface's
   `currentExtent` is the authority, and `Window::getSize()` keeps reporting the
   restored size while a minimized surface goes to 0x0.
+- **The clip-space Y flip** - the one real correctness bug of the day, and the
+  only one a triangle could not have caught. See below.
+- **Per-backend shader halves in `MinimalEngine`** - `Model` now picks
+  `createProgram(vsPath, fsPath)` or `createProgram(vs, fs)` from the backend,
+  which is the two-implementations contract becoming ordinary application code
+  rather than a special case. `Engine::init` also has to add `WinFlags::Vulkan`,
+  since SDL cannot attach a surface to a window that was not created for one.
+
+### The clip-space Y flip (2026-10-01)
+
+**VALO's clip space is Y-up, and Vulkan's is Y-down.** The software backend
+flips at the viewport transform (`DrawFuncs.cpp:79`, `(1 - ndc.y)`) and
+`Mat4f::perspective` does *not* negate Y, so the convention is OpenGL's.
+Vulkan's framebuffer Y points down and would not flip, which rendered
+**vertically mirrored** and **reversed the sign of the signed area** - so the
+same mesh culled the opposite way on each backend.
+
+Fixed with a negative-height viewport in `draw` (`y += height, height = -height`;
+`VK_KHR_maintenance1`, core since 1.1), *not* by flipping `frontFace`. Flipping
+`frontFace` would have corrected the culling and left the image upside down,
+hiding the real bug. One matrix now means one thing on both backends.
+
+Two things worth remembering about how this was found:
+
+- **The triangle could not have caught it.** With no projection matrix there is
+  no Y-up clip space to mis-transform, so both backends agreed. It took closed
+  geometry under perspective (`vk-cubes` rendering inside-out) to surface it.
+- **The mirroring hid a second bug.** A vertically mirrored 3D scene is the same
+  as viewing it from below, and orbiting from below reverses the apparent
+  horizontal direction - so the mirror was cancelling a sign error in the orbit
+  camera. `main.cpp` still has `yaw += d.x` and is inverted in software for the
+  same reason; `vk-cubes` uses `-=`.
+
+**The conventions, confirmed against the matrices rather than assumed:**
+right-handed, **+X right, +Y up, -Z forward** (OpenGL / glTF). `perspective`
+puts `-1` in the z column's w row, so `clip.w = -z` and only negative view-space
+z is in front. Depth is reversed - near maps to 1, far to 0 - which is what makes
+`DepthCompare::Greater` with clear depth 0 correct.
 
 Verified state: `vk-test` covers context, swapchain, programs, uniform buffers
 and the pipeline state tables; `vk-triangle` and `vk-clear` run clean with zero
@@ -543,9 +587,12 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       `packPipelineState` (they are deliberately excluded today, because
       keying on state the pipeline ignores would split the cache for nothing).
 
-- [ ] `gltf.cpp`'s scene on both backends, switched by a runtime flag, is the
-      finish line - same app code and `RenderCommand` state, one C++ shader and
-      one GLSL shader implementing the same spec.
+- [~] **A glTF scene on both backends, switched by a runtime flag** - reached
+      by `minimal --vulkan` (2026-10-01): same `Engine`, same camera, same
+      `RenderCommand` state, `me::vs`/`me::fs` on software and
+      `shaders/minimal.vert`/`.frag` on Vulkan. Untextured until `createTexture`
+      exists, and the conformance diff harness is still unwritten, so this is
+      not closed - but the hard half of it is done.
 
 ### Known gaps, deliberately left
 
@@ -572,6 +619,16 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
   `VK_FALSE`, so `vk-test`'s draw sections have no automatic oracle - clean
   stderr *is* the pass condition. A counter on `VulkanContext` would let the
   harness gate on it.
+- **Uniform block layout is still undecided**, only worked around. Push constant
+  blocks follow std430, where a `vec4` rounds up to a 16-byte boundary - and
+  `me::Uniforms` puts `baseColor` at offset 84, which std430 would read at 96.
+  `shaders/minimal.vert` sidesteps it by declaring that `vec4` as four loose
+  `float`s, since scalars are 4-byte aligned, with every offset commented
+  against its C++ counterpart. That works and cannot drift, but it is per-struct
+  and gets ugly fast. The general fix is `VK_EXT_scalar_block_layout` (core 1.2,
+  probed and supported here): add `scalarBlockLayout` to the feature chain and
+  write `layout(scalar, push_constant)`, and GLSL follows C++ rules everywhere.
+  `PLAN.md` phase 3 says decide this once; it is still open.
 
 ## 5. Nice-to-have (either backend, not blocking)
 
@@ -700,6 +757,28 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
   and program, and submits one command per primitive. Metallic-roughness
   Cook-Torrance with a hemisphere ambient standing in for IBL. Doubles as the
   test for what the API feels like from outside the repo.
+  **`--vulkan` runs the same scene on the Vulkan backend**, with `Model`
+  choosing the GLSL or the C++ shader half from `cfg.backend`. Untextured until
+  `createTexture` exists.
+
+### Vulkan examples
+
+- `vk-clear.cpp` — a window clearing to a cycling hue. Proves frame-index wrap,
+  sustained running, resize absorption and clean teardown; nothing is drawn, the
+  clear is the attachment's `loadOp`.
+- `vk-triangle.cpp` — rotating triangle through `VALO`: GLSL program, push
+  constants, depth, dynamic viewport. `F` cycles cullmode, `V` toggles vsync,
+  fps in the title.
+- `vk-cubes.cpp` — instanced cube grid, the Vulkan counterpart of `main.cpp`:
+  vertex and index buffers, `gl_InstanceIndex`, perspective, depth occlusion,
+  orbit camera, `W` for wireframe. The example that exposed the clip-space Y
+  flip, because it was the first closed geometry under a projection.
+- `vk-test.cpp` — the harness. Sections for context, swapchain, programs,
+  uniform buffers and the pipeline state tables. The draw sections have no
+  automatic oracle: clean validation output *is* the pass condition.
+- `shaders/` — `triangle`, `ubo0`/`ubo3` (same shader at bindings 0 and 3, for
+  the sparse-slot case), `cube`, `minimal`. The `.spv` files beside them are
+  `glslc` output and regenerate when the source is newer.
 - `bench/` — **untracked, not in git** (never committed; a fresh clone has no
   `examples/bench`). `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
   scene/shader/resolution. Run the Vulkan one on SwiftShader with
