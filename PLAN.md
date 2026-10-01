@@ -635,6 +635,17 @@ nothing, because the hard part of a descriptor pool is lifetime, and inline
 writes have none. Layout transitions are still ahead, and still the item with no
 software analogue, so the phase 5 budget stands.
 
+**The estimate runs about 1.6x high, measured.** Phase 2 (~4 h), half of
+phase 3 (~4 h) and phase 4 (~5 h) is ~13 estimated hours; the actual sitting was
+under 8. That puts the ~15 h still outstanding closer to ~9 h.
+
+Where that discount applies is uneven, and worth keeping in mind rather than
+applying flat. Everything that came in under estimate had a software analogue to
+reason from: buffers landed on the existing ID + free-list model, the pipeline on
+`RenderCommand`'s state fields, push descriptors on the uniform slots. Phase 5's
+layout transitions are the one item this document flagged as having no analogue,
+so discount textures hard and phase 5 lightly.
+
 What the estimate missed is that phase 2 could not be done as scoped. "One
 triangle, no state, no uniforms" is not reachable: `depthTestEnable` is a
 validation error without a declared depth format, so depth came along with the
