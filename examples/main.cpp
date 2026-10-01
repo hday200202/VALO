@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
-#include <render/Sampling.hpp>
+#include <render/software/Sampling.hpp>
 
 // N x N x N cubes from ONE submit: the vertex shader places each instance
 // on the grid from valo_InstanceIndex.

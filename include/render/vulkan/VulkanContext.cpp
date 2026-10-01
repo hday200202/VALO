@@ -109,11 +109,43 @@ bool VulkanContext::init(Window& window, const bool validation) {
 
     if (!pickPhysicalDevice()) return false;
     if (!createLogicalDevice()) return false;
+    if (!createAllocator()) return false;
 
     return true;
 }
 
 void VulkanContext::shutdown() {
+    if (m_allocator) {
+        VmaTotalStatistics stats{};
+        vmaCalculateStatistics(m_allocator, &stats);
+
+        const VmaStatistics& t = stats.total.statistics;
+
+        if (t.allocationCount > 0) {
+            std::fprintf(
+                stderr,
+                "[vulkan] LEAK: %u allocation(s) still live at shutdown, %llu KiB "
+                "across %u block(s)\n",
+                t.allocationCount,
+                (unsigned long long)(t.allocationBytes / 1024),
+                t.blockCount
+            );
+        } else {
+            std::fprintf(
+                stderr, "[vulkan] vma: all allocations freed (%u block(s), %llu KiB reserved)\n",
+                t.blockCount, (unsigned long long)(t.blockBytes / 1024)
+            );
+        }
+
+        vmaDestroyAllocator(m_allocator);
+        m_allocator = VK_NULL_HANDLE;
+    }
+
+    if (m_oneShotPool) {
+        vkDestroyCommandPool(m_device, m_oneShotPool, nullptr);
+        m_oneShotPool = VK_NULL_HANDLE;
+    }
+
     if (m_device) {
         vkDeviceWaitIdle(m_device);
         vkDestroyDevice(m_device, nullptr);
@@ -264,6 +296,81 @@ bool VulkanContext::createLogicalDevice() {
 
     vkGetDeviceQueue(m_device, m_graphicsFamily, 0, &m_graphicsQueue);
     vkGetDeviceQueue(m_device, m_presentFamily,  0, &m_presentQueue);
+    return true;
+}
+
+
+bool VulkanContext::createAllocator() {
+    const VmaAllocatorCreateInfo ai{
+        .physicalDevice     = m_physical,
+        .device             = m_device,
+        .instance           = m_instance,
+        .vulkanApiVersion   = VK_API_VERSION_1_3
+    };
+
+    if (vmaCreateAllocator(&ai, &m_allocator) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vmaCreateAllocator failed\n");
+        return false;
+    }
+
+    return true;
+}
+
+
+VkCommandBuffer VulkanContext::beginOneShot() {
+    if (!m_oneShotPool) {
+        const VkCommandPoolCreateInfo pi{
+            .sType              = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags              = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex   = m_graphicsFamily
+        };
+
+        if (vkCreateCommandPool(m_device, &pi, nullptr, &m_oneShotPool) != VK_SUCCESS) {
+            std::fprintf(stderr, "[vulkan] one-shot command pool failed\n");
+            return VK_NULL_HANDLE;
+        }
+    }
+
+    const VkCommandBufferAllocateInfo ai{
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool        = m_oneShotPool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(m_device, &ai, &cmd) != VK_SUCCESS) return VK_NULL_HANDLE;
+
+    const VkCommandBufferBeginInfo bi{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+    vkBeginCommandBuffer(cmd, &bi);
+    return cmd;
+}
+
+bool VulkanContext::endOneShot(VkCommandBuffer cmd) {
+    vkEndCommandBuffer(cmd);
+
+    const VkCommandBufferSubmitInfo cmdInfo{
+        .sType          = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer  = cmd
+    };
+
+    const VkSubmitInfo2 submit{
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmdInfo
+    };
+
+    const VkResult r = vkQueueSubmit2(m_graphicsQueue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(m_graphicsQueue);
+    vkFreeCommandBuffers(m_device, m_oneShotPool, 1, &cmd);
+
+    if (r != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] one-shot submit failed (%d)\n", r);
+        return false;
+    }
     return true;
 }
 

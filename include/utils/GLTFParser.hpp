@@ -11,7 +11,7 @@
 
 #include "../math/Vec.hpp"
 #include "../math/Mat.hpp"
-#include "../render/VertexBuffer.hpp"
+#include "../render/buffers/VertexBuffer.hpp"
 
 namespace valo {
 

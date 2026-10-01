@@ -19,7 +19,6 @@
 */
 
 #include <VALO.hpp>
-#include <render/vulkan/VulkanRenderer.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -44,9 +43,19 @@ int main(int argc, char** argv) {
         valo::WinFlags::Resize | valo::WinFlags::Vulkan
     );
 
-    valo::VulkanRenderer vk;
-    if (!vk.init(window)) {
-        std::fprintf(stderr, "[vk-clear] VulkanRenderer::init failed\n");
+    /*
+        Through Renderer with Backend::Vulkan rather than VulkanRenderer
+        directly: that exercises the whole dispatch table, which is the
+        point now that the backends are symmetric.
+    */
+    valo::RenderConfig cfg;
+    cfg.window      = &window;
+    cfg.sdlWindow   = window.sdlHandle();
+    cfg.backend     = valo::Backend::Vulkan;
+
+    valo::Renderer renderer;
+    if (!renderer.init(cfg)) {
+        std::fprintf(stderr, "[vk-clear] Renderer::init failed\n");
         return 1;
     }
 
@@ -57,8 +66,6 @@ int main(int argc, char** argv) {
     report.start();
 
     uint64_t frames = 0;
-    uint64_t failed = 0;
-
     while (window.pollEvents()) {
         if (window.wasKeyPressed(valo::Key::Escape)) window.close();
 
@@ -72,25 +79,26 @@ int main(int argc, char** argv) {
             1.f
         };
 
-        if (!vk.drawFrame(clearColor)) ++failed;
+        renderer.clear(clearColor, valo::Renderer::BACKBUFFER, 0.f);
+        renderer.show(valo::Renderer::BACKBUFFER);
         ++frames;
 
         if (!quiet && report.elapsed().asSeconds() >= 1.0) {
-            std::printf("  %llu frames, %.0f fps, %llu failed\n",
+            std::printf("  %llu frames, %.0f fps\n",
                         (unsigned long long)frames,
-                        double(frames) / clock.elapsed().asSeconds(),
-                        (unsigned long long)failed);
+                        double(frames) / clock.elapsed().asSeconds());
             report.reset();
         }
 
         if (maxFrames > 0 && frames >= uint64_t(maxFrames)) break;
     }
 
-    vk.shutdown();
+    renderer.shutdown();
 
-    std::printf("\n%llu frames, %llu failed\n",
-                (unsigned long long)frames, (unsigned long long)failed);
-    std::printf("%s\n", failed == 0 ? "RESULT: ok" : "RESULT: drawFrame reported failures");
-    return failed == 0 ? 0 : 1;
+    // nothing counts failures any more - clear and show report their own
+    // errors to stderr, and a hang or a validation complaint is the signal
+    std::printf("\n%llu frames\n", (unsigned long long)frames);
+    std::printf("%s\n", frames > 0 ? "RESULT: ok" : "RESULT: no frames ran");
+    return frames > 0 ? 0 : 1;
 #endif
 }

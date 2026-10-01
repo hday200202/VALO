@@ -1,16 +1,39 @@
-#include "../Renderer.hpp"
+#include "SoftwareRenderer.hpp"
+#include "../Renderer.hpp"   // m_owner: free lists, destroy queues, predicates, config
+
 #include <SDL3/SDL.h>
+#include <iostream>
 
 namespace valo {
 
-void Renderer::softwareFlush() {
+bool SoftwareRenderer::recreateTexture(const uint32_t w, const uint32_t h) {
+    SDL_DestroyTexture(m_sdlTexture);
+    m_sdlTexture = SDL_CreateTexture(
+        m_sdlRenderer,
+        SDL_PIXELFORMAT_ABGR8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        w, h
+    );
+
+    if (!m_sdlTexture) {
+        std::cout << "Renderer: " << SDL_GetError() << std::endl;
+        return false;
+    }
+
+    m_texW = w; m_texH = h;
+    return true;
+}
+
+
+
+void SoftwareRenderer::flush() {
     const DrawContext ctx{&m_targets, nullptr};
     flushTriBatch(m_batch, m_pool, ctx);
 }
 
-void Renderer::softwareClear(const Color& clearColor, const RenderTargetID target, const float clearDepth) { 
-    assert(validTarget(target) && "Renderer: clear on invalid or destroyed target");
-    if (!validTarget(target)) return;
+void SoftwareRenderer::clear(const Color& clearColor, const RenderTargetID target, const float clearDepth) { 
+    assert(m_owner->validTarget(target) && "Renderer: clear on invalid or destroyed target");
+    if (!m_owner->validTarget(target)) return;
 
     flush();
 
@@ -20,18 +43,18 @@ void Renderer::softwareClear(const Color& clearColor, const RenderTargetID targe
     });
 }
 
-void Renderer::softwareDraw(const RenderCommand& cmd, const RenderTargetID target) {
-    assert(validTarget(target)        && "draw(): invalid or destroyed render target");
-    assert(validVerts(cmd.verts)      && "draw(): no vertex buffer bound");
-    assert(validIndices(cmd.indices)  && "draw(): no index buffer bound");
-    assert(validProgram(cmd.program)  && "draw(): no program bound");
-    if (!validTarget(target) || !validVerts(cmd.verts)
-     || !validIndices(cmd.indices) || !validProgram(cmd.program)) return;
+void SoftwareRenderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
+    assert(m_owner->validTarget(target)        && "draw(): invalid or destroyed render target");
+    assert(m_owner->validVerts(cmd.verts)      && "draw(): no vertex buffer bound");
+    assert(m_owner->validIndices(cmd.indices)  && "draw(): no index buffer bound");
+    assert(m_owner->validProgram(cmd.program)  && "draw(): no program bound");
+    if (!m_owner->validTarget(target) || !m_owner->validVerts(cmd.verts)
+     || !m_owner->validIndices(cmd.indices) || !m_owner->validProgram(cmd.program)) return;
 
     for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) {
         const UniformBufferID id = cmd.uniformBuffers[i];
-        assert((id == EMPTY_BUFFER || validUniform(id)) && "draw(): stale uniform buffer bound");
-        m_resolvedUniforms[i] = validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
+        assert((id == EMPTY_BUFFER || m_owner->validUniform(id)) && "draw(): stale uniform buffer bound");
+        m_resolvedUniforms[i] = m_owner->validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
     }
     
     const DrawContext ctx{&m_targets, m_resolvedUniforms};
@@ -82,13 +105,13 @@ void Renderer::softwareDraw(const RenderCommand& cmd, const RenderTargetID targe
     }
 }
 
-void Renderer::softwareShow(const RenderTargetID target) {
+void SoftwareRenderer::show(const RenderTargetID target) {
     flush();
 
-    ++m_frame;
+    ++m_owner->m_frame;
 
-    assert(validTarget(target) && "Renderer: show on invalid or destroyed target");
-    if (!validTarget(target)) return;
+    assert(m_owner->validTarget(target) && "Renderer: show on invalid or destroyed target");
+    if (!m_owner->validTarget(target)) return;
 
     RenderTarget* tgt = m_targets[target].get();
 
@@ -104,28 +127,28 @@ void Renderer::softwareShow(const RenderTargetID target) {
 
 /* ---- lifecycle ---------------------------------------------------------- */
 
-bool Renderer::softwareInitBackend() {
-    m_sdlRenderer = SDL_CreateRenderer(m_cfg.sdlWindow, NULL);
+bool SoftwareRenderer::init() {
+    m_sdlRenderer = SDL_CreateRenderer(m_owner->m_cfg.sdlWindow, NULL);
 
     int w, h;
-    SDL_GetWindowSizeInPixels(m_cfg.sdlWindow, &w, &h);
-    m_targets.push_back(std::make_unique<RenderTarget>(w * m_cfg.renderScale, h * m_cfg.renderScale));
-    m_targets.back()->setSrgb(m_cfg.srgbBackbuffer);
+    SDL_GetWindowSizeInPixels(m_owner->m_cfg.sdlWindow, &w, &h);
+    m_targets.push_back(std::make_unique<RenderTarget>(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale));
+    m_targets.back()->setSrgb(m_owner->m_cfg.srgbBackbuffer);
 
     if (!m_sdlRenderer) {
         std::cout << "Renderer: " << SDL_GetError() << std::endl;
         return false;
     }
 
-    if (!recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale)) return false;
+    if (!recreateTexture(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale)) return false;
 
-    SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync);
+    SDL_SetRenderVSync(m_sdlRenderer, m_owner->m_cfg.vsync);
 
     return true;
 }
 
 
-void Renderer::softwareShutdown() {
+void SoftwareRenderer::shutdown() {
     // the batch points into command queues and programs; none of it outlives this
     m_batch.tris.clear();
     m_batch.wires.clear();
@@ -136,6 +159,7 @@ void Renderer::softwareShutdown() {
     SDL_DestroyRenderer(m_sdlRenderer);
     m_sdlTexture = nullptr;
     m_sdlRenderer = nullptr;
+
 }
 
 
@@ -143,29 +167,29 @@ void Renderer::softwareShutdown() {
 // Reached from destroyAllQueued() once a resource has aged framesInFlight
 // frames. The vectors drop their storage; there is nothing else to free.
 
-void Renderer::softwareReleaseTarget(const RenderTargetID id)        { m_targets[id].reset(); }
-void Renderer::softwareReleaseVertexBuffer(const VertexBufferID id)  { m_vertexBuffers[id] = VertexBuffer{}; }
-void Renderer::softwareReleaseIndexBuffer(const IndexBufferID id)    { m_indexBuffers[id] = IndexBuffer{}; }
-void Renderer::softwareReleaseUniformBuffer(const UniformBufferID id){ m_uniformBuffers[id] = UniformBuffer{}; }
-void Renderer::softwareReleaseProgram(const ProgramID id)            { m_programs[id] = Program{}; }
+void SoftwareRenderer::releaseTarget(const RenderTargetID id)        { m_targets[id].reset(); }
+void SoftwareRenderer::releaseVertexBuffer(const VertexBufferID id)  { m_vertexBuffers[id] = VertexBuffer{}; }
+void SoftwareRenderer::releaseIndexBuffer(const IndexBufferID id)    { m_indexBuffers[id] = IndexBuffer{}; }
+void SoftwareRenderer::releaseUniformBuffer(const UniformBufferID id){ m_uniformBuffers[id] = UniformBuffer{}; }
+void SoftwareRenderer::releaseProgram(const ProgramID id)            { m_programs[id] = Program{}; }
 
 
 /* ---- queries ------------------------------------------------------------ */
 
-uint32_t Renderer::softwareWidth()  const { return m_targets[BACKBUFFER]->width(); }
-uint32_t Renderer::softwareHeight() const { return m_targets[BACKBUFFER]->height(); }
+uint32_t SoftwareRenderer::width()  const { return m_targets[Renderer::BACKBUFFER]->width(); }
+uint32_t SoftwareRenderer::height() const { return m_targets[Renderer::BACKBUFFER]->height(); }
 
 
 
 /* ---- resources and state ------------------------------------------------ */
 
-RenderTargetID Renderer::softwareCreateTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {
+RenderTargetID SoftwareRenderer::createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {
     auto target = std::make_unique<RenderTarget>(w, h, tracksWindow);
     target->setSrgb(srgb);
-    return pushTarget(std::move(target));
+    return m_owner->pushTarget(std::move(target));
 }
 
-VertexBufferID Renderer::softwareCreateVertexBuffer(const void* data, const size_t count, const VtxLayout& layout) {
+VertexBufferID SoftwareRenderer::createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout) {
     size_t sizeInBytes = count * layout.stride();
     VertexBuffer newBuffer;
 
@@ -174,10 +198,10 @@ VertexBufferID Renderer::softwareCreateVertexBuffer(const void* data, const size
     newBuffer.layout = layout;
     newBuffer.verts.assign(bytes, bytes + sizeInBytes);
 
-    return allocSlot(m_vertexBuffers, m_freeVertexBuffers, std::move(newBuffer));
+    return m_owner->allocSlot(m_vertexBuffers, m_owner->m_freeVertexBuffers, std::move(newBuffer));
 }
 
-void Renderer::softwareUpdateVertexBuffer(
+void SoftwareRenderer::updateVertexBuffer(
     const VertexBufferID vertices, 
     const void* data, 
     const size_t count,
@@ -193,92 +217,93 @@ void Renderer::softwareUpdateVertexBuffer(
     vb.verts.assign(bytes, bytes + sizeInBytes);
 }
 
-IndexBufferID Renderer::softwareCreateIndexBuffer(const uint32_t* data, const size_t count) {
+IndexBufferID SoftwareRenderer::createIndexBuffer(const uint32_t* data, const size_t count) {
     IndexBuffer newBuffer;
     newBuffer.indices.assign(data, data + count);
 
-    return allocSlot(m_indexBuffers, m_freeIndexBuffers, std::move(newBuffer));
+    return m_owner->allocSlot(m_indexBuffers, m_owner->m_freeIndexBuffers, std::move(newBuffer));
 }
 
-void Renderer::softwareUpdateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count) {
+void SoftwareRenderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count) {
     assert(indices < m_indexBuffers.size() && "updateIndexBuffer(): Index buffer ID out of range");
     m_indexBuffers[indices].indices.assign(data, data + count);
 }
 
-UniformBufferID Renderer::softwareCreateUniformBuffer(const void* data, const size_t bytes) {
+UniformBufferID SoftwareRenderer::createUniformBuffer(const void* data, const size_t bytes) {
     UniformBuffer newBuffer;
     const uint8_t* src = static_cast<const uint8_t*>(data);
     newBuffer.data.assign(src, src + bytes);
 
-    return allocSlot(m_uniformBuffers, m_freeUniformBuffers, std::move(newBuffer));
+    return m_owner->allocSlot(m_uniformBuffers, m_owner->m_freeUniformBuffers, std::move(newBuffer));
 }
 
-void Renderer::softwareUpdateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes) {
+void SoftwareRenderer::updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes) {
     assert(buffer < m_uniformBuffers.size() && "updateUniformBuffer(): Uniform buffer ID out of range");
     
     const uint8_t* src = static_cast<const uint8_t*>(data);
     m_uniformBuffers[buffer].data.assign(src, src + bytes);
 }
 
-TextureID Renderer::softwareCreateTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips) {
+TextureID SoftwareRenderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadFromMemory(w, h, data));
     texture->setSrgb(srgb);
     if (mips) texture->generateMips();
-    return pushTarget(std::move(texture));
+    return m_owner->pushTarget(std::move(texture));
 }
 
-TextureID Renderer::softwareCreateTextureFromFile(const std::string& path, const bool srgb, const bool mips) {
+TextureID SoftwareRenderer::createTextureFromFile(const std::string& path, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadImageFromPath(path));
     texture->setSrgb(srgb);
     if (mips) texture->generateMips();
-    return pushTarget(std::move(texture));
+    return m_owner->pushTarget(std::move(texture));
 }
 
-void Renderer::softwareUpdateTexture(const TextureID texture, const uint32_t* data) {
-    assert(validTarget(texture) && "updateTexture(): invalid or destroyed texture");
-    if (!validTarget(texture)) return;
+void SoftwareRenderer::updateTexture(const TextureID texture, const uint32_t* data) {
+    assert(m_owner->validTarget(texture) && "updateTexture(): invalid or destroyed texture");
+    if (!m_owner->validTarget(texture)) return;
     m_targets[texture]->update(data);
 }
 
-void Renderer::softwareUpdateTextureRect(
+void SoftwareRenderer::updateTextureRect(
     const TextureID texture, 
     const uint32_t x, const uint32_t y, 
     const uint32_t w, const uint32_t h, 
     const uint32_t* data
 ) { 
-    assert(validTarget(texture) && "updateTexture(): invalid or destroyed texture");
-    if (!validTarget(texture)) return;
+    assert(m_owner->validTarget(texture) && "updateTexture(): invalid or destroyed texture");
+    if (!m_owner->validTarget(texture)) return;
     m_targets[texture]->update(x, y, w, h, data); 
 }
 
-void Renderer::softwareResize(const uint32_t w, const uint32_t h) {
+void SoftwareRenderer::resize(const uint32_t w, const uint32_t h) {
     for (auto& tgt : m_targets)
         if (tgt && tgt->tracksWindow()) // destroyed slots are null
-            tgt->resize(w * m_cfg.renderScale, h * m_cfg.renderScale);
+            tgt->resize(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale);
 
-    recreateTexture(w * m_cfg.renderScale, h * m_cfg.renderScale);
+    recreateTexture(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale);
 }
 
-void Renderer::softwareSetVsync(const bool vsync) { 
-    m_cfg.vsync = vsync; 
-    SDL_SetRenderVSync(m_sdlRenderer, m_cfg.vsync); 
+void SoftwareRenderer::setVsync(const bool vsync) { 
+    m_owner->m_cfg.vsync = vsync; 
+    SDL_SetRenderVSync(m_sdlRenderer, m_owner->m_cfg.vsync); 
 }
 
 
 /* ---- programs ----------------------------------------------------------- */
 
-ProgramID Renderer::softwareCreateProgramFromCallbacks(const Program& program) {
-    return allocSlot(m_programs, m_freePrograms, program);
+ProgramID SoftwareRenderer::createProgramFromCallbacks(const Program& program) {
+    return m_owner->allocSlot(m_programs, m_owner->m_freePrograms, program);
 }
 
 
 // The software backend runs C++ callbacks, not SPIR-V. See PLAN.md: the two
 // shader implementations are separate by design, so this is a hard no rather
 // than something to fall back from.
-ProgramID Renderer::softwareCreateProgramFromFiles(const std::string&, const std::string&) {
+ProgramID SoftwareRenderer::createProgramFromFiles(const std::string&, const std::string&) {
     std::cout << "Renderer: the software backend has no SPIR-V path; "
                  "use createProgram() with C++ callbacks" << std::endl;
     return DEFAULT_PROGRAM;
 }
+
 
 } // namespace valo

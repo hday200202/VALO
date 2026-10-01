@@ -5,11 +5,11 @@
 #include <cmath>
 #include <algorithm>
 
-#include "RenderCommand.hpp"
+#include "../RenderCommand.hpp"
 #include "RenderTarget.hpp"
-#include "VertexBuffer.hpp"
-#include "IndexBuffer.hpp"
-#include "ShaderProgram.hpp"
+#include "../buffers/VertexBuffer.hpp"
+#include "../buffers/IndexBuffer.hpp"
+#include "../ShaderProgram.hpp"
 #include "ThreadPool.hpp"
 #include "Sampling.hpp"
 

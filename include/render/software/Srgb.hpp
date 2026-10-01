@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <algorithm>
 
-#include "Math.hpp"
+#include "../common/Math.hpp"
 
 namespace valo {
 

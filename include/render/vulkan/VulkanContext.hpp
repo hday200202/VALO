@@ -3,6 +3,7 @@
 #ifdef VALO_HAS_VULKAN
 
 #include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
 
 #include "../Window.hpp"
 
@@ -27,6 +28,9 @@ public:
     VkQueue presentQueue() const { return m_presentQueue; }
     uint32_t graphicsFamily() const { return m_graphicsFamily; }
     uint32_t presentFamily() const { return m_presentFamily; }
+    VmaAllocator allocator() const { return m_allocator; }
+    VkCommandBuffer beginOneShot();
+    bool endOneShot(VkCommandBuffer cmd);
 
 private:
     VkInstance                  m_instance          = VK_NULL_HANDLE;
@@ -38,10 +42,14 @@ private:
     VkDevice                    m_device            = VK_NULL_HANDLE;
     VkQueue                     m_graphicsQueue     = VK_NULL_HANDLE;
     VkQueue                     m_presentQueue      = VK_NULL_HANDLE;
+    VmaAllocator                m_allocator         = VK_NULL_HANDLE;
+    VkCommandPool               m_oneShotPool       = VK_NULL_HANDLE;
+    
     bool                        m_portabilitySubset = false;
 
     bool pickPhysicalDevice();
     bool createLogicalDevice();
+    bool createAllocator();
 };
 
 } // namespace valo

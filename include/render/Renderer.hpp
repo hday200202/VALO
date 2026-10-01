@@ -9,14 +9,15 @@
 #include <utility>
 
 #include "RenderCommand.hpp"
-#include "RenderTarget.hpp"
-#include "VertexBuffer.hpp"
-#include "IndexBuffer.hpp"
+#include "software/RenderTarget.hpp"
+#include "buffers/VertexBuffer.hpp"
+#include "buffers/IndexBuffer.hpp"
 #include "ShaderProgram.hpp"
-#include "UniformBuffer.hpp"
-#include "DrawFuncs.hpp"
-#include "Sampling.hpp"
-#include "ThreadPool.hpp"
+#include "buffers/UniformBuffer.hpp"
+#include "software/DrawFuncs.hpp"
+#include "software/Sampling.hpp"
+#include "software/ThreadPool.hpp"
+#include "software/SoftwareRenderer.hpp"
 #include "common/Math.hpp"
 
 struct SDL_Texture;
@@ -32,12 +33,8 @@ enum class Backend { Software, Vulkan };
 
 struct RenderConfig {
     SDL_Window*     sdlWindow       = nullptr;
-    // The Vulkan backend needs more than the raw handle: the surface comes from
-    // sdlWindow, but the swapchain extent comes from Window::getSize(). Set by
-    // VALO::init(); a Renderer driven directly must set it to use Backend::Vulkan.
     Window*         window          = nullptr;
     bool            vsync           = false;
-    // backbuffer stores sRGB-encoded bytes; shader output is encoded on write
     bool            srgbBackbuffer  = false;
 
     uint16_t        maxFps          = 10000;
@@ -122,6 +119,13 @@ public:
         return m_backendFuncs.createProgramFromCallbacks(*this, p);
     }
 
+    /*
+        The GPU half of the shader contract: GLSL or SPIR-V on disk. The two
+        overloads above are the software half - a backend implements one and
+        rejects the other, since a C++ function pointer cannot become SPIR-V.
+    */
+    ProgramID createProgram(const std::string& vsPath, const std::string& fsPath);
+
     void destroyProgram(const ProgramID program);
 
     /* ---- state ---------------------------------------------------------- */
@@ -139,15 +143,10 @@ public:
 
 protected:
     RenderConfig m_cfg;
-    std::vector<std::unique_ptr<RenderTarget>> m_targets;
-    SDL_Renderer*                   m_sdlRenderer = nullptr;
-    SDL_Texture*                    m_sdlTexture = nullptr;
-    uint64_t                        m_frame = 0;
+    uint64_t     m_frame = 0;
 
-    std::vector<VertexBuffer>       m_vertexBuffers;
-    std::vector<IndexBuffer>        m_indexBuffers;
-    std::vector<Program>            m_programs;
-    std::vector<UniformBuffer>      m_uniformBuffers;
+    SoftwareRenderer* m_software = nullptr;
+    VulkanRenderer* m_vulkan = nullptr;
 
     // Deferred destroy queues
     std::vector<std::pair<RenderTargetID, uint64_t>>     m_destroyedTargets;
@@ -162,17 +161,9 @@ protected:
     std::vector<ProgramID>          m_freePrograms;
     std::vector<UniformBufferID>    m_freeUniformBuffers;
 
-    uint32_t m_texW, m_texH;
-
-    ThreadPool m_pool;
-
-    // triangles accumulate here across draws; see TriBatch in DrawFuncs.hpp
-    TriBatch m_batch;
-    const void* m_resolvedUniforms[MAX_UNIFORM_SLOTS] = {};
-
     // takes ownership of a target/texture, reusing a freed slot if there is one
+    // (straddles: software storage, Renderer's free list)
     RenderTargetID pushTarget(std::unique_ptr<RenderTarget> target);
-    bool recreateTexture(const uint32_t w, const uint32_t h);
 
     bool destroyed(const std::vector<std::pair<uint32_t, uint64_t>>& destroyQueue, uint32_t id) const {
         for (auto& [t, frame] : destroyQueue) if (t == id) return true;
@@ -186,11 +177,17 @@ protected:
     }
 
     // EMPTY_BUFFER, DEFAULT_PROGRAM and stale IDs are all out of range
-    bool validTarget (const RenderTargetID id)  const { return id < m_targets.size()        && !destroyed(m_destroyedTargets, id)           && m_targets[id] && !inFreeList(m_freeTargets, id); }
-    bool validVerts  (const VertexBufferID id)  const { return id < m_vertexBuffers.size()  && !destroyed(m_destroyedVertexBuffers, id)     && !inFreeList(m_freeVertexBuffers, id); }
-    bool validIndices(const IndexBufferID id)   const { return id < m_indexBuffers.size()   && !destroyed(m_destroyedIndexBuffers, id)      && !inFreeList(m_freeIndexBuffers, id); }
-    bool validProgram(const ProgramID id)       const { return id < m_programs.size()       && !destroyed(m_destroyedPrograms, id)          && !inFreeList(m_freePrograms, id); }
-    bool validUniform(const UniformBufferID id) const { return id < m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id)    && !inFreeList(m_freeUniformBuffers, id); }
+    /*
+        These straddle: the bounds come from the software backend's storage,
+        the rest from Renderer's own queues and free lists. The Vulkan backend
+        will need its own equivalents once it stores resources - until then a
+        null m_software just reports everything invalid.
+    */
+    bool validTarget (const RenderTargetID id)  const { return m_software && id < m_software->m_targets.size()        && !destroyed(m_destroyedTargets, id)        && m_software->m_targets[id] && !inFreeList(m_freeTargets, id); }
+    bool validVerts  (const VertexBufferID id)  const { return m_software && id < m_software->m_vertexBuffers.size()  && !destroyed(m_destroyedVertexBuffers, id)  && !inFreeList(m_freeVertexBuffers, id); }
+    bool validIndices(const IndexBufferID id)   const { return m_software && id < m_software->m_indexBuffers.size()   && !destroyed(m_destroyedIndexBuffers, id)   && !inFreeList(m_freeIndexBuffers, id); }
+    bool validProgram(const ProgramID id)       const { return m_software && id < m_software->m_programs.size()       && !destroyed(m_destroyedPrograms, id)       && !inFreeList(m_freePrograms, id); }
+    bool validUniform(const UniformBufferID id) const { return m_software && id < m_software->m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id) && !inFreeList(m_freeUniformBuffers, id); }
 
     template <typename Storage, typename FreeList, typename T>
     static uint32_t allocSlot(Storage& storage, FreeList& freeList, T&& value) {
@@ -218,9 +215,7 @@ protected:
         queue.resize(keep);
     }
 
-    // force: ignore the age check and release everything (shutdown)
     void destroyAllQueued(const bool force = false) {
-        // reachable from ~Renderer() on an object that never init()ed
         if (!m_backendFuncs.releaseTarget) return;
 
         retireQueue(m_destroyedTargets, m_freeTargets,
@@ -264,12 +259,6 @@ protected:
         ProgramID (*createProgramFromCallbacks)(Renderer&, const Program&);
         ProgramID (*createProgramFromFiles)(Renderer&, const std::string&, const std::string&);
 
-        /*
-            The deferred-destroy *timing* is backend-agnostic and stays in
-            destroyAllQueued(); only the freeing differs. Without these the
-            Vulkan backend would leak every resource silently, because the ID
-            bookkeeping would still look correct.
-        */
         void (*releaseTarget)(Renderer&, RenderTargetID);
         void (*releaseVertexBuffer)(Renderer&, VertexBufferID);
         void (*releaseIndexBuffer)(Renderer&, IndexBufferID);
@@ -282,116 +271,15 @@ protected:
         uint32_t (*width)(const Renderer&);
         uint32_t (*height)(const Renderer&);
 
-        // init() picks the table, so it is not in the table - but the
-        // backend-specific half of startup still has to be dispatched
         bool (*initBackend)(Renderer&);
         void (*shutdown)(Renderer&);
-    } m_backendFuncs{};   // zeroed: shutdown() may run before init()
-
-    /*
-        Owned by vulkanInitBackend(), freed by vulkanShutdown(). Typed rather
-        than void* because only one backend needs state: the software path keeps
-        everything in the members above. Forward-declared, so this costs the
-        no-vulkan build nothing - it is a null pointer nothing dereferences.
-        Deleting it needs the complete type, so that must stay inside
-        VulkanBackend.cpp's guard.
-    */
-    VulkanRenderer* m_vulkan = nullptr;
+    } m_backendFuncs{};
 
     RenderBackend fetchBackendFuncs();
 
-    /*
-        Software backend implementations. Members rather than free functions so
-        the bodies could move into SoftwareRenderer.cpp untouched; the table
-        reaches them through the lambdas in fetchBackendFuncs().
-    */
-    bool softwareInitBackend();
-
-    RenderTargetID  softwareCreateTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb);
-
-    VertexBufferID  softwareCreateVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
-    void            softwareUpdateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout);
-
-    IndexBufferID   softwareCreateIndexBuffer(const uint32_t* data, const size_t count);
-    void            softwareUpdateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
-
-    UniformBufferID softwareCreateUniformBuffer(const void* data, const size_t bytes);
-    void            softwareUpdateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
-
-    TextureID       softwareCreateTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
-    TextureID       softwareCreateTextureFromFile(const std::string& path, const bool srgb, const bool mips);
-    void            softwareUpdateTexture(const TextureID texture, const uint32_t* data);
-    void            softwareUpdateTextureRect(const TextureID texture, const uint32_t x, const uint32_t y, const uint32_t w, const uint32_t h, const uint32_t* data);
-
-    ProgramID       softwareCreateProgramFromCallbacks(const Program& program);
-    ProgramID       softwareCreateProgramFromFiles(const std::string& vsPath, const std::string& fsPath);
-
-    void            softwareResize(const uint32_t w, const uint32_t h);
-    void            softwareSetVsync(const bool vsync);
-    void softwareShutdown();
-
-    void softwareReleaseTarget(const RenderTargetID id);
-    void softwareReleaseVertexBuffer(const VertexBufferID id);
-    void softwareReleaseIndexBuffer(const IndexBufferID id);
-    void softwareReleaseUniformBuffer(const UniformBufferID id);
-    void softwareReleaseProgram(const ProgramID id);
-
-    uint32_t softwareWidth() const;
-    uint32_t softwareHeight() const;
-
-#ifdef VALO_HAS_VULKAN
-    /*
-        Vulkan backend. Declarations only need VALO types, but the bodies need
-        the Vulkan headers, so both these and VulkanBackend.cpp are guarded -
-        ./build.sh no-vulkan then has no Vulkan symbols at all, and init()
-        rejects Backend::Vulkan because initBackend comes back null.
-    */
-    bool vulkanInitBackend();
-    void vulkanShutdown();
-
-    void vulkanClear(const Color& clearColor, const RenderTargetID target, const float clearDepth);
-    void vulkanDraw(const RenderCommand& cmd, const RenderTargetID target);
-    void vulkanShow(const RenderTargetID target);
-    void vulkanFlush();
-
-    RenderTargetID  vulkanCreateTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb);
-
-    VertexBufferID  vulkanCreateVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
-    void            vulkanUpdateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout);
-
-    IndexBufferID   vulkanCreateIndexBuffer(const uint32_t* data, const size_t count);
-    void            vulkanUpdateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
-
-    UniformBufferID vulkanCreateUniformBuffer(const void* data, const size_t bytes);
-    void            vulkanUpdateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
-
-    TextureID       vulkanCreateTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
-    TextureID       vulkanCreateTextureFromFile(const std::string& path, const bool srgb, const bool mips);
-    void            vulkanUpdateTexture(const TextureID texture, const uint32_t* data);
-    void            vulkanUpdateTextureRect(const TextureID texture, const uint32_t x, const uint32_t y, const uint32_t w, const uint32_t h, const uint32_t* data);
-
-    ProgramID       vulkanCreateProgramFromCallbacks(const Program& program);
-    ProgramID       vulkanCreateProgramFromFiles(const std::string& vsPath, const std::string& fsPath);
-
-    void vulkanReleaseTarget(const RenderTargetID id);
-    void vulkanReleaseVertexBuffer(const VertexBufferID id);
-    void vulkanReleaseIndexBuffer(const IndexBufferID id);
-    void vulkanReleaseUniformBuffer(const UniformBufferID id);
-    void vulkanReleaseProgram(const ProgramID id);
-
-    void vulkanResize(const uint32_t w, const uint32_t h);
-    void vulkanSetVsync(const bool vsync);
-
-    uint32_t vulkanWidth() const;
-    uint32_t vulkanHeight() const;
-#endif
-
-    void softwareFlush();
-    void softwareClear(const Color& clearColor, const RenderTargetID target, const float clearDepth);
-    void softwareDraw(const RenderCommand& cmd, const RenderTargetID target);
-    void softwareShow(const RenderTargetID target);
-
     friend class VALO;
+    friend class SoftwareRenderer;
+    friend class VulkanRenderer;
 };
 
 } // namespace valo

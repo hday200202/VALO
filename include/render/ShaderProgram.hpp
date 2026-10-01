@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Sampling.hpp"
+#include "software/Sampling.hpp"
 #include "common/Math.hpp"
 
 namespace valo {

@@ -1,6 +1,12 @@
 #include "Renderer.hpp"
 #include <SDL3/SDL.h>
 
+// the table lambdas call through these, so both need to be complete here
+#include "software/SoftwareRenderer.hpp"
+#ifdef VALO_HAS_VULKAN
+    #include "vulkan/VulkanRenderer.hpp"
+#endif
+
 namespace valo {
 
 /* ========================================================================= //
@@ -26,6 +32,14 @@ void Renderer::shutdown() {
 
     destroyAllQueued(true);                 // nothing is in flight any more
     m_backendFuncs.shutdown(*this);
+
+    /*
+        The shutdown entry deletes the backend and nulls the pointer, so a
+        second call would dispatch through a dangling table into a null
+        backend. Clearing the table makes shutdown() idempotent - which it has
+        to be, since the destructor calls it after any explicit call.
+    */
+    m_backendFuncs = {};
 }
 
 
@@ -94,7 +108,7 @@ void Renderer::updateVertexBuffer(
 
 
 void Renderer::destroyVertexBuffer(const VertexBufferID buffer) {
-    assert(buffer < m_vertexBuffers.size() && "Renderer: invalid vertex buffer");
+    assert(validVerts(buffer) && "Renderer: invalid vertex buffer");
     m_destroyedVertexBuffers.push_back({buffer, m_frame});
 }
 
@@ -115,7 +129,7 @@ void Renderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* da
 
 
 void Renderer::destroyIndexBuffer(const IndexBufferID buffer) {
-    assert(buffer < m_indexBuffers.size() && "Renderer: invalid index buffer");
+    assert(validIndices(buffer) && "Renderer: invalid index buffer");
     m_destroyedIndexBuffers.push_back({buffer, m_frame});
 }
 
@@ -136,7 +150,7 @@ void Renderer::updateUniformBuffer(const UniformBufferID buffer, const void* dat
 
 
 void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
-    assert(buffer < m_uniformBuffers.size() && "destroyUniformBuffer(): Uniform buffer ID out of range");
+    assert(validUniform(buffer) && "destroyUniformBuffer(): Uniform buffer ID out of range");
     m_destroyedUniformBuffers.push_back({buffer, m_frame});
 }
 
@@ -183,8 +197,13 @@ void Renderer::destroyTexture(const TextureID texture) {
     Programs
 // ========================================================================= */
 
+ProgramID Renderer::createProgram(const std::string& vsPath, const std::string& fsPath) {
+    return m_backendFuncs.createProgramFromFiles(*this, vsPath, fsPath);
+}
+
+
 void Renderer::destroyProgram(const ProgramID program) {
-    assert(program < m_programs.size() && "Renderer: invalid program");
+    assert(validProgram(program) && "Renderer: invalid program");
     m_destroyedPrograms.push_back({program, m_frame});
 }
 
@@ -210,27 +229,7 @@ void Renderer::setVsync(const bool vsync) {
 // ========================================================================= */
 
 RenderTargetID Renderer::pushTarget(std::unique_ptr<RenderTarget> target) {
-    return allocSlot(m_targets, m_freeTargets, std::move(target));
-}
-
-
-// the SDL streaming texture that show() blits the backbuffer through
-bool Renderer::recreateTexture(const uint32_t w, const uint32_t h) {
-    SDL_DestroyTexture(m_sdlTexture);
-    m_sdlTexture = SDL_CreateTexture(
-        m_sdlRenderer, 
-        SDL_PIXELFORMAT_ABGR8888, 
-        SDL_TEXTUREACCESS_STREAMING, 
-        w, h
-    );
-
-    if (!m_sdlTexture) {
-        std::cout << "Renderer: " << SDL_GetError() << std::endl;
-        return false;
-    }
-
-    m_texW = w; m_texH = h;
-    return true;
+    return allocSlot(m_software->m_targets, m_freeTargets, std::move(target));
 }
 
 
@@ -242,113 +241,77 @@ bool Renderer::recreateTexture(const uint32_t w, const uint32_t h) {
 Renderer::RenderBackend Renderer::fetchBackendFuncs() {
     switch (m_cfg.backend) {
         case Backend::Software: return RenderBackend{
-            .clear = [](Renderer& r, const Color& c, RenderTargetID t, float d) { r.softwareClear(c, t, d); },
-            .draw  = [](Renderer& r, const RenderCommand& cmd, RenderTargetID t) { r.softwareDraw(cmd, t); },
-            .show  = [](Renderer& r, RenderTargetID t) { r.softwareShow(t); },
-            .flush = [](Renderer& r) { r.softwareFlush(); },
+            .clear = [](Renderer& r, const Color& c, RenderTargetID t, float d) { r.m_software->clear(c, t, d); },
+            .draw  = [](Renderer& r, const RenderCommand& cmd, RenderTargetID t) { r.m_software->draw(cmd, t); },
+            .show  = [](Renderer& r, RenderTargetID t) { r.m_software->show(t); },
+            .flush = [](Renderer& r) { r.m_software->flush(); },
 
-            .createTarget = [](Renderer& r, uint32_t w, uint32_t h, bool tracks, bool srgb) {
-                return r.softwareCreateTarget(w, h, tracks, srgb); },
+            .createTarget = [](Renderer& r, uint32_t w, uint32_t h, bool tracks, bool srgb) { return r.m_software->createTarget(w, h, tracks, srgb); },
+            .createVertexBuffer = [](Renderer& r, const void* d, const size_t n, const VtxLayout& l) { return r.m_software->createVertexBuffer(d, n, l); },
+            .updateVertexBuffer = [](Renderer& r, VertexBufferID id, const void* d, const size_t n, const VtxLayout& l) { r.m_software->updateVertexBuffer(id, d, n, l); },
+            .createIndexBuffer = [](Renderer& r, const uint32_t* d, const size_t n) { return r.m_software->createIndexBuffer(d, n); },
+            .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) { r.m_software->updateIndexBuffer(id, d, n); },
+            .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_software->createUniformBuffer(d, n); },
+            .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) { r.m_software->updateUniformBuffer(id, d, n); },
+            .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) { return r.m_software->createTexture(w, h, d, srgb, mips); },
+            .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) { return r.m_software->createTextureFromFile(p, srgb, mips); },
+            .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) { r.m_software->updateTexture(id, d); },
+            .updateTextureRect = [](Renderer& r, TextureID id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* d) { r.m_software->updateTextureRect(id, x, y, w, h, d); },
+            .createProgramFromCallbacks = [](Renderer& r, const Program& p) { return r.m_software->createProgramFromCallbacks(p); },
+            .createProgramFromFiles = [](Renderer& r, const std::string& vs, const std::string& fs) { return r.m_software->createProgramFromFiles(vs, fs); },
 
-            .createVertexBuffer = [](Renderer& r, const void* d, const size_t n, const VtxLayout& l) {
-                return r.softwareCreateVertexBuffer(d, n, l); },
-            .updateVertexBuffer = [](Renderer& r, VertexBufferID id, const void* d, const size_t n, const VtxLayout& l) {
-                r.softwareUpdateVertexBuffer(id, d, n, l); },
+            .releaseTarget        = [](Renderer& r, RenderTargetID id)    { r.m_software->releaseTarget(id); },
+            .releaseVertexBuffer  = [](Renderer& r, VertexBufferID id)    { r.m_software->releaseVertexBuffer(id); },
+            .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.m_software->releaseIndexBuffer(id); },
+            .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.m_software->releaseUniformBuffer(id); },
+            .releaseProgram       = [](Renderer& r, ProgramID id)         { r.m_software->releaseProgram(id); },
 
-            .createIndexBuffer = [](Renderer& r, const uint32_t* d, const size_t n) {
-                return r.softwareCreateIndexBuffer(d, n); },
-            .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) {
-                r.softwareUpdateIndexBuffer(id, d, n); },
+            .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.m_software->resize(w, h); },
+            .setVsync = [](Renderer& r, bool v) { r.m_software->setVsync(v); },
 
-            .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) {
-                return r.softwareCreateUniformBuffer(d, n); },
-            .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) {
-                r.softwareUpdateUniformBuffer(id, d, n); },
+            .width  = [](const Renderer& r) { return r.m_software->width(); },
+            .height = [](const Renderer& r) { return r.m_software->height(); },
 
-            .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) {
-                return r.softwareCreateTexture(w, h, d, srgb, mips); },
-            .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) {
-                return r.softwareCreateTextureFromFile(p, srgb, mips); },
-            .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) {
-                r.softwareUpdateTexture(id, d); },
-            .updateTextureRect = [](Renderer& r, TextureID id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* d) {
-                r.softwareUpdateTextureRect(id, x, y, w, h, d); },
-
-            .createProgramFromCallbacks = [](Renderer& r, const Program& p) {
-                return r.softwareCreateProgramFromCallbacks(p); },
-            .createProgramFromFiles = [](Renderer& r, const std::string& vs, const std::string& fs) {
-                return r.softwareCreateProgramFromFiles(vs, fs); },
-
-            .releaseTarget        = [](Renderer& r, RenderTargetID id)    { r.softwareReleaseTarget(id); },
-            .releaseVertexBuffer  = [](Renderer& r, VertexBufferID id)    { r.softwareReleaseVertexBuffer(id); },
-            .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.softwareReleaseIndexBuffer(id); },
-            .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.softwareReleaseUniformBuffer(id); },
-            .releaseProgram       = [](Renderer& r, ProgramID id)         { r.softwareReleaseProgram(id); },
-
-            .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.softwareResize(w, h); },
-            .setVsync = [](Renderer& r, bool v) { r.softwareSetVsync(v); },
-
-            .width  = [](const Renderer& r) { return r.softwareWidth(); },
-            .height = [](const Renderer& r) { return r.softwareHeight(); },
-
-            .initBackend = [](Renderer& r) { return r.softwareInitBackend(); },
-            .shutdown    = [](Renderer& r) { r.softwareShutdown(); },
+            .initBackend = [](Renderer& r) { return (r.m_software = new SoftwareRenderer(r), r.m_software->init()); },
+            .shutdown    = [](Renderer& r) { r.m_software->shutdown(); delete r.m_software; r.m_software = nullptr; },
         };
 
         case Backend::Vulkan:
 #ifdef VALO_HAS_VULKAN
             return RenderBackend{
-            .clear = [](Renderer& r, const Color& c, RenderTargetID t, float d) { r.vulkanClear(c, t, d); },
-            .draw  = [](Renderer& r, const RenderCommand& cmd, RenderTargetID t) { r.vulkanDraw(cmd, t); },
-            .show  = [](Renderer& r, RenderTargetID t) { r.vulkanShow(t); },
-            .flush = [](Renderer& r) { r.vulkanFlush(); },
+            .clear = [](Renderer& r, const Color& c, RenderTargetID t, float d) { r.m_vulkan->clear(c, t, d); },
+            .draw  = [](Renderer& r, const RenderCommand& cmd, RenderTargetID t) { r.m_vulkan->draw(cmd, t); },
+            .show  = [](Renderer& r, RenderTargetID t) { r.m_vulkan->show(t); },
+            .flush = [](Renderer& r) { r.m_vulkan->flush(); },
 
-            .createTarget = [](Renderer& r, uint32_t w, uint32_t h, bool tracks, bool srgb) {
-                return r.vulkanCreateTarget(w, h, tracks, srgb); },
+            .createTarget = [](Renderer& r, uint32_t w, uint32_t h, bool tracks, bool srgb) { return r.m_vulkan->createTarget(w, h, tracks, srgb); },
+            .createVertexBuffer = [](Renderer& r, const void* d, const size_t n, const VtxLayout& l) { return r.m_vulkan->createVertexBuffer(d, n, l); },
+            .updateVertexBuffer = [](Renderer& r, VertexBufferID id, const void* d, const size_t n, const VtxLayout& l) { r.m_vulkan->updateVertexBuffer(id, d, n, l); },
+            .createIndexBuffer = [](Renderer& r, const uint32_t* d, const size_t n) { return r.m_vulkan->createIndexBuffer(d, n); },
+            .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) { r.m_vulkan->updateIndexBuffer(id, d, n); },
+            .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_vulkan->createUniformBuffer(d, n); },
+            .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) { r.m_vulkan->updateUniformBuffer(id, d, n); },
+            .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) { return r.m_vulkan->createTexture(w, h, d, srgb, mips); },
+            .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) { return r.m_vulkan->createTextureFromFile(p, srgb, mips); },
+            .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) { r.m_vulkan->updateTexture(id, d); },
+            .updateTextureRect = [](Renderer& r, TextureID id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* d) { r.m_vulkan->updateTextureRect(id, x, y, w, h, d); },
+            .createProgramFromCallbacks = [](Renderer& r, const Program& p) { return r.m_vulkan->createProgramFromCallbacks(p); },
+            .createProgramFromFiles = [](Renderer& r, const std::string& vs, const std::string& fs) { return r.m_vulkan->createProgramFromFiles(vs, fs); },
 
-            .createVertexBuffer = [](Renderer& r, const void* d, const size_t n, const VtxLayout& l) {
-                return r.vulkanCreateVertexBuffer(d, n, l); },
-            .updateVertexBuffer = [](Renderer& r, VertexBufferID id, const void* d, const size_t n, const VtxLayout& l) {
-                r.vulkanUpdateVertexBuffer(id, d, n, l); },
+            .releaseTarget        = [](Renderer& r, RenderTargetID id)    { r.m_vulkan->releaseTarget(id); },
+            .releaseVertexBuffer  = [](Renderer& r, VertexBufferID id)    { r.m_vulkan->releaseVertexBuffer(id); },
+            .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.m_vulkan->releaseIndexBuffer(id); },
+            .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.m_vulkan->releaseUniformBuffer(id); },
+            .releaseProgram       = [](Renderer& r, ProgramID id)         { r.m_vulkan->releaseProgram(id); },
 
-            .createIndexBuffer = [](Renderer& r, const uint32_t* d, const size_t n) {
-                return r.vulkanCreateIndexBuffer(d, n); },
-            .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) {
-                r.vulkanUpdateIndexBuffer(id, d, n); },
+            .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.m_vulkan->resize(w, h); },
+            .setVsync = [](Renderer& r, bool v) { r.m_vulkan->setVsync(v); },
 
-            .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) {
-                return r.vulkanCreateUniformBuffer(d, n); },
-            .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) {
-                r.vulkanUpdateUniformBuffer(id, d, n); },
+            .width  = [](const Renderer& r) { return r.m_vulkan->width(); },
+            .height = [](const Renderer& r) { return r.m_vulkan->height(); },
 
-            .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) {
-                return r.vulkanCreateTexture(w, h, d, srgb, mips); },
-            .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) {
-                return r.vulkanCreateTextureFromFile(p, srgb, mips); },
-            .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) {
-                r.vulkanUpdateTexture(id, d); },
-            .updateTextureRect = [](Renderer& r, TextureID id, uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint32_t* d) {
-                r.vulkanUpdateTextureRect(id, x, y, w, h, d); },
-
-            .createProgramFromCallbacks = [](Renderer& r, const Program& p) {
-                return r.vulkanCreateProgramFromCallbacks(p); },
-            .createProgramFromFiles = [](Renderer& r, const std::string& vs, const std::string& fs) {
-                return r.vulkanCreateProgramFromFiles(vs, fs); },
-
-            .releaseTarget        = [](Renderer& r, RenderTargetID id)    { r.vulkanReleaseTarget(id); },
-            .releaseVertexBuffer  = [](Renderer& r, VertexBufferID id)    { r.vulkanReleaseVertexBuffer(id); },
-            .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.vulkanReleaseIndexBuffer(id); },
-            .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.vulkanReleaseUniformBuffer(id); },
-            .releaseProgram       = [](Renderer& r, ProgramID id)         { r.vulkanReleaseProgram(id); },
-
-            .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.vulkanResize(w, h); },
-            .setVsync = [](Renderer& r, bool v) { r.vulkanSetVsync(v); },
-
-            .width  = [](const Renderer& r) { return r.vulkanWidth(); },
-            .height = [](const Renderer& r) { return r.vulkanHeight(); },
-
-            .initBackend = [](Renderer& r) { return r.vulkanInitBackend(); },
-            .shutdown    = [](Renderer& r) { r.vulkanShutdown(); },
+            .initBackend = [](Renderer& r) { return (r.m_vulkan = new VulkanRenderer(r), r.m_vulkan->init()); },
+            .shutdown    = [](Renderer& r) { r.m_vulkan->shutdown(); delete r.m_vulkan; r.m_vulkan = nullptr; },
         };
 #else
             std::cout << "Renderer: Backend::Vulkan requested but this build has no "

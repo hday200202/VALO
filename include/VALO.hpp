@@ -145,6 +145,14 @@ public:
     ProgramID createProgram(void (*vs)(const V&, const U&, Vy&))
     { return m_renderer.createProgram(vs); }
 
+    /*
+        The GPU half: GLSL or SPIR-V on disk. A backend implements one half and
+        rejects the other, so this returns DEFAULT_PROGRAM on the software
+        backend just as the overloads above do on Vulkan.
+    */
+    ProgramID createProgram(const std::string& vsPath, const std::string& fsPath)
+    { return m_renderer.createProgram(vsPath, fsPath); }
+
     void destroyProgram(const ProgramID program);
 
     /* ---- state ---------------------------------------------------------- */

@@ -5,8 +5,8 @@
 #include <string>
 #include <cassert>
 #include <algorithm>
-#include "common/Math.hpp"
-#include "common/Srgb.hpp"
+#include "../common/Math.hpp"
+#include "Srgb.hpp"
 
 namespace valo {
 

@@ -3,9 +3,9 @@
 #include <vector>
 #include <memory>
 #include "RenderTarget.hpp"
-#include "RenderCommand.hpp"
-#include "common/Math.hpp"
-#include "common/Srgb.hpp"
+#include "../RenderCommand.hpp"
+#include "../common/Math.hpp"
+#include "Srgb.hpp"
 
 namespace valo {
 
