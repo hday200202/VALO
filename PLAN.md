@@ -48,7 +48,8 @@ by side.
 
 ## Backend dispatch: a function-pointer table, not a class hierarchy
 
-Decided 2026-09-30. `Renderer` stays **one concrete class** and the public API
+Decided 2026-09-30, **shipped the same day** - see phase 0c for what the build
+actually looks like and for the three entries this sketch missed. `Renderer` stays **one concrete class** and the public API
 does not move. What changes is that the bodies of its methods are reached
 through a table of function pointers, populated at `init()` from whichever
 backend the config asks for.
@@ -161,7 +162,7 @@ lives on `Renderer` behind a pointer:
 
 ```cpp
     RendererBackend  m_backend{};      // installed by init()
-    void*            m_backendState;   // SoftwareState* or VulkanState*
+    VulkanRenderer*  m_vulkan{};       // only one backend needs state
 ```
 
 - **`SoftwareState`** takes what is on `Renderer` today: `m_targets`,
@@ -193,13 +194,17 @@ function hardware.
 
 ### Verify
 
-All 9 examples build and run untouched, with no edit to any file in
+All examples build and run untouched, with no edit to any file in
 `examples/`. That is the whole test: the table is an implementation detail, and
 if a caller can tell it exists, it is wrong.
 
+*Held:* the nine software examples were untouched by the split. `vk-test` and
+`vk-clear` were added afterwards and drive Vulkan directly, so they are not part
+of that check.
+
 ---
 
-## Phase 0 — prerequisites, no Vulkan yet (~6 h)
+## Phase 0 — prerequisites, no Vulkan yet — DONE (0a, 0c) / DECIDED (0b)
 
 These are API-visible rules. Doing them in software first means the Vulkan
 backend inherits correct semantics instead of retrofitting them.
@@ -263,22 +268,42 @@ say, and the part worth not re-deriving:
 So the contract is deliberately tighter than the software backend needs, which is
 the point - it is the Vulkan semantics that matter.
 
-**0c. Interface split — do this AFTER phase R, not before.** `Renderer` (~48
-public declarations) becomes an abstract base + `SoftwareRenderer`. `VALO`,
-layers, clip stack, IDs and `RenderCommand` stay byte-identical. Resource storage
-moves into the backend (see the table above) but stays plain types, not
-subclasses. `createProgram` is the one method that is *not* on the abstract base -
-each backend declares its own overload.
+**0c. Interface split - DONE (2026-09-30).** Done after phase 1 rather than
+before it, exactly as the ordering note above argued: by then `VulkanRenderer`
+existed, so the table was transcription rather than speculation.
 
-The ordering matters: this is the one item in phase 0 that is *better informed by
-having written Vulkan*. Designing the abstract interface first means guessing at
-what the backend will need from it - and a wrong guess here is expensive, because
-it is the seam everything else is built against. After the tutorial you will know
-what `VulkanRenderer` actually wants, and the split becomes transcription instead
-of speculation.
+`Renderer` stayed one concrete class. Every public method forwards through
+`m_backendFuncs`, a 28-entry table installed by `init()` from
+`fetchBackendFuncs()`. Both backends fill all 28.
 
-*Verify:* all 9 examples build and run untouched. This is the whole point of the
-phase — if any example needs an edit, the split is wrong.
+How the move was made safely: the implementations are `Renderer::software*` /
+`Renderer::vulkan*` **members**, not free functions, so the bodies moved into
+`backends/SoftwareBackend.cpp` verbatim - no `m_targets` -> `r.m_targets`
+rewriting, so a faithful move could be verified by the existing harnesses rather
+than reasoned about. The table reaches them through captureless lambdas, which
+convert to plain function pointers and are type-checked at the call site.
+
+Three things that were not in the original sketch:
+
+- **Five `release*` entries.** `destroyAllQueued` held the software storage
+  directly. The deferred-destroy *timing* is backend-agnostic; the freeing is
+  not. Without these the Vulkan backend leaks every resource, silently, because
+  the ID bookkeeping still looks correct.
+- **`initBackend`.** `init` picks the table so it is not *in* the table - but
+  every line of the old `init` body was software-specific, so the backend half
+  of startup still has to dispatch.
+- **`allocSlot`.** The free-list-or-push_back tail appeared in five `create*`
+  functions and would have appeared in ten across two backends. Factored first,
+  so the split could not duplicate it.
+
+`m_vulkan` is a forward-declared `VulkanRenderer*`, not the `void* m_backendState`
+originally planned: only one backend needs state, so typing it costs nothing and
+removes every cast. One consequence - `delete m_vulkan` lives in
+`VulkanBackend.cpp`, which pulls `VulkanRenderer.cpp.o` into every link, so a
+Vulkan-enabled build of `libVALO.a` needs `-lvulkan` even for software-only use.
+
+*Verified:* all 11 examples build and run untouched, and the six software
+harnesses are unchanged - which was the whole point of the phase.
 
 ---
 
@@ -344,7 +369,13 @@ bugs are a readable sentence. Already vendored - see phase 1's prerequisites.
 
 ---
 
-## Phase R — the reference shelf, and the parts the triangle skipped (~8 h)
+## Phase R — the reference shelf, and the parts the triangle skipped (~8 h) — ABSORBED
+
+**Not run as a separate phase.** Harrison chose to learn in-repo with
+step-by-step guidance instead of in a throwaway project (2026-09-29), and phase 1
+landed clean that way. The shelf below still stands; the four chapters remain the
+honest description of what is not yet covered, and descriptor sets and layout
+transitions are still ahead in phases 3 and 5.
 
 **Starting point as of 2026-09-28: the triangle is done.** So instance, physical
 device, logical device, queues, swapchain, a pipeline, command buffers and the
@@ -396,7 +427,7 @@ the interface, which is why it is the stopping point.
 
 ---
 
-## Phase 1 — device bring-up, clears only (~6 h)
+## Phase 1 — device bring-up, clears only — DONE (2026-09-30)
 
 **Step-by-step working doc: `VULKAN_SETUP.md`.** Nine steps from the instance to
 a clearing window, with the per-step traps and verifications. The rest of this
@@ -444,9 +475,20 @@ people ignore on the first pass. Handle `VK_ERROR_OUT_OF_DATE_KHR` and
 loop. `Window::resized()` already exists and `VALO::resize()` already calls
 through, so the hook is in place.
 
-## Phase 2 — one triangle (~4 h)
+## Phase 2 — one triangle (~4 h) — NEXT
 
 Hardcoded vertex buffer, hardcoded SPIR-V, one pipeline, no state, no uniforms.
+
+Where it picks up: `Backend::Vulkan` already clears and presents through `VALO`.
+`VulkanRenderer::drawFrame` was split into `beginFrameIfNeeded` / `clear` /
+`recordDraw` / `present`, because VALO drives a frame as
+clear -> draw* -> flush -> show while a Vulkan clear is `loadOp` on *beginning*
+rendering. `recordDraw()` opens the frame with `LOAD` and records nothing yet -
+that is the hole this phase fills. 21 of the 28 Vulkan table entries are still
+`todo()` stubs.
+
+This is also the first point that needs real SPIR-V, so the shader contract
+stops being theoretical: `createProgramFromFiles` has to do something.
 This is the phase that proves the command-buffer and submit plumbing.
 
 **Check the Y axis here, at the one point where it is trivial to see.** Vulkan's

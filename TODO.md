@@ -4,17 +4,35 @@ Ordered by what it takes to bring the software renderer to parity with the
 eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
 a gate for the next.
 
-## State (2026-09-27)
+## State (2026-10-01)
 
-~5.2k lines of library across 28 files, 9 examples, 18/29 tracked items done
-(sections 1, 2 and 6), every feature behind a sanitizer-verified harness. The
-dev-facing API (Window -> VALO -> create* -> RenderCommand -> submit, typed C++
-shader callbacks) is settled and Vulkan-shaped.
+~6.8k lines of library across 38 files (1.5k of that Vulkan), 11 examples,
+every feature behind a sanitizer-verified harness. The dev-facing API (Window ->
+VALO -> create* -> RenderCommand -> submit, typed C++ shader callbacks) is
+settled and Vulkan-shaped.
 
-**The software renderer is feature-complete for the backend's purposes.** The
-only section-1 item left that is actually API is texture formats; the other
-three are glTF parser gaps explicitly marked as not gating the backend. Section
-3 (interface split + the shader contract decision) is the real gate to Vulkan.
+**Section 3 is done and the Vulkan backend is live.** `Renderer` dispatches
+every public method through a 28-entry function-pointer table, both backends
+fill all 28, and `Backend::Vulkan` currently brings up a real window that clears
+and presents through `VALO`. Section 1's only remaining API item is texture
+formats; the other three are glTF parser gaps that do not gate the backend.
+
+Landed 2026-09-28/10-01:
+
+- **Deferred destruction** - `destroy*` enqueues, `destroyAllQueued()` drains
+  after `framesInFlight` frames, IDs deferred along with the objects.
+- **Vulkan bring-up, all 9 steps of `VULKAN_SETUP.md`** - instance, validation
+  layers, surface, device, swapchain, image views, command pool, sync, the
+  frame loop and resize. `vk-clear` runs 400 frames clean; a scripted resize
+  across 8 sizes including 1x1 passes; zero validation output anywhere.
+- **The whole SDK vendored** into `ext/vulkan` (~520 MB after pruning) -
+  loader, layers, `glslc`, MoltenVK, headers, plus `ext/vma`. Clone and go.
+- **Backend dispatch table** - 28 entries, software and Vulkan both complete.
+  `allocSlot` and the five `release*` entries came out of that work.
+- **`VulkanRenderer::drawFrame` split** into `beginFrameIfNeeded` / `clear` /
+  `recordDraw` / `present`, because VALO drives a frame as
+  clear -> draw* -> flush -> show and a Vulkan clear is `loadOp` on *beginning*
+  rendering, not an operation of its own.
 
 Landed 2026-09-26/27, in order: uniform buffers (slot-bound, `MAX_UNIFORM_SLOTS
 = 8`); sRGB (converted at sample, not at load); the top-left fill rule;
@@ -397,32 +415,95 @@ anything in software - the point is that the same dev code stays correct on both
       to a different resource - wrong pixels, no crash. See `PLAN.md` phase 0a
       for the two bugs this took on the way in.
 
-- [ ] **Mutation while queued.** *(next)* `updateVertexBuffer` / `updateIndexBuffer` /
-      `updateUniformBuffer` are a memcpy, so writing one after `submit` and
-      before `endFrame` silently changes what the queued draw reads - already
-      true for uniform buffers, and the same hazard for the rest. On Vulkan,
-      writing memory the GPU is reading is undefined rather than merely
-      surprising. Decide between documenting "only between frames", or
-      per-frame copies for anything marked dynamic (what Vulkan apps normally
-      do). The choice shows up in the dev-facing contract either way.
+- [~] **Mutation while queued** - decided 2026-09-28, wording deferred.
+      `update*Buffer` is a memcpy, so writing one after `submit` and before
+      `endFrame` silently changes what the queued draw reads. **Decision:
+      document "only between frames"; no per-frame copies.** Rejected the
+      copies because they would constrain the backend before it existed and can
+      be added later without an API change.
 
-- [ ] Split `Renderer` into an abstract interface + `SoftwareRenderer`.
-      Everything above `Renderer` (VALO, layers, clip stack, IDs, RenderCommand)
-      stays identical. `RenderTarget` becomes backend-owned.
-- [ ] Decide the shader contract for the GPU side: GLSL/SPIR-V passed to a
-      `createProgram` overload. Optionally the dual-compile header (same source
-      builds as C++ and GLSL) to shrink the rewrite — revisit once the backend
-      exists and the real constraints are known.
+      The comment lands in the full documentation pass, not before. What it has
+      to say: `updateTexture` and `updateUniformBuffer` genuinely misbehave
+      today (both are read at `flush()`, so a mid-frame write reaches a draw
+      queued earlier in the *same* frame); `updateVertexBuffer` /
+      `updateIndexBuffer` are safe as the software backend stands, and are
+      covered only for Vulkan forward-compatibility. See `PLAN.md` phase 0b.
+
+- [x] ~~Split `Renderer` into an abstract interface + `SoftwareRenderer`.~~
+      **Done 2026-09-30, but not as an abstract interface.** `Renderer` stays
+      one concrete class and dispatches through a 28-entry function-pointer
+      table installed by `init()`. A base class would have duplicated ~40
+      declarations to express what the class already expresses; `#ifdef` gating
+      would force one backend per binary, and the phase-6 conformance harness
+      wants both in one process. Full reasoning in `PLAN.md`.
+
+      Implementations live in `include/render/backends/SoftwareBackend.cpp` and
+      `VulkanBackend.cpp` as `Renderer::software*` / `Renderer::vulkan*`
+      members, so the bodies moved verbatim rather than being rewritten as free
+      functions. Backend state is `VulkanRenderer* m_vulkan` - typed, not
+      `void*`, because only one backend needs any.
+
+      The non-obvious entries: five `release*` (the deferred-destroy *timing* is
+      shared, the freeing is not - without these Vulkan leaks everything
+      silently) and `initBackend` (`init` picks the table so it is not *in* the
+      table, but the backend half of startup still has to dispatch).
+
+- [x] ~~Decide the shader contract for the GPU side.~~ **Decided 2026-09-28:
+      two implementations, one spec.** `createProgram` is overloaded - C++
+      callbacks for software, GLSL/SPIR-V for Vulkan - and they stay separate.
+      The dual-compile header was rejected: a C++ function pointer cannot become
+      SPIR-V and pretending otherwise drags the divergence into every uniform
+      struct. **Endgame is a C++ -> GLSL translator**, for which each
+      hand-written pair is an input/expected-output test case. The defence
+      against drift is the conformance diff harness, pulled forward to phase 3.
 
 ## 4. Vulkan backend
 
-- [ ] Instance / device / queues / swapchain / frames-in-flight / sync.
-- [ ] Resources: buffers (staging upload), images + samplers, uniform buffers.
+Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
+
+- [x] **Instance / device / queues / swapchain / frames-in-flight / sync**
+      (2026-09-30). All nine steps of `VULKAN_SETUP.md`. `VulkanContext`,
+      `VulkanSwapchain`, `VulkanFrames`, `VulkanRenderer`. Dynamic rendering
+      rather than render passes, `synchronization2`, validation on from the
+      first line. `renderFinished` is per swapchain *image* while
+      `imageAvailable`/`inFlight` are per frame in flight - different counts,
+      and conflating them is the classic bug.
+      *Verified:* `vk-test` 20 assertions; `vk-clear --frames 400` clean;
+      scripted resize across 8 sizes including 1x1.
+
+- [~] **A window clearing through `VALO`** - `Backend::Vulkan` brings up a real
+      window and presents. `vulkanClear` and `vulkanShow` are wired to
+      `VulkanRenderer::clear` / `::present`; `vulkanFlush` is correctly a no-op
+      (it runs once per *layer*, so anything that submits belongs in `show`).
+      21 of the 28 Vulkan entries are still `todo()` stubs.
+
+- [ ] **One triangle** - the first thing needing real SPIR-V, so it is where the
+      shader contract stops being theoretical. Needs `createProgramFromFiles`,
+      a pipeline, and a vertex buffer.
+- [ ] Resources: buffers (staging upload), images + samplers, uniform buffers,
+      descriptor sets. Uniform padding is the trap: `Vec3f` is 12 bytes in C++,
+      a std140 `vec3` pads to 16. `VK_EXT_scalar_block_layout` is available on
+      this hardware if you want C++ rules instead.
 - [ ] Pipeline cache keyed on `(program, RenderCommand state, vertex layout)`.
-- [ ] Layers -> render passes; targets -> framebuffers; `textureDepth` ->
-      depth-image sampling; stencil ops verbatim; dynamic viewport/scissor.
-- [ ] `gltf.cpp` running unchanged on both backends is the finish line.
-      Estimate: ~1 week.
+- [ ] Layers -> dynamic-rendering blocks; targets -> images + views;
+      `textureDepth` -> depth-image sampling; stencil ops verbatim; dynamic
+      viewport/scissor. This is the image-layout phase, the one concept with no
+      software analogue.
+- [ ] `gltf.cpp`'s scene on both backends, switched by a runtime flag, is the
+      finish line - same app code and `RenderCommand` state, one C++ shader and
+      one GLSL shader implementing the same spec.
+
+### Known gaps, deliberately left
+
+- `recreateSwapchain()` errors out if the new swapchain reports a different
+  image count, because `VulkanFrames` sized `renderFinished` from the old one.
+  Never fired on MoltenVK (3 images at every size tested); a driver that varies
+  it would hit this. Fix is to rebuild `VulkanFrames` alongside the swapchain.
+- `vulkanClear` ignores its `target`, so a clear to a non-backbuffer target
+  silently hits the backbuffer. Only reachable via render-to-texture.
+- `vulkanDraw` does not call `VulkanRenderer::recordDraw()` yet, so a frame with
+  draws but no clear never opens and never presents. Not reachable through
+  `VALO`, which always clears first.
 
 ## 5. Nice-to-have (either backend, not blocking)
 

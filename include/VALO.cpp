@@ -17,6 +17,7 @@ bool VALO::init(Window& window, const RenderConfig& cfg) {
     m_window = &window;
     m_cfg = cfg;
     m_cfg.sdlWindow = window.sdlHandle();
+    m_cfg.window    = &window;
 
     m_layers.clear();
     m_layerOrder.clear();

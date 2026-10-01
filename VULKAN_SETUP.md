@@ -166,7 +166,7 @@ support.
 
 ---
 
-## Step 4 — swapchain
+## Step 4 — swapchain — DONE (2026-09-30)
 
 The rotating set of images the window presents from. Three queries feed it:
 
@@ -196,7 +196,7 @@ distinguishes these and gets it right, so reuse it.
 
 ---
 
-## Step 5 — image views
+## Step 5 — image views — DONE (2026-09-30)
 
 `vkGetSwapchainImagesKHR` gives the images (owned by the swapchain, never
 destroyed by you). Each needs a `VkImageView` — a typed window onto the image —
@@ -209,7 +209,7 @@ something to tear down.
 
 ---
 
-## Step 6 — command pool and command buffers
+## Step 6 — command pool and command buffers — DONE (2026-09-30)
 
 One `VkCommandPool` on the graphics family, with
 `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT` so buffers can be re-recorded
@@ -228,7 +228,7 @@ you.
 
 ---
 
-## Step 7 — synchronisation
+## Step 7 — synchronisation — DONE (2026-09-30)
 
 Per frame in flight:
 
@@ -252,7 +252,7 @@ objects.
 
 ---
 
-## Step 8 — the frame loop, clearing
+## Step 8 — the frame loop, clearing — DONE (2026-09-30)
 
 Per frame:
 
@@ -287,7 +287,7 @@ Zero validation output.
 
 ---
 
-## Step 9 — resize
+## Step 9 — resize — DONE (2026-09-30)
 
 `vkAcquireNextImageKHR` and `vkQueuePresentKHR` return
 `VK_ERROR_OUT_OF_DATE_KHR` or `VK_SUBOPTIMAL_KHR` when the swapchain no longer
@@ -316,5 +316,31 @@ sizes, then minimise and restore. Zero validation output, no leak.
 - resize and minimise/restore survive
 - shutdown is clean, and clean under the validation layer's leak check
 
-That is PLAN.md phase 1. Phase 2 is one triangle, and after that 0c — the
-interface split — with Vulkan experience actually in hand.
+---
+
+## Phase 1 complete — 2026-09-30
+
+All nine steps landed. What exists now:
+
+| file | holds |
+|---|---|
+| `VulkanContext` | instance, debug messenger, surface, physical + logical device, graphics/present queues |
+| `VulkanSwapchain` | swapchain, images, image views, format, extent |
+| `VulkanFrames` | command pool, per-frame command buffers, semaphores, fences |
+| `VulkanRenderer` | `drawFrame()` - acquire, barrier, dynamic-rendering clear, barrier, submit2, present - and `recreateSwapchain()` |
+| `examples/vk-clear.cpp` | the phase-1 demo: cycling clear colour, `--frames N`, `--quiet` |
+| `examples/vk-test.cpp` | 20 assertions across steps 1-4, exit code usable as a build gate |
+
+*Verified:* `vk-test` 20/20; `vk-clear --frames 400` zero failures; a scripted
+resize across 8 sizes including 1x1 and 1600x900, 96 frames, zero failures.
+No validation output in any of the three.
+
+**Known gap:** `recreateSwapchain()` bails with an error if the new swapchain
+reports a different image count, because `VulkanFrames` sizes its
+`renderFinished` array from the old count. It has not fired on this machine -
+MoltenVK returns 3 images at every size tested - but a driver that varies the
+count on resize would hit it. The fix is to rebuild `VulkanFrames` alongside the
+swapchain rather than to assume stability.
+
+Next: phase 2, one triangle. Then the backend dispatch table, whose design is
+in PLAN.md and whose `fetchBackendFuncs()` is currently a stub.

@@ -17,25 +17,30 @@ bool VulkanRenderer::init(Window& window, const uint32_t framesInFlight, const b
     return true;
 }
 
-bool VulkanRenderer::drawFrame(const Color& clearColor) {
+bool VulkanRenderer::beginFrameIfNeeded(const VkAttachmentLoadOp loadOp, const Color& clearColor) {
+    if (m_frameOpen) return true;
+
     const VkDevice device = m_ctx.device();
     const uint32_t frame = m_frameIndex;
 
     if (m_needsRecreate) {
         if (!recreateSwapchain()) return false;
-        if (m_needsRecreate) return true;
+        if (m_needsRecreate) return false;
     }
 
     const VkFence fence = m_frames.inFlight(frame);
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
-    uint32_t image = 0;
     VkResult r = vkAcquireNextImageKHR(
         device, m_swapchain.handle(), UINT64_MAX,
-        m_frames.imageAvailable(frame), VK_NULL_HANDLE, &image
+        m_frames.imageAvailable(frame), VK_NULL_HANDLE, &m_imageIndex
     );
 
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) return recreateSwapchain();
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        m_needsRecreate = true;
+        recreateSwapchain();
+        return false;
+    }
     if (r == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
     else if (r != VK_SUCCESS) {
         std::fprintf(stderr, "[vulkan] vkAcquireNextImageKHR failed (%d)\n", r);
@@ -63,7 +68,7 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
         .newLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .image                  = m_swapchain.images()[image],
+        .image                  = m_swapchain.images()[m_imageIndex],
         .subresourceRange       = {
             .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel       = 0,
@@ -82,9 +87,9 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
 
     const VkRenderingAttachmentInfo color{
         .sType          = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView      = m_swapchain.views()[image],
+        .imageView      = m_swapchain.views()[m_imageIndex],   // CHANGED: [image]
         .imageLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .loadOp         = loadOp,                              // CHANGED: was _CLEAR
         .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue     = { .color = {{clearColor.r, clearColor.g, clearColor.b, clearColor.a}} }
     };
@@ -98,7 +103,32 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
     };
 
     vkCmdBeginRendering(cmd, &ri);
-    vkCmdEndRendering(cmd);
+
+    m_frameOpen = true;
+    m_renderingOpen = true;
+    return true;
+}
+
+void VulkanRenderer::clear(const Color& clearColor, const float clearDepth) {
+    (void)clearDepth;   // no depth attachment yet
+    beginFrameIfNeeded(VK_ATTACHMENT_LOAD_OP_CLEAR, clearColor);
+}
+
+void VulkanRenderer::recordDraw() {
+    if (!beginFrameIfNeeded(VK_ATTACHMENT_LOAD_OP_LOAD, {})) return;
+    // nothing to record yet
+}
+
+bool VulkanRenderer::present() {
+    if (!m_frameOpen) return true;
+
+    const uint32_t frame = m_frameIndex;
+    const VkCommandBuffer cmd = m_frames.commandBuffer(frame);
+
+    if (m_renderingOpen) {
+        vkCmdEndRendering(cmd);
+        m_renderingOpen = false;
+    }
 
     const VkImageMemoryBarrier2 toPresent{
         .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -110,7 +140,7 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
         .newLayout              = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .image                  = m_swapchain.images()[image],
+        .image                  = m_swapchain.images()[m_imageIndex],
         .subresourceRange       = {
             .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel       = 0,
@@ -137,7 +167,7 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
 
     const VkSemaphoreSubmitInfo signalSem{
         .sType                  = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .semaphore              = m_frames.renderFinished(image),
+        .semaphore              = m_frames.renderFinished(m_imageIndex),
         .stageMask              = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT
     };
 
@@ -156,12 +186,14 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
         .pSignalSemaphoreInfos      = &signalSem
     };
 
-    if (vkQueueSubmit2(m_ctx.graphicsQueue(), 1, &submit, fence) != VK_SUCCESS) {
-        std::fprintf(stderr, "[vulkan] vkQueueSubmit2 failed\n");
+    m_frameOpen = false;
+
+    if (vkQueueSubmit2(m_ctx.graphicsQueue(), 1, &submit, m_frames.inFlight(frame)) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vkQueueSubmit2 failed\n");   // CHANGED: fence -> m_frames.inFlight(frame)
         return false;
     }
 
-    const VkSemaphore presentWait = m_frames.renderFinished(image);
+    const VkSemaphore presentWait = m_frames.renderFinished(m_imageIndex);
     const VkSwapchainKHR chain = m_swapchain.handle();
 
     const VkPresentInfoKHR pi{
@@ -170,10 +202,10 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
         .pWaitSemaphores    = &presentWait,
         .swapchainCount     = 1,
         .pSwapchains        = &chain,
-        .pImageIndices      = &image
+        .pImageIndices      = &m_imageIndex 
     };
 
-    r = vkQueuePresentKHR(m_ctx.presentQueue(), &pi);
+    const VkResult r = vkQueuePresentKHR(m_ctx.presentQueue(), &pi);   // CHANGED: was bare `r =`
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
     else if (r != VK_SUCCESS) {
         std::fprintf(stderr, "[vulkan] vkQueuePresentKHR failed (%d)\n", r);
@@ -182,6 +214,11 @@ bool VulkanRenderer::drawFrame(const Color& clearColor) {
 
     m_frameIndex = (frame + 1) % m_frames.framesInFlight();
     return true;
+}
+
+bool VulkanRenderer::drawFrame(const Color& clearColor) {
+    clear(clearColor, 0.f);
+    return present();
 }
 
 bool VulkanRenderer::recreateSwapchain() {

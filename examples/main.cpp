@@ -43,11 +43,12 @@ void fs(const Varyings& in, const Uniforms& u) {
 }
 
 int main() {
-    valo::Window window("VALO", {1280, 720});
+    valo::Window window("VALO", {1280, 720}, valo::WinFlags::Vulkan | valo::WinFlags::Resize | valo::WinFlags::HiDPI);
 
     valo::VALO valo;
     valo::RenderConfig cfg;
     cfg.vsync = true;
+    cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
     valo.setRenderScale(1.f);
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {.8f, .9f, 1.f, 1.f});
