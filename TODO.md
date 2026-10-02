@@ -6,18 +6,18 @@ a gate for the next.
 
 ## State (2026-10-01)
 
-~7.9k lines of library across 39 files (2.2k of that Vulkan), 13 examples,
+~8.3k lines of library across 39 files (2.7k of that Vulkan), 13 examples,
 every feature behind a sanitizer-verified harness. The dev-facing API (Window ->
 VALO -> create* -> RenderCommand -> submit, typed C++ shader callbacks) is
 settled and Vulkan-shaped.
 
 **The Vulkan backend renders a glTF scene.** `Renderer` dispatches every public
 method through a 28-entry function-pointer table; both backends fill all 28.
-`minimal.exe --vulkan` loads `sea_keep_lonely_watcher` and draws it through the
+`minimal.exe --vulkan` loads `sea_keep_lonely_watcher` **textured**, through the
 same `Engine`, the same `RenderCommand` state and the same camera as the
-software path - which is `PLAN.md`'s phase 6 finish line, reached early and
-minus textures. **Six of the 28 Vulkan entries are still `todo()` stubs: four
-texture functions and the two render-target ones.**
+software path - `PLAN.md`'s phase 6 finish line, minus the conformance diff
+harness. **Four of the 28 Vulkan entries are still `todo()` stubs:
+`updateTexture`, `updateTextureRect`, `createTarget` and `releaseTarget`.**
 
 Vulkan examples: `vk-clear` (presentation), `vk-triangle` (rotating, depth-
 tested, push constants), `vk-cubes` (instanced grid, vertex/index buffers,
@@ -68,6 +68,66 @@ Landed 2026-10-01 (the Vulkan draw path, in order):
   which is the two-implementations contract becoming ordinary application code
   rather than a special case. `Engine::init` also has to add `WinFlags::Vulkan`,
   since SDL cannot attach a surface to a window that was not created for one.
+
+### Textures: bindless, with separate samplers (2026-10-02)
+
+**Textures and render targets are one type.** `SoftwareRenderer::createTexture`
+returns `pushTarget(...)`, `updateTexture` asserts `validTarget`, and
+`TextureID`/`RenderTargetID` are both `uint32_t` indexing `m_targets`. The
+Vulkan backend mirrors that: one `GPUTexture` vector, one free list
+(`m_freeTargets`), and a render target is just one that also carries
+`COLOR_ATTACHMENT_BIT`. Finding this *before* writing either is what stopped
+them being written twice.
+
+**Descriptor indexing, not per-draw bindings.** `main.cpp` and
+`MinimalEngine` both put a `TextureID` *inside* the uniform struct and let the
+shader do `texture(u.tex, uv)`. Conventional Vulkan cannot express that - a
+`sampler2D` is a bound slot, not a value - so matching it needs one unsized
+array with `TextureID` as the index. The alternative would have grown a
+texture-binding API on `RenderCommand` that only one backend used.
+
+**Separate `texture2D` and `sampler`, not `COMBINED_IMAGE_SAMPLER`**, because
+`Sampling.hpp` passes a `Sampler` at *call* time. Binding 0 is an unsized
+sampled-image array (`MAX_TEXTURES = 4096`); binding 1 is the 18 fixed
+`Wrap x Wrap x Filter` combinations, written once at init. The shader recombines
+them: `texture(sampler2D(uTextures[nonuniformEXT(id)], uSamplers[s]), uv)`.
+
+Set 0 is push descriptors and set 1 is the bindless set - opposite mechanisms
+for opposite lifetimes. Set 0 changes per draw and has no persistent state, so
+inline writes win; set 1 is allocated once and lives for the renderer, so a pool
+costs nothing.
+
+Three binding flags, each load-bearing: `PARTIALLY_BOUND` (unwritten slots are
+legal, so a 4096-entry array can start empty), `UPDATE_AFTER_BIND` (write a
+descriptor while recorded command buffers still reference the set) and
+`UPDATE_UNUSED_WHILE_PENDING` (which makes `createTexture` mid-frame safe rather
+than merely legal). `UPDATE_AFTER_BIND_POOL` has to be on **both** the layout
+and the pool; missing it on one fails at allocation and blames the pool.
+
+Traps worth keeping written down:
+
+- `nonuniformEXT` is required. Without it the compiler may assume a whole
+  wavefront samples the same texture, and when different primitives do not, you
+  get the wrong texture rather than an error. It often still works on AMD, which
+  is how it survives into shipped code.
+- `maxLod` defaults to `0.0`, clamping every sample to mip 0. Mipmaps upload
+  correctly and are never used, which reads as a generation bug.
+- the image **view** needs `levelCount = mipLevels`, for the same reason.
+- the mip level count loop must stop when *both* dimensions reach zero. Using
+  only the larger one gives a 1024x16 texture 5 levels instead of 11.
+- pixel order was checked, not assumed: `Srgb.hpp:78` packs
+  `(a << 24) | (b << 16) | (g << 8) | r`, so memory order is R,G,B,A - exactly
+  `VK_FORMAT_R8G8B8A8_*`, no swizzle.
+
+Mip generation is a `vkCmdBlitImage` chain, each level moving to
+`SHADER_READ_ONLY_OPTIMAL` as soon as the next has been blitted from it, so only
+the last level transitions after the loop.
+
+`loadSpirv` passes `-I examples/shaders` to `glslc`, so shaders
+`#include "valo.glsl"` for the bindless declarations and the sampler constants
+rather than copying them. The include path being relative to the working
+directory is crude for a library - it eventually belongs in `RenderConfig` or
+beside the executable.
 
 ### The clip-space Y flip (2026-10-01)
 
@@ -558,27 +618,36 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 
 - [x] **Pipeline cache** keyed on `(program, packed state, vertex layout)`.
 
-- [ ] **Textures** - the last large piece. Images and views (the depth buffer
-      already has that shape), plus samplers, layout transitions, staging
-      uploads and mipmap generation.
+- [x] **Textures** (2026-10-02) - bindless, with separate samplers. See the
+      State section for the design and the traps. `createTexture`,
+      `createTextureFromFile` and sampling in GLSL all work;
+      `minimal --vulkan` renders the scene textured.
 
-      **Decide the descriptor model first.** `main.cpp` puts a `TextureID`
-      *inside* the uniform struct and the shader does `texture(u.tex, uv)`.
-      Conventional Vulkan cannot do that - a `sampler2D` is a bound slot, not a
-      value - so matching it needs descriptor indexing: one unsized
-      `sampler2D textures[]` array, `TextureID` as the index. Probed and
-      supported here (`VK_EXT_descriptor_indexing`,
-      `maxDescriptorSetUpdateAfterBindSampledImages` effectively unbounded).
-      The alternative is explicit per-draw texture bindings on
-      `RenderCommand`, which would make the two backends diverge in their
-      public API. Bindless goes in **set 1**; set 0 is push descriptors and
-      cannot be update-after-bind.
+- [ ] **`updateTexture` / `updateTextureRect`** - a staged copy into an existing
+      image, so mostly `uploadImage` with a `VkBufferImageCopy` offset and
+      extent, plus the layout round trip `SHADER_READ_ONLY -> TRANSFER_DST ->
+      SHADER_READ_ONLY`. The real question is in-flight frames: overwriting an
+      image a recorded command buffer still samples needs either a stall or the
+      retire-and-replace pattern the buffers use.
+
+- [ ] **Texture destruction** - `destroyTextureNow` is immediate, which is only
+      valid when the GPU is idle (create-failure path, shutdown). Destroying
+      from the app mid-frame needs the retire queue, *and* the bindless slot
+      keeps pointing at a dead view until something overwrites it.
+      `PARTIALLY_BOUND` makes that legal while nothing reads it, but it should
+      be deliberate rather than incidental.
 
 - [ ] **Render targets** - offscreen colour images with `VkRenderingInfo`
       pointing at them instead of the swapchain, then layers as one
       dynamic-rendering block per distinct target. This is the image-layout
       phase: a target written by one layer and sampled by the next needs
       `COLOR_ATTACHMENT_OPTIMAL` -> `SHADER_READ_ONLY_OPTIMAL` in between.
+
+      Cheaper than it was: `GPUTexture`, `createImage` and `transitionImage`
+      already exist, and a target is a texture with `COLOR_ATTACHMENT_BIT` and
+      no upload. What is genuinely new is tracking each target's *current*
+      layout, since it alternates between being drawn into and being sampled -
+      a field on `GPUTexture`, not a fixed constant.
 
 - [ ] **Stencil** - `RenderCommand` carries `stencilTest`/`stencilOp`/
       `stencilRef` and the software backend honours them; `createPipeline` sets
@@ -588,11 +657,11 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       keying on state the pipeline ignores would split the cache for nothing).
 
 - [~] **A glTF scene on both backends, switched by a runtime flag** - reached
-      by `minimal --vulkan` (2026-10-01): same `Engine`, same camera, same
-      `RenderCommand` state, `me::vs`/`me::fs` on software and
-      `shaders/minimal.vert`/`.frag` on Vulkan. Untextured until `createTexture`
-      exists, and the conformance diff harness is still unwritten, so this is
-      not closed - but the hard half of it is done.
+      by `minimal --vulkan` (2026-10-01, textured 2026-10-02): same `Engine`,
+      same camera, same `RenderCommand` state, `me::vs`/`me::fs` on software and
+      `shaders/minimal.vert`/`.frag` on Vulkan. Only the conformance diff
+      harness is still missing, so this is not formally closed - but visually
+      it is there.
 
 ### Known gaps, deliberately left
 
@@ -776,9 +845,12 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 - `vk-test.cpp` — the harness. Sections for context, swapchain, programs,
   uniform buffers and the pipeline state tables. The draw sections have no
   automatic oracle: clean validation output *is* the pass condition.
-- `shaders/` — `triangle`, `ubo0`/`ubo3` (same shader at bindings 0 and 3, for
-  the sparse-slot case), `cube`, `minimal`. The `.spv` files beside them are
-  `glslc` output and regenerate when the source is newer.
+- `shaders/` — `valo.glsl` (the bindless prelude: `uTextures`, `uSamplers`,
+  `valoTexture()` and the sampler-index constants, pulled in with
+  `#include` thanks to `glslc -I examples/shaders`), plus `triangle`,
+  `ubo0`/`ubo3` (same shader at bindings 0 and 3, for the sparse-slot case),
+  `cube` and `minimal`. The `.spv` files beside them are `glslc` output and
+  regenerate when the source is newer.
 - `bench/` — **untracked, not in git** (never committed; a fresh clone has no
   `examples/bench`). `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
   scene/shader/resolution. Run the Vulkan one on SwiftShader with

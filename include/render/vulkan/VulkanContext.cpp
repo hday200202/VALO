@@ -275,9 +275,20 @@ bool VulkanContext::createLogicalDevice() {
         .dynamicRendering   = VK_TRUE
     };
 
+    VkPhysicalDeviceVulkan12Features f12{
+        .sType                                          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .pNext                                          = &f13,
+        .descriptorIndexing                             = VK_TRUE,
+        .shaderSampledImageArrayNonUniformIndexing      = VK_TRUE,
+        .descriptorBindingSampledImageUpdateAfterBind   = VK_TRUE,
+        .descriptorBindingPartiallyBound                = VK_TRUE,
+        .descriptorBindingVariableDescriptorCount       = VK_TRUE,
+        .runtimeDescriptorArray                         = VK_TRUE
+    };
+
     VkPhysicalDeviceFeatures2 features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &f13,
+        .pNext = &f12,
         .features = { .fillModeNonSolid = VK_TRUE }
     };
 

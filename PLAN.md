@@ -1,9 +1,9 @@
 # VALO — Vulkan backend plan
 
 Written 2026-09-27, when the software renderer went feature-complete.
-Phase status last reconciled against the code 2026-10-01: phases 0-2 and 4
-done, phase 3 half done (buffers and uniforms yes, textures no), phases 5-6
-open. Where the code diverged from the plan, the phase sections say so.
+Phase status last reconciled against the code 2026-10-02: phases 0-4 done,
+phase 5 next, phase 6 reached visually but not formally (no conformance diff
+harness). Where the code diverged from the plan, the phase sections say so.
 
 Finish line: **the same app code, the same `RenderCommand` state, and a matching
 frame on both backends.** The shader source differs by backend and always will -
@@ -509,7 +509,7 @@ and `DepthCompare::Greater`, a triangle at `z = 0.0` fails `0.0 > 0.0` and
 vanishes entirely. Worth knowing as the first symptom of depth working rather
 than failing.
 
-## Phase 3 — resources — PARTIALLY DONE (2026-10-01)
+## Phase 3 — resources — DONE (2026-10-02)
 
 **Buffers: done.** One `uploadBuffer` staging path serves vertex, index and
 uniform buffers. The ID + free-list model carried over directly, as predicted.
@@ -528,12 +528,31 @@ the loader** and must come from `vkGetDeviceProcAddr`; and the
 `VkWriteDescriptorSet` array must be indexed by write count, not slot number,
 since `pBufferInfo` points into a parallel array.
 
-**Textures: not started.** The remaining work, and the reason this phase is the
-one still open. See TODO section 4 for the descriptor-model decision that gates
-it - the short version is that `TextureID` living inside the uniform struct
-means descriptor indexing, not conventional bindings, if the two backends are
-to keep meaning the same thing. Bindless textures go in set 1, because set 0 is
-push descriptors and a push-descriptor set cannot be update-after-bind.
+**Textures: done (2026-10-02), bindless.** The descriptor-model question this
+phase posed resolved toward descriptor indexing, for the reason the phase text
+half-predicted: textures need "an ID -> binding mapping, built per draw" only if
+the shader takes a bound slot. `TextureID` lives *inside* the uniform struct and
+the software shader does `texture(u.tex, uv)`, so there is nothing to map - one
+unsized array, `TextureID` as the index, bound once.
+
+Two refinements the plan did not anticipate:
+
+- **Separate `texture2D` and `sampler` descriptors**, not
+  `COMBINED_IMAGE_SAMPLER`, because `Sampling.hpp` passes the `Sampler` at call
+  time rather than at bind time. Binding 1 holds the 18 fixed combinations and
+  the shader recombines: `sampler2D(uTextures[nonuniformEXT(id)], uSamplers[s])`.
+- **Textures and render targets are one type.** `SoftwareRenderer::createTexture`
+  returns `pushTarget(...)` and they share `m_targets`. One `GPUTexture` vector
+  serves both, which pulls most of phase 5's work forward - a render target is a
+  texture with `COLOR_ATTACHMENT_BIT` and no upload.
+
+Mipmaps went the `vkCmdBlitImage` route rather than uploading CPU-generated
+levels. The phase text called uploading "less code"; the blit chain turned out
+to be about the same, and it keeps the software backend's CPU mip generation out
+of the Vulkan path entirely.
+
+**Uniform padding** was never decided in general, only worked around per struct -
+see TODO's known gaps.
 
 **Uniform padding** is still the trap this phase warned about, and is still
 undecided. Nothing has hit it yet because every block so far is a single `mat4`.
@@ -561,7 +580,13 @@ as predicted.
 
 *Still to verify:* `stencil.cpp` and `clipstack.cpp`, once stencil is wired.
 
-## Phase 5 — targets and layers (~6 h) — NEXT, after textures
+## Phase 5 — targets and layers (~6 h) — NEXT
+
+Cheaper than budgeted: `GPUTexture`, `createImage` and `transitionImage` all
+exist from the texture work, and targets share the texture ID space. What
+remains genuinely new is tracking each target's *current* layout as it
+alternates between attachment and sampled - a field on `GPUTexture` rather than
+the fixed constants the texture path uses.
 
 Render targets → images + image views. Layers → one dynamic-rendering block per
 distinct target, in layer order. `textureDepth()` → sampling a depth image.
@@ -634,6 +659,13 @@ the two expensive ideas - but push descriptors turned most of that cost into
 nothing, because the hard part of a descriptor pool is lifetime, and inline
 writes have none. Layout transitions are still ahead, and still the item with no
 software analogue, so the phase 5 budget stands.
+
+**Second measurement (2026-10-02):** phase 3's texture half plus the bindless
+set landed in roughly a sitting against ~5 h of remaining phase-3 budget, so the
+1.6x discount held even on the half of the plan that had no software analogue.
+The caveat below about discounting phase 5 lightly is now weaker, not stronger -
+phase 5 inherits `GPUTexture`, `createImage` and `transitionImage`, so the
+layout-transition work it was budgeted for is partly already written.
 
 **The estimate runs about 1.6x high, measured.** Phase 2 (~4 h), half of
 phase 3 (~4 h) and phase 4 (~5 h) is ~13 estimated hours; the actual sitting was

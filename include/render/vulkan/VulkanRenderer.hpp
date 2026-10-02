@@ -33,6 +33,20 @@ struct DepthBuffer {
     VkImageView     view        = VK_NULL_HANDLE;
 };
 
+struct GPUTexture {
+    VkImage         image       = VK_NULL_HANDLE;
+    VmaAllocation   allocation  = VK_NULL_HANDLE;
+    VkImageView     view        = VK_NULL_HANDLE;
+    uint32_t        width       = 0;
+    uint32_t        height      = 0;
+    uint32_t        mipLevels   = 1;
+    VkFormat        format      = VK_FORMAT_UNDEFINED;
+    bool            isTarget    = false;
+};
+
+inline constexpr uint32_t MAX_TEXTURES  = 4096;
+inline constexpr uint32_t SAMPLER_COUNT = 18;   // Wrap x Wrap x Filter
+
 inline constexpr uint64_t packPipelineState(const RenderCommand& cmd) {
     return  (uint64_t(cmd.topology)     <<  0)
          |  (uint64_t(cmd.cullmode)     <<  2)
@@ -77,83 +91,117 @@ public:
         GPUBuffer& out
     );
 
-    explicit VulkanRenderer(Renderer& owner) : m_owner(&owner) {}
+    bool uploadImage(GPUTexture& tex, const uint32_t* data);
 
-    bool            init();
+    bool createImage(
+        const uint32_t w, const uint32_t h,
+        const VkFormat format,
+        const uint32_t mipLevels,
+        const VkImageUsageFlags usage,
+        GPUTexture& out
+    );
 
-    void            clear(const Color& clearColor, const RenderTargetID target, const float clearDepth);
-    void            draw(const RenderCommand& cmd, const RenderTargetID target);
-    void            show(const RenderTargetID target);
-    void            flush();
+    void transitionImage(
+        const VkCommandBuffer cmd,
+        const VkImage image,
+        const VkImageLayout from, const VkImageLayout to,
+        const uint32_t baseMip, const uint32_t levelCount
+    );
 
-    RenderTargetID  createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb);
+    void writeTextureDescriptor(const TextureID id);
 
-    VertexBufferID  createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
-    void            updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout);
+    void destroyTextureNow(GPUTexture& tex);
 
-    IndexBufferID   createIndexBuffer(const uint32_t* data, const size_t count);
-    void            updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
+    explicit                VulkanRenderer(Renderer& owner) : m_owner(&owner) {}
 
-    UniformBufferID createUniformBuffer(const void* data, const size_t bytes);
-    void            updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
+    bool                    init();
 
-    TextureID       createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
-    TextureID       createTextureFromFile(const std::string& path, const bool srgb, const bool mips);
-    void            updateTexture(const TextureID texture, const uint32_t* data);
-    void            updateTextureRect(const TextureID texture, const uint32_t x, const uint32_t y, const uint32_t w, const uint32_t h, const uint32_t* data);
+    void                    clear(const Color& clearColor, const RenderTargetID target, const float clearDepth);
+    void                    draw(const RenderCommand& cmd, const RenderTargetID target);
+    void                    show(const RenderTargetID target);
+    void                    flush();
 
-    ProgramID       createProgramFromCallbacks(const Program& program);
-    ProgramID       createProgramFromFiles(const std::string& vsPath, const std::string& fsPath);
+    RenderTargetID          createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb);
 
-    void            releaseTarget(const RenderTargetID id);
-    void            releaseVertexBuffer(const VertexBufferID id);
-    void            releaseIndexBuffer(const IndexBufferID id);
-    void            releaseUniformBuffer(const UniformBufferID id);
-    void            releaseProgram(const ProgramID id);
+    VertexBufferID          createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
+    void                    updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout);
 
-    void            resize(const uint32_t w, const uint32_t h);
-    void            setVsync(const bool vsync);
+    IndexBufferID           createIndexBuffer(const uint32_t* data, const size_t count);
+    void                    updateIndexBuffer(const IndexBufferID indices, const uint32_t* data, size_t count);
 
-    uint32_t        width() const;
-    uint32_t        height() const;
+    UniformBufferID         createUniformBuffer(const void* data, const size_t bytes);
+    void                    updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
+
+    TextureID               createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
+    TextureID               createTextureFromFile(const std::string& path, const bool srgb, const bool mips);
+    void                    updateTexture(const TextureID texture, const uint32_t* data);
+    void                    updateTextureRect(const TextureID texture, const uint32_t x, const uint32_t y, const uint32_t w, const uint32_t h, const uint32_t* data);
+
+    ProgramID               createProgramFromCallbacks(const Program& program);
+    ProgramID               createProgramFromFiles(const std::string& vsPath, const std::string& fsPath);
+
+    void                    releaseTarget(const RenderTargetID id);
+    void                    releaseVertexBuffer(const VertexBufferID id);
+    void                    releaseIndexBuffer(const IndexBufferID id);
+    void                    releaseUniformBuffer(const UniformBufferID id);
+    void                    releaseProgram(const ProgramID id);
+
+    void                    resize(const uint32_t w, const uint32_t h);
+    void                    setVsync(const bool vsync);
+
+    uint32_t                width() const;
+    uint32_t                height() const;
 
 private:
-    bool recreateSwapchain();
-    void retireBuffer(GPUBuffer& buf);
-    void drainRetiredBuffers(const bool force = false);
-    std::vector<uint32_t> loadSpirv(const std::string& path);
-    VkShaderModule createShaderModule(const std::vector<uint32_t>& spirv);
-    VkPipeline createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout);
-    VkPipeline pipelineFor(const RenderCommand& cmd, const VtxLayout& layout);
-    VkFormat pickDepthFormat() const;
-    bool createDepthBuffers();
-    void destroyDepthBuffers();
+    bool                    recreateSwapchain();
+    void                    retireBuffer(GPUBuffer& buf);
+    void                    drainRetiredBuffers(const bool force = false);
+    std::vector<uint32_t>   loadSpirv(const std::string& path);
+    VkShaderModule          createShaderModule(const std::vector<uint32_t>& spirv);
+    VkPipeline              createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout);
+    VkPipeline              pipelineFor(const RenderCommand& cmd, const VtxLayout& layout);
+    VkFormat                pickDepthFormat() const;
+    bool                    createDepthBuffers();
+    void                    destroyDepthBuffers();
+    bool                    createBindlessSet();
+    bool                    createSamplers();
     
-    Window*         m_window        = nullptr;
-    VulkanContext   m_ctx;
-    VulkanSwapchain m_swapchain;
-    VulkanFrames    m_frames;
-    Renderer*       m_owner         = nullptr;
-    uint32_t        m_frameIndex    = 0;
-    uint32_t        m_imageIndex    = 0;
-    bool            m_frameOpen     = false;
-    bool            m_renderingOpen = false;
-    bool            m_needsRecreate = false;
+    Window*                         m_window                = nullptr;
+    VulkanContext                   m_ctx;
+    VulkanSwapchain                 m_swapchain;
+    VulkanFrames                    m_frames;
+    Renderer*                       m_owner                 = nullptr;
+    uint32_t                        m_frameIndex            = 0;
+    uint32_t                        m_imageIndex            = 0;
+    bool                            m_frameOpen             = false;
+    bool                            m_renderingOpen         = false;
+    bool                            m_needsRecreate         = false;
 
-    uint32_t        m_pushConstantSize = 0;
+    uint32_t                        m_pushConstantSize      = 0;
 
-    VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_uniformSetLayout = VK_NULL_HANDLE;
-    PFN_vkCmdPushDescriptorSetKHR m_pushDescriptorSet = nullptr;
+    VkPipelineLayout                m_pipelineLayout        = VK_NULL_HANDLE;
+    VkDescriptorSetLayout           m_uniformSetLayout      = VK_NULL_HANDLE;
+    PFN_vkCmdPushDescriptorSetKHR   m_pushDescriptorSet     = nullptr;
 
-    std::vector<std::pair<GPUBuffer, uint64_t>> m_retiredBuffers;
-    std::vector<GPUBuffer> m_vertexBuffers;
-    std::vector<GPUBuffer> m_indexBuffers;
-    std::vector<GPUBuffer> m_uniformBuffers;
-    std::vector<GPUProgram> m_programs;
-    std::vector<std::pair<PipelineKey, VkPipeline>> m_pipelines;
-    std::vector<DepthBuffer> m_depth;
-    VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
+    std::vector<std::pair<GPUBuffer, uint64_t>> 
+                                    m_retiredBuffers;
+
+    std::vector<GPUBuffer>          m_vertexBuffers;
+    std::vector<GPUBuffer>          m_indexBuffers;
+    std::vector<GPUBuffer>          m_uniformBuffers;
+    std::vector<GPUTexture>         m_textures;
+    std::vector<GPUProgram>         m_programs;
+
+    std::vector<std::pair<PipelineKey, VkPipeline>> 
+                                    m_pipelines;
+
+    std::vector<DepthBuffer>        m_depth;
+
+    VkDescriptorSetLayout           m_bindlessLayout        = VK_NULL_HANDLE;
+    VkDescriptorPool                m_bindlessPool          = VK_NULL_HANDLE;
+    VkDescriptorSet                 m_bindlessSet           = VK_NULL_HANDLE;
+    VkSampler                       m_samplers[SAMPLER_COUNT] = {};
+    VkFormat                        m_depthFormat           = VK_FORMAT_UNDEFINED;
 };
 
 
@@ -199,6 +247,10 @@ inline constexpr VkCompareOp vkCompareOf(const DepthCompare c) {
         case DepthCompare::Never:        return VK_COMPARE_OP_NEVER;
     }
     return VK_COMPARE_OP_GREATER;
+}
+
+inline constexpr uint32_t samplerIndex(const Wrap u, const Wrap v, const Filter f) {
+    return (uint32_t(u) * 3 + uint32_t(v)) * 2 + uint32_t(f);
 }
 
 } // namespace valo
