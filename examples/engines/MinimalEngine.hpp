@@ -95,8 +95,8 @@ static inline void fs(const Varyings& in, const Uniforms& u) {
         ? u.material.baseColor
         : texture(u.material.baseColorTex, in.uv, sampler);
 
-    // if (out.a < 0.1f) discard;
-    // out.a = 1.f;
+    if (out.a < 0.1f) discard;
+    out.a = 1.f;
     valo_FragColor = out;
 }
 
@@ -358,8 +358,11 @@ public:
     }
 
 private:
-    VALO    m_valo;
+    // Window first: members destruct in reverse, so VALO (and with it the
+    // Vulkan surface, which SDL_Vulkan_DestroySurface needs a live window for)
+    // has to go down before the window does.
     Window  m_window;
+    VALO    m_valo;
 
     Camera  m_camera;
 

@@ -1,25 +1,30 @@
 #version 450
 
+#include <valo.glsl>
+
 /*
     The GLSL half of MinimalEngine's shader pair. The C++ half is me::vs in
     engines/MinimalEngine.hpp; both implement the same spec.
 
-    The block mirrors me::Uniforms byte for byte, which is why baseColor is
-    four loose floats rather than a vec4: it sits at offset 84 in the C++
-    struct, and std430 would round a vec4 up to 96. Scalars have 4-byte
-    alignment, so spelling it out this way needs no scalar-block-layout
-    feature and cannot drift.
+    scalar layout, so these blocks mirror me::Uniforms and me::Material field
+    for field rather than being hand-flattened around std140's padding. Keep
+    the two in step - the field order here is the field order there.
 */
-layout(push_constant) uniform Push {
-    mat4  mvp;                                  // 0
-    uint  baseColorTex;                         // 64
-    uint  emissiveTex;                          // 68
-    uint  metallicRoughnessTex;                 // 72
-    uint  normalTex;                            // 76
-    uint  occlusionTex;                         // 80
-    float bcR, bcG, bcB, bcA;                   // 84
-    float emR, emG, emB;                        // 100
-    float metallic;                             // 112
+struct Material {
+    uint  baseColorTex;
+    uint  emissiveTex;
+    uint  metallicRoughnessTex;
+    uint  normalTex;
+    uint  occlusionTex;
+
+    vec4  baseColor;
+    vec3  emissive;
+    float metallic;
+};
+
+layout(scalar, push_constant) uniform Push {
+    mat4     mvp;
+    Material material;
 } pc;
 
 layout(location = 0) in vec3 inPos;

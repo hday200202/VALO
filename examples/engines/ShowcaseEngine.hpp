@@ -1169,8 +1169,10 @@ private:
         m_fpsFrames = 0;
     }
 
-    VALO   m_valo;
+    // Window first: members destruct in reverse, and the Vulkan surface
+    // cannot be destroyed after the SDL window it came from.
     Window m_window;
+    VALO   m_valo;
     Camera m_camera;
 
     std::deque<Model> m_models;

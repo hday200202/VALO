@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
 
     engine.setSkyColor("#fff0b4");
     me::Model& model = engine.addModel("examples/gltf/sea_keep_lonely_watcher/scene.gltf");
-    // model.setPosition({0.f, -0.6f, -5.f});
+    // model.setPosition({0.f, -200, 200});
     model.setTransform(valo::Mat4f::scale({0.03f, 0.03f, 0.03f}));
 
     while (engine.isRunning()) {

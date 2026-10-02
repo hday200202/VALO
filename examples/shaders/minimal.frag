@@ -2,25 +2,36 @@
 
 #include <valo.glsl>
 
-layout(push_constant) uniform Push {
-    mat4  mvp;
+// mirrors me::Material; see minimal.vert
+struct Material {
     uint  baseColorTex;
     uint  emissiveTex;
     uint  metallicRoughnessTex;
     uint  normalTex;
     uint  occlusionTex;
-    float bcR, bcG, bcB, bcA;
-    float emR, emG, emB;
+
+    vec4  baseColor;
+    vec3  emissive;
     float metallic;
+};
+
+layout(scalar, push_constant) uniform Push {
+    mat4     mvp;
+    Material material;
 } pc;
 
 layout(location = 0) in  vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    uint tex = pc.baseColorTex;
+    uint tex = pc.material.baseColorTex;
 
-    outColor = tex == 0xFFFFFFFFu
-        ? vec4(pc.bcR, pc.bcG, pc.bcB, pc.bcA)
-        : valoTexture(tex, vUV, VALO_REPEAT_LINEAR) * vec4(pc.bcR, pc.bcG, pc.bcB, pc.bcA);
+    vec4 color = tex == VALO_EMPTY_TEXTURE
+        ? pc.material.baseColor
+        : valoTexture(tex, vUV, VALO_REPEAT_LINEAR);
+
+    if (color.a < 0.1) discard;
+    color.a = 1;
+
+    outColor = color;
 }

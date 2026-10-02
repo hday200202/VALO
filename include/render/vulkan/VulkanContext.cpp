@@ -283,7 +283,14 @@ bool VulkanContext::createLogicalDevice() {
         .descriptorBindingSampledImageUpdateAfterBind   = VK_TRUE,
         .descriptorBindingPartiallyBound                = VK_TRUE,
         .descriptorBindingVariableDescriptorCount       = VK_TRUE,
-        .runtimeDescriptorArray                         = VK_TRUE
+        .runtimeDescriptorArray                         = VK_TRUE,
+        /*
+            So a GLSL block can mirror a C++ struct field for field. std140/430
+            round a vec3 up to 16 bytes and pad array strides, which is why the
+            push-constant blocks were hand-flattened into loose floats; scalar
+            layout uses the same rules C++ does, so they no longer have to be.
+        */
+        .scalarBlockLayout                              = VK_TRUE
     };
 
     VkPhysicalDeviceFeatures2 features {

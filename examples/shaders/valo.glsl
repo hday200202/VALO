@@ -1,4 +1,11 @@
-#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_nonuniform_qualifier  : require
+
+// lets a uniform/push-constant block mirror a C++ struct field for field,
+// instead of hand-flattening around std140's padding rules
+#extension GL_EXT_scalar_block_layout   : require
+
+// matches valo::EMPTY_TEXTURE
+const uint VALO_EMPTY_TEXTURE  = 0xFFFFFFFFu;
 
 const uint VALO_REPEAT_NEAREST = 0u;
 const uint VALO_REPEAT_LINEAR  = 1u;
