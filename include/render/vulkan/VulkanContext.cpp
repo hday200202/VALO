@@ -281,6 +281,7 @@ bool VulkanContext::createLogicalDevice() {
         .descriptorIndexing                             = VK_TRUE,
         .shaderSampledImageArrayNonUniformIndexing      = VK_TRUE,
         .descriptorBindingSampledImageUpdateAfterBind   = VK_TRUE,
+        .descriptorBindingUpdateUnusedWhilePending      = VK_TRUE,
         .descriptorBindingPartiallyBound                = VK_TRUE,
         .descriptorBindingVariableDescriptorCount       = VK_TRUE,
         .runtimeDescriptorArray                         = VK_TRUE,

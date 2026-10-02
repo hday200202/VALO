@@ -22,10 +22,14 @@
 //   escape        quit
 
 #include <VALO.hpp>
+#include <cstring>
 #include <cmath>
 #include <chrono>
 #include <string>
 #include <algorithm>
+
+#include "shaders/roundrect.vert.hpp"
+#include "shaders/roundrect.frag.hpp"
 
 using valo::Vec2f;
 using valo::Vec3f;
@@ -34,33 +38,18 @@ using valo::Mat4f;
 using valo::Color;
 
 // ---------------------------------------------------------------------------
-// one shared unit quad; every rect is drawn by placing it through the uniforms
-// ---------------------------------------------------------------------------
-struct Vertex   { Vec2f pos; };                                 // 0..1
-struct Uniforms { Mat4f proj; Vec2f pos, size; Vec4f color; float radius; };
-struct Varyings { Vec2f local; };                               // pixel offset inside the rect
+int main(int argc, char** argv) {
+    // one scene, either backend: the software path resolves the shader
+    // paths to registered C++ callbacks, the Vulkan path translates them
+    bool useVulkan = false;
+    for (int i = 1; i < argc; ++i)
+        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
 
-static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    const Vec2f p = u.pos + in.pos * u.size;
-    out.local = in.pos * u.size;
-    valo::valo_Position = u.proj * Vec4f(p.x, p.y, 0.f, 1.f);
-}
-
-// rounded-rect SDF: distance from the rect shrunk by the radius, then re-expanded
-static void fs(const Varyings& in, const Uniforms& u) {
-    const Vec2f half = u.size * 0.5f;
-    const Vec2f p = in.local - half;
-    const Vec2f q = valo::abs(p) - (half - Vec2f{u.radius, u.radius});
-    const Vec2f qp = {std::max(q.x, 0.f), std::max(q.y, 0.f)};
-    const float d = qp.length() + std::min(std::max(q.x, q.y), 0.f) - u.radius;
-    if (d > 0.f) discard;
-    valo::valo_FragColor = u.color;
-}
-
-// ---------------------------------------------------------------------------
-int main() {
-    valo::Window window("VALO - clip stack", {1280, 960});
+    valo::Window window("VALO - clip stack", {1280, 960},
+        valo::WinFlags::Resize | valo::WinFlags::HiDPI
+      | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
     valo::VALO valo; valo::RenderConfig cfg; cfg.vsync = true;
+    if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {0.12f, 0.12f, 0.14f, 1.f});
 
@@ -68,7 +57,7 @@ int main() {
     valo::RenderCommand rect;
     rect.verts     = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     rect.indices   = valo.createIndexBuffer(idx, 6);
-    rect.program   = valo.createProgram(vs, fs);
+    rect.program   = valo.createProgram("shaders/roundrect.vert.hpp", "shaders/roundrect.frag.hpp");
     rect.cullmode  = valo::CullMode::None;
     rect.depthTest = false; rect.depthWrite = false;
     rect.blendmode = valo::BlendMode::Alpha;

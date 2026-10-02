@@ -485,24 +485,63 @@ void VulkanRenderer::drainRetiredBuffers(const bool force) {
 std::vector<uint32_t> VulkanRenderer::loadSpirv(const std::string& path) {
     namespace fs = std::filesystem;
 
-    std::string spvPath = path;
+    std::string source = path;
 
-    if (fs::path(path).extension() != ".spv") {
-        spvPath = path + ".spv";
+    /*
+        A C++ shader file: strip the .hpp to get the GLSL beside it. An existing
+        .glsl wins, so a hand-written one is never overwritten - valoc only runs
+        to fill a gap. That is also the seam the translator drops into once it
+        emits bodies: delete the hand-written file and it regenerates.
+    */
+    if (fs::path(path).extension() == ".hpp") {
+        source = path.substr(0, path.size() - 4);
 
-        const bool stale = 
-            !fs::exists(spvPath) || fs::last_write_time(spvPath) < fs::last_write_time(path);
+        if (!fs::exists(source)) {
+            // std::system goes through cmd.exe on Windows, which reads a
+            // leading bin/ as a command plus a /switch
+#ifdef _WIN32
+            const std::string valoc = "bin\\valoc.exe";
+#else
+            const std::string valoc = "./bin/valoc";
+#endif
+            // the executable is deliberately unquoted: cmd.exe strips the first
+            // and last quote of a command line that starts with one, which
+            // swallows the gap between argv[0] and argv[1]
+            const std::string cmd =
+                valoc + " \"" + path + "\" -o \"" + source + "\""
+                " -I include -I ext/stb -I ext/tinyobj -I ext/cgltf 2>&1";
+
+            std::fprintf(stderr, "[vulkan] translating %s\n", path.c_str());
+            if (std::system(cmd.c_str()) != 0) {
+                std::fprintf(
+                    stderr,
+                    "[vulkan] valoc failed on %s - build the valoc target, or "
+                    "write %s by hand\n",
+                    path.c_str(), source.c_str()
+                );
+                return {};
+            }
+        }
+    }
+
+    std::string spvPath = source;
+
+    if (fs::path(source).extension() != ".spv") {
+        spvPath = source + ".spv";
+
+        const bool stale =
+            !fs::exists(spvPath) || fs::last_write_time(spvPath) < fs::last_write_time(source);
 
         if (stale) {
-            const std::string cmd = "glslc -I examples/shaders \"" + path + "\" -o \"" + spvPath + "\" 2>&1";
+            const std::string cmd = "glslc -I examples/shaders \"" + source + "\" -o \"" + spvPath + "\" 2>&1";
 
-            std::fprintf(stderr, "[vulkan] compiling %s\n", path.c_str());
+            std::fprintf(stderr, "[vulkan] compiling %s\n", source.c_str());
             if (std::system(cmd.c_str()) != 0) {
                 std::fprintf(
                     stderr,
                     "[vulkan] glslc failed on %s - is ext/vulkan/env.sh sourced? "
                     "(precompiled .spv always works)\n",
-                    path.c_str()
+                    source.c_str()
                 );
                 return {};
             }

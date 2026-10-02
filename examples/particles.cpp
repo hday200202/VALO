@@ -2,60 +2,37 @@
 // vertex shader from a `time` uniform (the vertex buffer is uploaded once and
 // never touched again). Shows valo_PointSize, additive blending, and depthWrite=false.
 #include <VALO.hpp>
+#include <cstring>
 #include <cmath>
 #include <numbers>
 #include <vector>
 
+#include "shaders/galaxy.vert.hpp"
+#include "shaders/galaxy.frag.hpp"
+
 using namespace valo;
-
-// Each star is static data: orbit radius, base angle, height, and a seed.
-struct Star      { float radius; float angle; float height; float seed; };
-struct GUniforms { Mat4f viewProj; Mat4f model; float time; };
-struct GVaryings { Vec3f color; float glow; };
-
-static constexpr float kGalaxyRadius = 3.5f;
-
-void galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
-    const float r = in.radius;
-    // inner stars orbit faster (roughly Keplerian) -> arms wind up over time
-    const float a = in.angle + u.time * 0.9f / std::sqrt(r + 0.25f);
-    // thin disk, puffier toward the core
-    const float y = in.height * (0.35f - 0.25f * (r / kGalaxyRadius));
-
-    Vec3f pos  = {r * std::cos(a), y, r * std::sin(a)};
-    Vec4f clip = u.viewProj * u.model * Vec4f(pos, 1.f);
-
-    // color by radius: white-yellow core -> orange -> blue-violet rim
-    const float f = r / kGalaxyRadius;
-    Vec3f core = {1.0f, 0.95f, 0.8f};
-    Vec3f mid  = {1.0f, 0.55f, 0.25f};
-    Vec3f rim  = {0.35f, 0.45f, 1.0f};
-    out.color  = f < 0.35f ? lerp(core, mid, f / 0.35f) : lerp(mid, rim, (f - 0.35f) / 0.65f);
-
-    // twinkle: each star has its own phase
-    out.glow = 0.55f + 0.45f * std::sin(u.time * 2.5f + in.seed * 6.2831853f);
-
-    // point size shrinks with distance (clip.w == view depth), bigger near the core
-    valo_PointSize = std::clamp((5.f + 4.f * (1.f - f)) / clip.w * 2.5f, 1.f, 14.f);
-    valo_Position = clip;
-}
-void galaxyFS(const GVaryings& in, const GUniforms&) {
-    // low alpha so additive blending needs several overlapping stars to saturate
-    valo_FragColor = Color(in.color * in.glow, 0.35f);
-}
 
 static float frand(uint32_t& seed) {                         // cheap LCG, 0..1
     seed = seed * 1664525u + 1013904223u;
     return (seed >> 8) * (1.f / 16777216.f);
 }
 
-int main() {
-    Window window("VALO - particles", {1280, 960});
+int main(int argc, char** argv) {
+    // one scene, either backend: the software path resolves the shader
+    // paths to registered C++ callbacks, the Vulkan path translates them
+    bool useVulkan = false;
+    for (int i = 1; i < argc; ++i)
+        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
+
+    Window window("VALO - particles", {1280, 960},
+        valo::WinFlags::Resize | valo::WinFlags::HiDPI
+      | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
 
     VALO valo;
     RenderConfig cfg;
     cfg.vsync       = true;
     cfg.renderScale = 1.f;
+    if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
 
     constexpr uint32_t kStars = 8000;
@@ -75,7 +52,7 @@ int main() {
     VtxLayout      slayout({VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float});
     VertexBufferID svb   = valo.createVertexBuffer(stars.data(), kStars, slayout);
     IndexBufferID  sib   = valo.createIndexBuffer(sidx.data(), kStars);
-    ProgramID      sprog = valo.createProgram(galaxyVS, galaxyFS);
+    ProgramID      sprog = valo.createProgram("shaders/galaxy.vert.hpp", "shaders/galaxy.frag.hpp");
 
     RenderCommand galaxy;
     galaxy.verts      = svb;

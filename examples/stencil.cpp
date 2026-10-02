@@ -23,6 +23,7 @@
 //   escape              quit
 
 #include <VALO.hpp>
+#include <cstring>
 #include <utils/GLTFParser.hpp>
 #include <cmath>
 #include <numbers>
@@ -31,6 +32,13 @@
 #include <vector>
 #include <algorithm>
 #include <unordered_map>
+
+#include "shaders/helmet.vert.hpp"
+#include "shaders/helmet.frag.hpp"
+#include "shaders/outline.vert.hpp"
+#include "shaders/outline.frag.hpp"
+#include "shaders/clipcircle.vert.hpp"
+#include "shaders/clipcircle.frag.hpp"
 
 using valo::Vec2f;
 using valo::Vec3f;
@@ -41,51 +49,18 @@ using valo::Color;
 constexpr float kFovY = 0.9f;
 
 // ---------------------------------------------------------------------------
-// helmet: base color texture * simple two-light lambert. The shading is
-// deliberately plain so the stencil work is what you're looking at.
-// ---------------------------------------------------------------------------
-// smoothNormal: normals averaged across every vertex sharing a position. The
-// helmet has split normals at its hard edges; extruding along those tears the
-// outline shell open at every seam, extruding along the smoothed ones doesn't.
-struct Vertex   { Vec3f pos; Vec3f normal; Vec2f uv; Vec3f smoothNormal; };
-struct Uniforms { Mat4f mvp, model; valo::TextureID base; float outline; };
-struct Varyings { Vec3f normal; Vec2f uv; };
+int main(int argc, char** argv) {
+    // one scene, either backend: the software path resolves the shader
+    // paths to registered C++ callbacks, the Vulkan path translates them
+    bool useVulkan = false;
+    for (int i = 1; i < argc; ++i)
+        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
 
-static void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    out.normal = (u.model * Vec4f(in.normal, 0.f)).xyz;
-    out.uv = in.uv;
-    valo::valo_Position = u.mvp * Vec4f(in.pos, 1.f);
-}
-
-static void fs(const Varyings& in, const Uniforms& u) {
-    const Vec3f n = in.normal.normalized();
-    const float key  = std::max(n.dot(Vec3f{-0.5f, 0.6f, 0.6f}.normalized()), 0.f);
-    const float fill = std::max(n.dot(Vec3f{ 0.7f, 0.1f, 0.4f}.normalized()), 0.f) * 0.4f;
-    const Vec3f albedo = texture(u.base, in.uv).xyz;
-    const Vec3f lit = albedo * (0.18f + 0.9f * key + fill);
-    valo::valo_FragColor = {{std::pow(lit.x, 1.f / 2.2f), std::pow(lit.y, 1.f / 2.2f), std::pow(lit.z, 1.f / 2.2f)}, 1.f};
-}
-
-// outline pass: same mesh, pushed out along the normal in object space, flat black
-static void outlineVs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    out.normal = in.normal; out.uv = in.uv;
-    valo::valo_Position = u.mvp * Vec4f(in.pos + in.smoothNormal * u.outline, 1.f);
-}
-static void outlineFs(const Varyings&, const Uniforms&) { valo::valo_FragColor = {0.f, 0.f, 0.f, 1.f}; return; }
-
-// clip pass: fullscreen quad, discards outside a circle. colorWrite is off, so
-// all it leaves behind is stencil.
-struct ClipVertex { Vec2f ndc; }; struct ClipUniforms { float aspect, radius; }; struct ClipVaryings { Vec2f ndc; };
-static void clipVs(const ClipVertex& in, const ClipUniforms&, ClipVaryings& out) { out.ndc = in.ndc; valo::valo_Position = {in.ndc.x, in.ndc.y, 0.5f, 1.f}; return; }
-static void clipFs(const ClipVaryings& in, const ClipUniforms& u) {
-    if ((Vec2f{in.ndc.x * u.aspect, in.ndc.y}).length() > u.radius) discard;
-    valo::valo_FragColor = {1.f, 1.f, 1.f, 1.f};
-}
-
-// ---------------------------------------------------------------------------
-int main() {
-    valo::Window window("VALO - stencil", {1280, 960});
+    valo::Window window("VALO - stencil", {1280, 960},
+        valo::WinFlags::Resize | valo::WinFlags::HiDPI
+      | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
     valo::VALO valo; valo::RenderConfig cfg; cfg.vsync = true;
+    if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {0.82f, 0.84f, 0.88f, 1.f});
 
@@ -116,13 +91,13 @@ int main() {
     // pass 1: the helmet, stamping stencil = 1
     valo::RenderCommand helmet;
     helmet.verts = vb; helmet.indices = ib;
-    helmet.program    = valo.createProgram(vs, fs);
+    helmet.program    = valo.createProgram("shaders/helmet.vert.hpp", "shaders/helmet.frag.hpp");
     helmet.stencilOp  = valo::StencilOp::Replace;
     helmet.stencilRef = 1;
 
     // pass 2: extruded black shell, only where stencil != 1
     valo::RenderCommand outline = helmet;
-    outline.program     = valo.createProgram(outlineVs, outlineFs);
+    outline.program     = valo.createProgram("shaders/outline.vert.hpp", "shaders/outline.frag.hpp");
     outline.stencilOp   = valo::StencilOp::Keep;
     outline.stencilTest = valo::StencilTest::NotEqual;
     outline.stencilRef  = 1;
@@ -134,7 +109,7 @@ int main() {
     valo::RenderCommand clip;
     clip.verts = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     clip.indices = valo.createIndexBuffer(quadIdx, 6);
-    clip.program    = valo.createProgram(clipVs, clipFs);
+    clip.program    = valo.createProgram("shaders/clipcircle.vert.hpp", "shaders/clipcircle.frag.hpp");
     clip.cullmode   = valo::CullMode::None;
     clip.colorWrite = false; clip.depthTest = false; clip.depthWrite = false;
     clip.stencilOp  = valo::StencilOp::Incr;

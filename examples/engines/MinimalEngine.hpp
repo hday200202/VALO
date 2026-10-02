@@ -5,6 +5,8 @@
 #include <cctype>
 #include <deque>
 #include "../include/VALO.hpp"
+#include "../shaders/minimal.vert.hpp"
+#include "../shaders/minimal.frag.hpp"
 
 namespace me {
 
@@ -56,50 +58,6 @@ struct Camera {
         right   = forward.cross(up).normalized();
     }
 };
-
-struct Material {
-    TextureID baseColorTex          = EMPTY_TEXTURE;
-    TextureID emissiveTex           = EMPTY_TEXTURE;
-    TextureID metallicRoughnessTex  = EMPTY_TEXTURE;
-    TextureID normalTex             = EMPTY_TEXTURE;
-    TextureID occlusionTex          = EMPTY_TEXTURE;
-
-    Vec4f     baseColor = {1.f, 1.f, 1.f, 1.f};
-    Vec3f     emissive  = {0.f, 0.f, 0.f};
-    float     metallic  = 1.f;
-};
-
-/*
-    Uniforms are memcpy'd into a fixed-size buffer inside RenderCommand, so this
-    has to stay a POD - no vectors, no pointers to anything that can move. The
-    draw loop walks the nodes and primitives and hands the shader one already
-    resolved matrix and one material.
-*/
-struct Uniforms {
-    Mat4f    mvp;
-    Material material;
-};
-
-struct Varyings { Vec2f uv; };
-
-static inline void vs(const GLTFVertex& in, const Uniforms& u, Varyings& out) {
-    out.uv = in.uv;
-    valo_Position = u.mvp * Vec4f{ in.pos, 1.f };
-}
-
-static inline void fs(const Varyings& in, const Uniforms& u) {
-    Sampler sampler;
-    sampler.filter = Filter::Linear;
-
-    Color out = (u.material.baseColorTex == EMPTY_TEXTURE)
-        ? u.material.baseColor
-        : texture(u.material.baseColorTex, in.uv, sampler);
-
-    if (out.a < 0.1f) discard;
-    out.a = 1.f;
-    valo_FragColor = out;
-}
-
 
 class Model {
 public:
@@ -160,12 +118,13 @@ public:
             not of the model. me::vs/me::fs are the C++ half; the .vert/.frag
             pair is the GLSL half.
         */
+        // one call, both backends: the software path resolves these to the
+        // registered callbacks, the Vulkan path translates them
         if (m_program == DEFAULT_PROGRAM) {
-            m_program = m_backend == Backend::Vulkan
-                ? m_valo->createProgram(
-                    "examples/shaders/minimal.vert",
-                    "examples/shaders/minimal.frag")
-                : m_valo->createProgram(vs, fs);
+            m_program = m_valo->createProgram(
+                "examples/shaders/minimal.vert.hpp",
+                "examples/shaders/minimal.frag.hpp"
+            );
         }
 
         m_materials.clear();

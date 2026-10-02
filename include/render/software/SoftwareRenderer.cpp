@@ -299,10 +299,29 @@ ProgramID SoftwareRenderer::createProgramFromCallbacks(const Program& program) {
 // The software backend runs C++ callbacks, not SPIR-V. See PLAN.md: the two
 // shader implementations are separate by design, so this is a hard no rather
 // than something to fall back from.
-ProgramID SoftwareRenderer::createProgramFromFiles(const std::string&, const std::string&) {
-    std::cout << "Renderer: the software backend has no SPIR-V path; "
-                 "use createProgram() with C++ callbacks" << std::endl;
-    return DEFAULT_PROGRAM;
+ProgramID SoftwareRenderer::createProgramFromFiles(const std::string& vsPath, const std::string& fsPath) {
+    const ShaderEntry* vs = findShader(vsPath);
+    const ShaderEntry* fs = findShader(fsPath);
+
+    if (!vs || !vs->vsThunk) {
+        std::fprintf(stderr, "[software] no registered vertex shader for %s\n", vsPath.c_str());
+        return DEFAULT_PROGRAM;
+    }
+
+    if (!fs || !fs->fsThunk) {
+        std::fprintf(stderr, "[software] no registered fragment shader for %s\n", fsPath.c_str());
+        return DEFAULT_PROGRAM;
+    }
+
+    Program p{
+        .vsThunk        = vs->vsThunk,
+        .vsFn           = vs->fn,
+        .fsThunk        = fs->fsThunk,
+        .fsFn           = fs->fn,
+        .varyingCount   = vs->varyingCount
+    };
+
+    return m_owner->allocSlot(m_programs, m_owner->m_freePrograms, std::move(p));
 }
 
 

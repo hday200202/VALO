@@ -1,54 +1,28 @@
 #include <VALO.hpp>
+#include <cstring>
 #include <numbers>
 #include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <string>
-#include <render/software/Sampling.hpp>
+#include "shaders/cubes.vert.hpp"
+#include "shaders/cubes.frag.hpp"
 
-// N x N x N cubes from ONE submit: the vertex shader places each instance
-// on the grid from valo_InstanceIndex.
-constexpr uint32_t GRID    = 25;          // cubes per axis -> GRID^3 total
-constexpr float    SPACING = 8.f;         // distance between cube centers
-constexpr float    CUBE    = 1.f;        // cube half-size (mesh is -1..1)
+int main(int argc, char** argv) {
+    // one scene, either backend: the software path resolves the shader
+    // paths to registered C++ callbacks, the Vulkan path translates them
+    bool useVulkan = false;
+    for (int i = 1; i < argc; ++i)
+        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
 
-struct Vertex   { valo::Vec3f pos; valo::Vec2f uv; };
-struct Uniforms { valo::Mat4f viewProj; valo::TextureID tex; };
-struct Varyings { valo::Vec2f uv; };
-
-void vs(const Vertex& in, const Uniforms& u, Varyings& out) {
-    const uint32_t i  = valo::valo_InstanceIndex;
-    const float    gx = float(i % GRID);
-    const float    gy = float((i / GRID) % GRID);
-    const float    gz = float(i / (GRID * GRID));
-    const float    half = (GRID - 1) * 0.5f;                       // center the grid on the origin
-
-    const valo::Vec3f offset = valo::Vec3f{gx - half, gy - half, gz - half} * SPACING;
-    out.uv = in.uv;
-    valo::valo_Position = u.viewProj * valo::Vec4f(in.pos * CUBE + offset, 1.f);
-}
-
-void fs(const Varyings& in, const Uniforms& u) {
-    discard;
-    valo::valo_FragColor = texture(
-        u.tex, in.uv, 
-        valo::Sampler(
-            valo::Wrap::Repeat, 
-            valo::Wrap::Repeat, 
-            valo::Filter::Linear
-        )
-    ); return;
-
-    // valo::valo_FragColor = {0.5f, 0.5f, 0.5f, 1.f};
-}
-
-int main() {
-    valo::Window window("VALO", {1280, 720}, valo::WinFlags::Vulkan | valo::WinFlags::Resize | valo::WinFlags::HiDPI);
+    valo::Window window("VALO", {1280, 720},
+        valo::WinFlags::Resize | valo::WinFlags::HiDPI
+      | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
 
     valo::VALO valo;
     valo::RenderConfig cfg;
     cfg.vsync = true;
-    cfg.backend = valo::Backend::Vulkan;
+    if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
     valo.setRenderScale(1.f);
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {.8f, .9f, 1.f, 1.f});
@@ -77,7 +51,7 @@ int main() {
     valo::VtxLayout      layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f});
     valo::VertexBufferID vb     = valo.createVertexBuffer(verts, 24, layout);
     valo::IndexBufferID  ib     = valo.createIndexBuffer(indices, 36);
-    valo::ProgramID      prog   = valo.createProgram(vs, fs);
+    valo::ProgramID      prog   = valo.createProgram("shaders/cubes.vert.hpp", "shaders/cubes.frag.hpp");
 
     valo::RenderCommand cube;
     cube.verts   = vb;

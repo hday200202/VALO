@@ -24,6 +24,7 @@
 #include "../buffers/IndexBuffer.hpp"
 #include "../buffers/UniformBuffer.hpp"
 #include "../ShaderProgram.hpp"
+#include "../ShaderRegistry.hpp"
 #include "../RenderCommand.hpp"
 #include "DrawFuncs.hpp"
 #include "ThreadPool.hpp"

@@ -173,3 +173,46 @@ add_library(VALO::VALO ALIAS VALO)
 if(VALO_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+
+# ---------------------------------------------------------------------------
+# valoc - the C++ shader to GLSL translator
+#
+# Optional on purpose: only shader authors need it, and the generated GLSL is
+# committed, so a fresh clone builds and runs everything without libclang.
+# ---------------------------------------------------------------------------
+# the toolchain prefix, so an MSYS2 / Homebrew libclang is found without
+# the caller having to pass CMAKE_PREFIX_PATH
+get_filename_component(VALO_TOOLCHAIN_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
+get_filename_component(VALO_TOOLCHAIN_ROOT "${VALO_TOOLCHAIN_BIN}" DIRECTORY)
+
+find_library(VALO_LIBCLANG
+    NAMES clang libclang
+    HINTS "${VALO_TOOLCHAIN_ROOT}/lib" "/opt/homebrew/opt/llvm/lib" "/usr/local/opt/llvm/lib"
+)
+
+find_path(VALO_LIBCLANG_INC clang-c/Index.h
+    HINTS "${VALO_TOOLCHAIN_ROOT}/include" "/opt/homebrew/opt/llvm/include" "/usr/local/opt/llvm/include"
+)
+
+if(VALO_LIBCLANG AND VALO_LIBCLANG_INC)
+    add_executable(valoc "${CMAKE_SOURCE_DIR}/tools/valoc/main.cpp")
+    target_include_directories(valoc SYSTEM PRIVATE "${VALO_LIBCLANG_INC}")
+    target_link_libraries(valoc PRIVATE "${VALO_LIBCLANG}")
+    set_target_properties(valoc PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+
+    # libclang cannot parse C++ without its own builtin headers (stddef.h,
+    # mm_malloc.h and friends), and they do not live on any normal include
+    # path - so the location is baked in rather than left to the caller.
+    file(GLOB VALO_CLANG_RESOURCE_DIRS "${VALO_TOOLCHAIN_ROOT}/lib/clang/*/include")
+    if(VALO_CLANG_RESOURCE_DIRS)
+        list(GET VALO_CLANG_RESOURCE_DIRS 0 VALO_CLANG_RESOURCE)
+        target_compile_definitions(valoc PRIVATE "VALOC_CLANG_RESOURCE=\"${VALO_CLANG_RESOURCE}\"")
+        message(STATUS "valoc: clang builtin headers at ${VALO_CLANG_RESOURCE}")
+    else()
+        message(WARNING "valoc: clang builtin headers not found - parsing will fail")
+    endif()
+
+    message(STATUS "valoc: libclang at ${VALO_LIBCLANG}")
+else()
+    message(STATUS "valoc: libclang not found - the shader translator will not be built")
+endif()

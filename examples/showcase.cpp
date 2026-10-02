@@ -26,11 +26,17 @@
 // at 65% internal scale. Press 1 for the beauty shot, 3 to fly around freely.
 
 #include <cstdio>
+#include <cstring>
 #include "engines/ShowcaseEngine.hpp"
 
 int main(int argc, char** argv) {
+    bool useVulkan = false;
+    for (int i = 1; i < argc; ++i)
+        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
+
     sc::Engine engine;
-    if (!engine.init()) return 1;
+    if (!engine.init("VALO - PBR Showcase", {1280, 720},
+                     useVulkan ? valo::Backend::Vulkan : valo::Backend::Software)) return 1;
 
     /*
         addModel fits whatever it is handed: scaled uniformly until its longest
@@ -42,7 +48,9 @@ int main(int argc, char** argv) {
         downstream (camera framing, light rig, contact shadow) keys off the
         fitted size, so nothing needs placing by hand.
     */
-    const char* path = argc > 1 ? argv[1] : "examples/gltf/DamagedHelmet/DamagedHelmet.gltf";
+    const char* path = "examples/gltf/DamagedHelmet/DamagedHelmet.gltf";
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--vulkan") != 0) { path = argv[i]; break; }
 
     sc::Model& model = engine.addModel(path);
     if (!model.isLoaded()) {

@@ -19,3 +19,5 @@ compile_commands.json
 .vscode/ipch/
 ext/swiftshader/
 bench/
+
+*.spv
