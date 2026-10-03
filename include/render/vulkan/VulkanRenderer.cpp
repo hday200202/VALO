@@ -17,7 +17,7 @@ bool VulkanRenderer::initDevice(Window& window, const uint32_t framesInFlight, c
     m_window = &window;
 
     if (!m_ctx.init(window, validation)) return false;
-    if (!m_swapchain.init(m_ctx, window.getSize(), m_owner->m_cfg.vsync)) return false;
+    if (!m_swapchain.init(m_ctx, window.getSize(), m_owner->m_cfg.vsync, m_owner->m_cfg.srgbBackbuffer)) return false;
     if (!m_frames.init(m_ctx, framesInFlight, m_swapchain.imageCount())) return false;
 
     return true;
@@ -438,7 +438,7 @@ bool VulkanRenderer::recreateSwapchain() {
     const uint32_t oldImageCount = m_swapchain.imageCount();
 
     m_swapchain.shutdown();
-    if (!m_swapchain.init(m_ctx, m_window->getSize(), m_owner->m_cfg.vsync)) {
+    if (!m_swapchain.init(m_ctx, m_window->getSize(), m_owner->m_cfg.vsync, m_owner->m_cfg.srgbBackbuffer)) {
         std::fprintf(stderr, "[vulkan] swapchain recreate failed\n");
         return false;
     }
@@ -509,7 +509,8 @@ std::vector<uint32_t> VulkanRenderer::loadSpirv(const std::string& path) {
             // swallows the gap between argv[0] and argv[1]
             const std::string cmd =
                 valoc + " \"" + path + "\" -o \"" + source + "\""
-                " -I include -I ext/stb -I ext/tinyobj -I ext/cgltf 2>&1";
+                " -I include -I examples -I ext/stb -I ext/tinyobjloader"
+                " -I ext/cgltf -I ext/SDL3-install/include 2>&1";
 
             std::fprintf(stderr, "[vulkan] translating %s\n", path.c_str());
             if (std::system(cmd.c_str()) != 0) {
@@ -770,11 +771,39 @@ void VulkanRenderer::destroyDepthBuffers() {
 
 
 bool VulkanRenderer::createBindlessSet() {
+    /*
+        Clamp the array to what this device accepts. The whole set has to fit
+        maxPerSetDescriptors and the sampled images their own limit; asking for
+        more fails layout creation rather than degrading.
+    */
+    {
+        // maxPerSetDescriptors is a maintenance3 property, not a base limit
+        VkPhysicalDeviceMaintenance3Properties m3{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES
+        };
+        VkPhysicalDeviceProperties2 props2{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            .pNext = &m3
+        };
+        vkGetPhysicalDeviceProperties2(m_ctx.physicalDevice(), &props2);
+
+        const uint32_t perSet = m3.maxPerSetDescriptors > SAMPLER_COUNT
+            ? m3.maxPerSetDescriptors - SAMPLER_COUNT : 1u;
+
+        m_maxTextures = std::min({ uint32_t(MAX_TEXTURES),
+                                   props2.properties.limits.maxDescriptorSetSampledImages,
+                                   perSet });
+
+        if (m_maxTextures != MAX_TEXTURES)
+            std::fprintf(stderr, "[vulkan] texture array capped at %u (device limit)\n",
+                         m_maxTextures);
+    }
+
     const VkDescriptorSetLayoutBinding bindings[2]{
         {
             .binding            = 0,
             .descriptorType     = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .descriptorCount    = MAX_TEXTURES,
+            .descriptorCount    = m_maxTextures,
             .stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT
         },
         {
@@ -812,7 +841,7 @@ bool VulkanRenderer::createBindlessSet() {
     }
 
     const VkDescriptorPoolSize sizes[2]{
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, MAX_TEXTURES },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, m_maxTextures },
         { VK_DESCRIPTOR_TYPE_SAMPLER, 18}
     };
 
@@ -1517,8 +1546,8 @@ void VulkanRenderer::updateUniformBuffer(const UniformBufferID buffer, const voi
 
 TextureID VulkanRenderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips) {
     if (!w || !h || !data) return EMPTY_TEXTURE;
-    if (m_textures.size() >= MAX_TEXTURES) {
-        std::fprintf(stderr, "[vulkan] texture limit (%u) reached\n", MAX_TEXTURES);
+    if (m_textures.size() >= m_maxTextures) {
+        std::fprintf(stderr, "[vulkan] texture limit (%u) reached\n", m_maxTextures);
         return EMPTY_TEXTURE;
     }
 

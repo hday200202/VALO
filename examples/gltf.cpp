@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
     };
     if (models[0].items.empty() && models[1].items.empty()) return 1;
 
-    const valo::ProgramID prog = valo.createProgram("shaders/gltf.vert.hpp", "shaders/gltf.frag.hpp");
+    const valo::ProgramID prog = valo.createProgram("examples/shaders/gltf.vert.hpp", "examples/shaders/gltf.frag.hpp");
 
     // --- sky: one quad, never depth tested, drawn first ---
     SkyVertex quad[4]   = { {{-1.f, -1.f}}, {{1.f, -1.f}}, {{1.f, 1.f}}, {{-1.f, 1.f}} };
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
     valo::RenderCommand sky;
     sky.verts      = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     sky.indices    = valo.createIndexBuffer(quadIdx, 6);
-    sky.program    = valo.createProgram("shaders/gltfsky.vert.hpp", "shaders/gltfsky.frag.hpp");
+    sky.program    = valo.createProgram("examples/shaders/gltfsky.vert.hpp", "examples/shaders/gltfsky.frag.hpp");
     sky.depthTest  = false;
     sky.depthWrite = false;
     sky.cullmode   = valo::CullMode::None;

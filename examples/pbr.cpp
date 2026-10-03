@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
     const valo::UniformBufferID sceneBuffer = valo.createUniformBuffer(&scene, sizeof(scene));
 
     valo::RenderCommand obj;
-    obj.program = valo.createProgram("shaders/pbr.vert.hpp", "shaders/pbr.frag.hpp");
+    obj.program = valo.createProgram("examples/shaders/pbr.vert.hpp", "examples/shaders/pbr.frag.hpp");
     obj.bindUniformBuffer(kSceneSlot, sceneBuffer);
 
     SkyVertex quad[4] = {{{-1.f, -1.f}}, {{1.f, -1.f}}, {{1.f, 1.f}}, {{-1.f, 1.f}}};
@@ -206,7 +206,7 @@ int main(int argc, char** argv) {
     valo::RenderCommand sky;
     sky.verts      = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     sky.indices    = valo.createIndexBuffer(quadIdx, 6);
-    sky.program    = valo.createProgram("shaders/sky.vert.hpp", "shaders/sky.frag.hpp");
+    sky.program    = valo.createProgram("examples/shaders/sky.vert.hpp", "examples/shaders/sky.frag.hpp");
     sky.depthTest  = false;
     sky.depthWrite = false;
     sky.cullmode   = valo::CullMode::None;

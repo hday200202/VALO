@@ -394,6 +394,7 @@ public:
         if (m_window.wasKeyPressed(Key::Num6))   { m_valo.setRenderScale(3.00f); }
         if (m_window.wasKeyPressed(Key::Num4))   { m_valo.setRenderScale(4.00f); }
         if (m_window.wasKeyPressed(Key::Tab))    { resetCamera(); m_autoOrbit = true; }
+        if (m_window.wasKeyPressed(Key::V))      { m_valo.setVsync(!m_valo.getVsync()); }
 
         m_exposure = clampf(m_exposure + m_window.scrollDelta() * 0.06f, 0.15f, 6.f);
         if (m_lightsMove) m_lightPhase += dt * 0.35f;

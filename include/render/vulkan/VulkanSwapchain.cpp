@@ -9,14 +9,23 @@ namespace valo {
 
 namespace {
 
-VkSurfaceFormatKHR chooseFormat(VkPhysicalDevice phys, VkSurfaceKHR surface) {
+/*
+    Mirrors RenderConfig::srgbBackbuffer, which on the software side decides
+    whether writePixel encodes. An _SRGB swapchain makes the hardware encode on
+    write: right for a shader that outputs linear, wrong for one that already
+    gamma-encodes in its own tonemap - that one gets encoded twice and comes out
+    washed out.
+*/
+VkSurfaceFormatKHR chooseFormat(VkPhysicalDevice phys, VkSurfaceKHR surface, const bool srgb) {
     uint32_t n = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(n);
     vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &n, formats.data());
 
+    const VkFormat want = srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+
     for (const auto& f : formats)
-        if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        if (f.format == want && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             return f;
 
     return formats[0];
@@ -38,13 +47,13 @@ VkPresentModeKHR choosePresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface, 
 
 } // namespace
 
-bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsync) {
+bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsync, const bool srgb) {
     m_ctx = &ctx;
 
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice(), ctx.surface(), &caps);
 
-    const VkSurfaceFormatKHR surfaceFormat = chooseFormat(ctx.physicalDevice(), ctx.surface());
+    const VkSurfaceFormatKHR surfaceFormat = chooseFormat(ctx.physicalDevice(), ctx.surface(), srgb);
     const VkPresentModeKHR presentMode = choosePresentMode(ctx.physicalDevice(), ctx.surface(), vsync);
 
     if (caps.currentExtent.width != UINT32_MAX)

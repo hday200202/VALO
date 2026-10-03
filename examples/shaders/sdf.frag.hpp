@@ -209,7 +209,7 @@ static float sdOctahedron(Vec3f p, float s) {
 static float sdPyramid(Vec3f p, float h) {
     float m2 = h * h + 0.25f;
     p.x = std::abs(p.x); p.z = std::abs(p.z);
-    if (p.z > p.x) std::swap(p.x, p.z);
+    if (p.z > p.x) { const float t = p.x; p.x = p.z; p.z = t; }
     p.x -= 0.5f; p.z -= 0.5f;
     Vec3f q = {p.z, h * p.y - 0.5f * p.x, h * p.x + 0.5f * p.y};
     float s = std::max(-q.x, 0.f);
@@ -247,7 +247,7 @@ static float sdHorseshoe(Vec3f p, const Vec2f& c, float r, float le, const Vec2f
 static inline Vec2f opU(const Vec2f& d1, const Vec2f& d2) { return (d1.x < d2.x) ? d1 : d2; }
 
 static Vec2f map(const Vec3f& pos) {
-    Vec2f res = {pos.y, 0.f};
+    Vec2f res = Vec2f{pos.y, 0.f};
 
     if (sdBox(pos - Vec3f{-2.f, 0.3f, 0.25f}, {0.3f, 0.3f, 1.f}) < res.x) {
         res = opU(res, {sdSphere (pos - Vec3f{-2.f, 0.25f, 0.f}, 0.25f), 26.9f});
@@ -294,11 +294,11 @@ static Vec2f iBox(const Vec3f& ro, const Vec3f& rd, const Vec3f& rad) {
 }
 
 static Vec2f raycast(const Vec3f& ro, const Vec3f& rd) {
-    Vec2f res = {-1.f, -1.f};
+    Vec2f res = Vec2f{-1.f, -1.f};
     float tmin = 1.f, tmax = 20.f;
 
     float tp1 = (0.f - ro.y) / rd.y;
-    if (tp1 > 0.f) { tmax = std::min(tmax, tp1); res = {tp1, 1.f}; }
+    if (tp1 > 0.f) { tmax = std::min(tmax, tp1); res = Vec2f{tp1, 1.f}; }
 
     Vec2f tb = iBox(ro - Vec3f{0.f, 0.4f, -0.5f}, rd, {2.5f, 0.41f, 3.f});
     if (tb.x < tb.y && tb.y > 0.f && tb.x < tmax) {
@@ -307,7 +307,7 @@ static Vec2f raycast(const Vec3f& ro, const Vec3f& rd) {
         float t = tmin;
         for (int i = 0; i < 70 && t < tmax; i++) {
             Vec2f h = map(ro + rd * t);
-            if (std::abs(h.x) < (0.0001f * t)) { res = {t, h.y}; break; }
+            if (std::abs(h.x) < (0.0001f * t)) { res = Vec2f{t, h.y}; break; }
             t += h.x;
         }
     }
@@ -421,11 +421,15 @@ static Vec3f render(const Vec3f& ro, const Vec3f& rd, const Vec3f& rdx, const Ve
 // ---------------------------------------------------------------------------
 // VALO shaders: one fullscreen triangle, all the work in the fragment shader
 // ---------------------------------------------------------------------------
+// focal length. File scope rather than a local, because a lambda that captures
+// it is hoisted to a free function when translated to GLSL and the capture does
+// not come with it.
+static constexpr float kFocal = 2.5f;
+
 inline void sdfFS(const Varyings& in, const Uniforms& u) {
     // p in [-aspect, aspect] x [-1, 1], like (2*fragCoord - res) / res.y
-    const float fl = 2.5f;
     auto rayDir = [&](Vec2f p) {
-        Vec3f d = normalize(Vec3f{p.x, p.y, fl});
+        Vec3f d = normalize(Vec3f{p.x, p.y, kFocal});
         return u.cu * d.x + u.cv * d.y + u.cw * d.z;
     };
     Vec2f p = {in.ndc.x * u.aspect, in.ndc.y};

@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     valo::VtxLayout      layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f});
     valo::VertexBufferID vb     = valo.createVertexBuffer(verts, 24, layout);
     valo::IndexBufferID  ib     = valo.createIndexBuffer(indices, 36);
-    valo::ProgramID      prog   = valo.createProgram("shaders/cubes.vert.hpp", "shaders/cubes.frag.hpp");
+    valo::ProgramID      prog   = valo.createProgram("examples/shaders/cubes.vert.hpp", "examples/shaders/cubes.frag.hpp");
 
     valo::RenderCommand cube;
     cube.verts   = vb;

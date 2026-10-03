@@ -203,7 +203,7 @@ inline void gltfVS(const Vertex& in, const Uniforms& u, Varyings& out) {
     // and tangents are directions, so they go through with w = 0 instead.
     out.worldPos = (u.model * Vec4f(in.pos,    1.f)).xyz;
     out.normal   = (u.model * Vec4f(in.normal, 0.f)).xyz;
-    out.tangent  = { (u.model * Vec4f(in.tangent.xyz, 0.f)).xyz, in.tangent.w };
+    out.tangent  = Vec4f{ (u.model * Vec4f(in.tangent.xyz, 0.f)).xyz, in.tangent.w };
     out.uv       = in.uv;
 
     valo::valo_Position = u.mvp * Vec4f(in.pos, 1.f);

@@ -5,6 +5,74 @@
 
 #include "valo.glsl"
 
+struct GammaLUT {
+    float v[513];
+};
+
+struct Light {
+    vec3 pos;
+    vec3 colour;
+    float intensity;
+};
+
+struct SceneUniforms {
+    Light lights[4];
+    vec3 camPos;
+    float exposure;
+};
+
+struct Camera {
+    float pitch;
+    float yaw;
+    float nearPlane;
+    float farPlane;
+    float fov;
+    vec3 pos;
+    vec3 forward;
+    vec3 right;
+    vec3 up;
+};
+
+struct Vertex {
+    vec3 pos;
+    vec3 normal;
+    vec4 tangent;
+    vec2 uv;
+};
+
+struct Material {
+    uint baseColorTex;
+    uint metallicRoughnessTex;
+    uint normalTex;
+    uint occlusionTex;
+    uint emissiveTex;
+    vec4 baseColor;
+    vec3 emissive;
+    float metallic;
+    float roughness;
+};
+
+struct Uniforms {
+    mat4 mvp;
+    mat4 model;
+    Material material;
+    float handedness;
+    float dim;
+    float emissiveBoost;
+};
+
+struct Varyings {
+    vec3 worldPos;
+    vec3 normal;
+    vec4 tangent;
+    vec2 uv;
+};
+
+struct OrbVertex {
+    vec3 pos;
+    vec3 normal;
+};
+
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec3 v_worldPos;
 
@@ -18,7 +86,13 @@ layout(scalar, push_constant) uniform Push {
     float radius;
 } u;
 
-const float kPi = 3.14159265358979;
+layout(scalar, set = 0, binding = 0) uniform SceneUniforms_Block {
+    SceneUniforms value;
+} SceneUniforms_buf;
+
+#define ub_SceneUniforms SceneUniforms_buf.value
+
+const float kPi = 3.14159274;
 const int kLightCount = 4;
 const float kFloorY = 0.0;
 float saturate(float x) {
@@ -68,29 +142,19 @@ vec3 srgbToLinear(vec3 c) {
     return vec3(srgbToLinear(c.x), srgbToLinear(c.y), srgbToLinear(c.z));
 }
 
-const int kSize = 512;
-const int i = 0;
 float linearToSrgb(float c) {
-    const float x = saturate(c) * kSize;
-    const int i = min(int(x), kSize - 1);
-    const float f = x - float(i);
-    return kGamma.v[i] + (kGamma.v[i + 1] - kGamma.v[i]) * f;
+    return pow(clamp(c, 0.0, 1.0), 1.0 / 2.2);
+}
+
+float f(float v) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate((v * (a * v + b)) / (v * (c * v + d) + e));
 }
 
 vec3 acesFilmic(vec3 x) {
-    auto f =[](const float v) {
-        const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-        return saturate((v * (a * v + b)) / (v * (c * v + d) + e));
-    }
-    ;
     return vec3(f(x.x), f(x.y), f(x.z));
 }
 
-const float a = 2.51;
-const float b = 0.03;
-const float c = 2.43;
-const float d = 0.59;
-const float e = 0.14;
 vec3 encodeGamma(vec3 c) {
     return vec3(linearToSrgb(c.x), linearToSrgb(c.y), linearToSrgb(c.z));
 }
@@ -114,7 +178,10 @@ const vec3 kSunTint = {
 const vec3 kHaze = {
         0.400, 0.230, 0.180
     };
-const vec3 kSunDir = normalize(vec3(- 0.42, 0.22, 0.62));
+vec3 kSunDir() {
+    return normalize(vec3(- 0.42, 0.22, 0.62));
+}
+
 vec3 skyGradient(vec3 d) {
     const float y = clampf(d.y, - 1.0, 1.0);
     if (y >= 0.0) return mix(kHorizon, kZenith, linearToSrgb(y));
@@ -122,23 +189,29 @@ vec3 skyGradient(vec3 d) {
 }
 
 vec3 environment(vec3 d) {
-    const float toSun = saturate(dot(d, kSunDir));
+    const float toSun = saturate(dot(d, kSunDir()));
     const float disc = smoothstepf(0.99955, 0.99985, toSun) * 165.0;
     const float glow = pow32(toSun) * 0.55 + pow5(toSun) * 0.045;
     const float band = pow16(saturate(1.0 - abs(d.y)));
     return skyGradient(d) + kSunTint * (disc + glow) + kHaze * (band * toSun * 0.42);
 }
 
-const vec3 kIrradianceUp = skyGradient(vec3(0.0, 1.0, 0.0)) * 0.85 + kSunTint * 0.05;
-const vec3 kIrradianceDown = skyGradient(vec3(0.0, - 1.0, 0.0));
+vec3 kIrradianceUp() {
+    return skyGradient(vec3(0.0, 1.0, 0.0)) * 0.85 + kSunTint * 0.05;
+}
+
+vec3 kIrradianceDown() {
+    return skyGradient(vec3(0.0, - 1.0, 0.0));
+}
+
 vec3 environmentBlurred(vec3 dir, float roughness) {
     const vec3 sharp = environment(dir);
-    const vec3 flat_ = mix(kIrradianceDown, kIrradianceUp, saturate(dir.y * 0.5 + 0.5));
+    const vec3 flat_ = mix(kIrradianceDown(), kIrradianceUp(), saturate(dir.y * 0.5 + 0.5));
     return mix(sharp, flat_, saturate(roughness * roughness));
 }
 
 vec3 irradiance(vec3 n) {
-    return mix(kIrradianceDown, kIrradianceUp, saturate(n.y * 0.5 + 0.5));
+    return mix(kIrradianceDown(), kIrradianceUp(), saturate(n.y * 0.5 + 0.5));
 }
 
 float distributionGGX(float nDotH, float a) {
@@ -187,9 +260,8 @@ vec2 envBRDF(float nDotV, float roughness) {
 }
 
 const uint kSceneSlot = 0;
-const vec3 f = normalize(dir);
 void main() {
-    const SceneUniforms & scene = uniformBuffer < SceneUniforms > (kSceneSlot);
+    const SceneUniforms scene =ub_SceneUniforms;
     const vec3 v = normalize((scene.camPos - v_worldPos));
     const float facing = saturate(dot(normalize(v_normal), v));
     const float halo = pow(1.0 - facing, 2.2);

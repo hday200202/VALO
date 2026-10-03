@@ -44,6 +44,17 @@ inline bool registerShader(const char* file, const ShaderEntry& entry) {
     return true;
 }
 
+/*
+    An override for valoc: `fn` keeps its C++ body for the software backend, and
+    the translator emits `src` verbatim instead of trying to read it. For the
+    cases where the two genuinely differ - a CPU lookup table standing in for
+    something the GPU does in one instruction, or anything with no C++ spelling.
+
+    The declaration is what valoc looks for; nothing reads it at runtime.
+*/
+#define VALO_GLSL(fn, src) \
+    inline const char* valo_glsl_##fn = src;
+
 #define VALO_VERTEX_SHADER(fn) \
     inline const bool valo_reg_##fn = ::valo::registerShader(__FILE__, ::valo::makeVertexEntry(&fn));
 

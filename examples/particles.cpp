@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     VtxLayout      slayout({VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float});
     VertexBufferID svb   = valo.createVertexBuffer(stars.data(), kStars, slayout);
     IndexBufferID  sib   = valo.createIndexBuffer(sidx.data(), kStars);
-    ProgramID      sprog = valo.createProgram("shaders/galaxy.vert.hpp", "shaders/galaxy.frag.hpp");
+    ProgramID      sprog = valo.createProgram("examples/shaders/galaxy.vert.hpp", "examples/shaders/galaxy.frag.hpp");
 
     RenderCommand galaxy;
     galaxy.verts      = svb;

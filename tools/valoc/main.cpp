@@ -75,6 +75,32 @@ struct Collect {
 
     // offset -> GLSL type, so a bare { a, b } can become vec2(a, b)
     std::vector<std::pair<unsigned, std::string>> initLists;
+
+    /*
+        `auto f = [](float v) { ... };` inside a helper. GLSL has no lambdas, so
+        each becomes a top-level function named after the variable - which means
+        call sites, already spelling that name, need no rewriting at all. The
+        offset recorded is the enclosing function's, so it is emitted just
+        before the code that uses it.
+    */
+    struct Lambda { std::string name; CXCursor expr; unsigned hostOffset; };
+    std::vector<Lambda> lambdas;
+
+    /*
+        `const Sampler samp;` declared once and reused. GLSL has no such object,
+        only the index valoTexture takes, so the declaration goes and the name
+        becomes that constant.
+    */
+    std::vector<std::string> samplerLocals;
+
+    // name -> element count, so a range-for can become an indexed loop
+    std::vector<std::pair<std::string, long long>> arrayLengths;
+
+    // VALO_GLSL(fn, "...") - hand-written GLSL to emit in place of fn's body
+    std::vector<std::pair<std::string, std::string>> glslOverrides;
+
+    // uniformBuffer<T>(slot) - struct name and binding, one block per type
+    std::vector<std::pair<std::string, long long>> uniformBlocks;
 };
 
 
@@ -204,12 +230,25 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
         if (!isEntry) out->helpers.push_back(c);
     }
 
+    /*
+        Namespace scope only. Testing "parent is not a FunctionDecl" lets a
+        lambda's variable through - its parent is the lambda, not the enclosing
+        function - and it then gets emitted as a global and renamed, which also
+        catches every unrelated local sharing its name.
+    */
     if (clang_getCursorKind(c) == CXCursor_VarDecl
         && isShaderSource(c)
         && str(clang_getCursorSpelling(c)).rfind("valo_reg_", 0) != 0
-        && clang_getCursorSemanticParent(c).kind != CXCursor_FunctionDecl
     ) {
-        out->globals.push_back(c);
+        const CXCursorKind parent = clang_getCursorSemanticParent(c).kind;
+        if (parent == CXCursor_TranslationUnit || parent == CXCursor_Namespace) {
+            out->globals.push_back(c);
+
+            CXType vt = clang_getCursorType(c);
+            if (vt.kind == CXType_ConstantArray)
+                out->arrayLengths.push_back(
+                    { str(clang_getCursorSpelling(c)), clang_getArraySize(vt) });
+        }
     }
 
     // the type of a brace initialiser, which the token stream cannot recover
@@ -238,6 +277,138 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
 
         if (!spelling.empty() && spelling != "void")
             out->initLists.push_back({ startOff, spelling });
+    }
+
+    /*
+        uniformBuffer<T>(slot) is how a shader reads a bound uniform buffer. The
+        call's result type is const T&, and the slot is a constant, so both come
+        straight off the cursor - and GLSL gets one block per type.
+    */
+    if (clang_getCursorKind(c) == CXCursor_CallExpr
+        && str(clang_getCursorSpelling(c)) == "uniformBuffer"
+    ) {
+        /*
+            Spelling rather than bareType: libclang leaves this cursor's type
+            unexposed, and clang_getNonReferenceType dereferences such a type
+            straight into a crash. getTypeSpelling is safe on anything, so the
+            const and the reference come off by hand.
+        */
+        std::string ty = str(clang_getTypeSpelling(clang_getCursorType(c)));
+        if (ty.rfind("const ", 0) == 0) ty = ty.substr(6);
+        while (!ty.empty() && (ty.back() == '&' || ty.back() == ' ')) ty.pop_back();
+
+        const size_t cc = ty.rfind("::");
+        if (cc != std::string::npos) ty = ty.substr(cc + 2);
+
+        if (ty.empty()) return CXChildVisit_Recurse;
+
+        /*
+            The slot is the call's one argument. Evaluating arbitrary cursors
+            crashes libclang, so only an integer literal or a reference to a
+            constant is tried, and the reference is resolved to its declaration
+            first.
+        */
+        long long slot = 0;
+        struct Slot { long long* v; bool* got; };
+        bool got = false;
+        Slot sl{ &slot, &got };
+
+        clang_visitChildren(c, [](CXCursor k, CXCursor, CXClientData d) {
+            auto* sp = static_cast<Slot*>(d);
+            if (*sp->got) return CXChildVisit_Break;
+
+            const CXCursorKind kk = clang_getCursorKind(k);
+            CXCursor target = clang_getNullCursor();
+
+            if (kk == CXCursor_IntegerLiteral) target = k;
+            else if (kk == CXCursor_DeclRefExpr) {
+                CXCursor ref = clang_getCursorReferenced(k);
+                if (!clang_Cursor_isNull(ref) && clang_getCursorKind(ref) == CXCursor_VarDecl)
+                    target = ref;
+            }
+
+            if (clang_Cursor_isNull(target)) return CXChildVisit_Recurse;
+
+            CXEvalResult ev = clang_Cursor_Evaluate(target);
+            if (ev) {
+                if (clang_EvalResult_getKind(ev) == CXEval_Int) {
+                    *sp->v = clang_EvalResult_getAsLongLong(ev);
+                    *sp->got = true;
+                }
+                clang_EvalResult_dispose(ev);
+            }
+            return CXChildVisit_Recurse;
+        }, &sl);
+
+        if (!ty.empty()) {
+            bool seen = false;
+            for (const auto& ub : out->uniformBlocks) if (ub.first == ty) seen = true;
+            if (!seen) out->uniformBlocks.push_back({ ty, slot });
+        }
+    }
+
+    // VALO_GLSL expands to `inline const char* valo_glsl_<fn> = "...";`
+    // no isShaderSource test: the declaration comes from a macro, so its
+    // spelling location resolves into ShaderRegistry.hpp rather than the shader
+    if (clang_getCursorKind(c) == CXCursor_VarDecl
+        && str(clang_getCursorSpelling(c)).rfind("valo_glsl_", 0) == 0
+    ) {
+        const std::string fn = str(clang_getCursorSpelling(c)).substr(10);
+
+        std::string lit;
+        clang_visitChildren(c, [](CXCursor k, CXCursor, CXClientData d) {
+            if (clang_getCursorKind(k) == CXCursor_StringLiteral)
+                *static_cast<std::string*>(d) = str(clang_getCursorSpelling(k));
+            return CXChildVisit_Recurse;
+        }, &lit);
+
+        // the spelling keeps the surrounding quotes and the escapes
+        if (lit.size() >= 2 && lit.front() == '"' && lit.back() == '"')
+            lit = lit.substr(1, lit.size() - 2);
+
+        std::string unescaped;
+        for (size_t k = 0; k < lit.size(); ++k) {
+            if (lit[k] == '\\' && k + 1 < lit.size()) {
+                const char e = lit[++k];
+                unescaped += (e == 'n') ? '\n' : (e == 't') ? '\t' : e;
+            } else unescaped += lit[k];
+        }
+
+        if (getenv("VALOC_DEBUG"))
+            std::fprintf(stderr, "[valoc] VALO_GLSL %s -> %zu chars\n", fn.c_str(), unescaped.size());
+        if (!unescaped.empty()) out->glslOverrides.push_back({ fn, unescaped });
+    }
+
+    if (clang_getCursorKind(c) == CXCursor_VarDecl && isShaderSource(c)
+        && [&]{
+               std::string t = bareType(clang_getCursorType(c));
+               return t == "Sampler" || (t.size() > 8 && t.compare(t.size() - 9, 9, "::Sampler") == 0);
+           }()
+    ) {
+        out->samplerLocals.push_back(str(clang_getCursorSpelling(c)));
+    }
+
+    if (clang_getCursorKind(c) == CXCursor_VarDecl && isShaderSource(c)) {
+        CXCursor lambda = clang_getNullCursor();
+        clang_visitChildren(c, [](CXCursor k, CXCursor, CXClientData d) {
+            if (clang_getCursorKind(k) == CXCursor_LambdaExpr) {
+                *static_cast<CXCursor*>(d) = k;
+                return CXChildVisit_Break;
+            }
+            return CXChildVisit_Recurse;
+        }, &lambda);
+
+        if (!clang_Cursor_isNull(lambda)) {
+            // walk out to the enclosing function so the hoist lands above it
+            CXCursor host = clang_getCursorSemanticParent(c);
+            while (!clang_Cursor_isNull(host)
+                && clang_getCursorKind(host) != CXCursor_FunctionDecl
+                && clang_getCursorKind(host) != CXCursor_TranslationUnit)
+                host = clang_getCursorSemanticParent(host);
+
+            const unsigned off = clang_Cursor_isNull(host) ? 0 : cursorOffset(host);
+            out->lambdas.push_back({ str(clang_getCursorSpelling(c)), lambda, off });
+        }
     }
 
     if (clang_getCursorKind(c) == CXCursor_StructDecl && clang_isCursorDefinition(c)) {
@@ -284,7 +455,21 @@ void printStruct(const char* label, const Struct* s) {
 // gets emitted as one.
 std::string glslType(const std::string& cxx) {
     const size_t colons = cxx.rfind("::");
-    const std::string t = colons == std::string::npos ? cxx : cxx.substr(colons + 2);
+    std::string t = colons == std::string::npos ? cxx : cxx.substr(colons + 2);
+
+    /*
+        Vec3f and friends are aliases for Vec3<float>, and clang spells whichever
+        the declaration used - so a function returning Vec3f can come back as
+        either. Fold the template spelling onto the alias before matching.
+    */
+    static const struct { const char* tmpl; const char* alias; } kTemplates[] = {
+        { "Vec2<float>", "Vec2f" }, { "Vec3<float>", "Vec3f" }, { "Vec4<float>", "Vec4f" },
+        { "Vec2<int>",   "Vec2i" }, { "Vec3<int>",   "Vec3i" }, { "Vec4<int>",   "Vec4i" },
+        { "Vec2<unsigned int>", "Vec2u" }, { "Vec3<unsigned int>", "Vec3u" },
+        { "Vec4<unsigned int>", "Vec4u" },
+        { "Mat2<float>", "Mat2f" }, { "Mat3<float>", "Mat3f" }, { "Mat4<float>", "Mat4f" }
+    };
+    for (const auto& k : kTemplates) if (t == k.tmpl) { t = k.alias; break; }
 
     if (t == "float")    return "float";
     if (t == "double")   return "double";
@@ -414,6 +599,66 @@ struct Rename {
     std::string from;
     std::string to;
 };
+
+
+/*
+    GLSL function names a shader may legitimately define in C++. Redefining one
+    is not an overload - glslc rejects it on precision qualifiers - so these get
+    a valo_ prefix and every call site follows.
+*/
+bool isGlslBuiltinFunction(const std::string& n) {
+    static const char* kBuiltins[] = {
+        "abs", "sign", "floor", "ceil", "trunc", "round", "roundEven", "fract",
+        "mod", "modf", "min", "max", "clamp", "mix", "step", "smoothstep",
+        "sqrt", "inversesqrt", "pow", "exp", "log", "exp2", "log2",
+        "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh",
+        "length", "distance", "dot", "cross", "normalize", "reflect", "refract",
+        "faceforward", "transpose", "inverse", "determinant", "outerProduct",
+        "texture", "textureLod", "textureSize", "texelFetch",
+        "dFdx", "dFdy", "fwidth", "isnan", "isinf",
+        "any", "all", "not", "equal", "notEqual",
+        "lessThan", "lessThanEqual", "greaterThan", "greaterThanEqual"
+    };
+    for (const char* b : kBuiltins) if (n == b) return true;
+    return false;
+}
+
+
+// vecN(...) and friends are constructors, not calls - a global const may use
+// them and still be a constant expression
+bool isGlslTypeConstructor(const std::string& n) {
+    static const char* kTypes[] = {
+        "float", "int", "uint", "bool",
+        "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
+        "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4",
+        "mat2", "mat3", "mat4", "mat2x2", "mat2x3", "mat2x4",
+        "mat3x2", "mat3x3", "mat3x4", "mat4x2", "mat4x3", "mat4x4"
+    };
+    for (const char* t : kTypes) if (n == t) return true;
+    return false;
+}
+
+
+/*
+    GLSL requires a global const initialiser to be a constant expression, so
+    `const vec3 k = someHelper(...)` has to become a function instead. Anything
+    that calls something other than a type constructor qualifies.
+*/
+bool initIsConstantExpression(const std::string& init) {
+    for (size_t i = 0; i < init.size(); ++i) {
+        if (init[i] != '(') continue;
+
+        size_t e = i;
+        while (e > 0 && (init[e - 1] == ' ' || init[e - 1] == '\t')) --e;
+        size_t b = e;
+        while (b > 0 && (std::isalnum((unsigned char)init[b - 1]) || init[b - 1] == '_')) --b;
+
+        if (b == e) continue;                       // "(" with no callee: grouping
+        const std::string name = init.substr(b, e - b);
+        if (!isGlslTypeConstructor(name)) return false;
+    }
+    return true;
+}
 
 
 // GLSL keywords that are ordinary identifiers in C++, so a local named `out`
@@ -580,6 +825,9 @@ std::string translateRange(
 
     std::string prevSpelling;
 
+    // a range-for's element declaration, emitted just inside the loop body
+    std::string pendingLoopElem;
+
     for (unsigned i = 0; i < count; ++i) {
         const CXTokenKind kind = clang_getTokenKind(tokens[i]);
 
@@ -597,6 +845,140 @@ std::string translateRange(
             "using namespace valo;" has no GLSL equivalent and the qualifier it
             exists to avoid is stripped anyway, so the whole statement goes.
         */
+        /*
+            `auto f = [](...) { ... };` - hoisted to a top-level function named
+            after the variable, so the declaration itself has no GLSL form. Call
+            sites already spell that name and need no rewriting.
+        */
+        if (kind == CXToken_Keyword && t == "auto"
+            && i + 2 < count
+            && str(clang_getTokenSpelling(c.tu, tokens[i + 2])) == "="
+        ) {
+            unsigned j = i;
+            int d = 0;
+            for (; j < count; ++j) {
+                const std::string s2 = str(clang_getTokenSpelling(c.tu, tokens[j]));
+                if (s2 == "{" || s2 == "(" || s2 == "[") ++d;
+                else if (s2 == "}" || s2 == ")" || s2 == "]") --d;
+                else if (s2 == ";" && d == 0) break;
+            }
+            i = j;
+            continue;
+        }
+
+        /*
+            GLSL has no references, and a local bound to one is only ever read,
+            so `const T& x = y;` becomes a copy. Only dropped when the previous
+            token actually names a type - otherwise this is a bitwise and.
+        */
+        if (t == "&" && i + 1 < count && !prevSpelling.empty()) {
+            const bool prevIsType =
+                glslType(prevSpelling) != prevSpelling || findStruct(c, prevSpelling);
+
+            const CXTokenKind nextKind = clang_getTokenKind(tokens[i + 1]);
+            if (prevIsType && nextKind == CXToken_Identifier) continue;
+        }
+
+        /*
+            uniformBuffer<T>(slot) names the block declared above; the whole
+            call, template argument and slot included, collapses to it.
+        */
+        if (t == "uniformBuffer" && i + 1 < count
+            && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "<"
+        ) {
+            unsigned j = i + 2;
+            std::string ty;
+            while (j < count && str(clang_getTokenSpelling(c.tu, tokens[j])) != ">")
+                ty += str(clang_getTokenSpelling(c.tu, tokens[j++]));
+
+            // skip past '>' and the parenthesised slot
+            if (j < count) ++j;
+            if (j < count && str(clang_getTokenSpelling(c.tu, tokens[j])) == "(") {
+                int d2 = 0;
+                for (; j < count; ++j) {
+                    const std::string s2 = str(clang_getTokenSpelling(c.tu, tokens[j]));
+                    if (s2 == "(") ++d2;
+                    else if (s2 == ")") { if (--d2 == 0) break; }
+                }
+            }
+
+            const size_t cc = ty.rfind("::");
+            if (cc != std::string::npos) ty = ty.substr(cc + 2);
+
+            tight("ub_" + ty, false);
+            i = j;
+            prevSpelling = ")";
+            continue;
+        }
+
+        /*
+            GLSL has no range-for, so `for (const T& e : arr)` becomes an indexed
+            loop and the element is declared as the body's first statement. The
+            length comes from the array's own declaration.
+        */
+        if (kind == CXToken_Keyword && t == "for"
+            && i + 1 < count && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "("
+        ) {
+            unsigned j = i + 1, d = 0, colon = 0;
+            for (; j < count; ++j) {
+                const std::string s2 = str(clang_getTokenSpelling(c.tu, tokens[j]));
+                if (s2 == "(") ++d;
+                else if (s2 == ")") { if (--d == 0) break; }
+                else if (s2 == ":" && d == 1) colon = j;
+            }
+
+            if (colon) {
+                // element name is the token before ':', array the one after
+                const std::string elem = str(clang_getTokenSpelling(c.tu, tokens[colon - 1]));
+                const std::string arr  = str(clang_getTokenSpelling(c.tu, tokens[colon + 1]));
+
+                // the declared type, skipping const/& noise between '(' and the name
+                std::string elemType;
+                for (unsigned k = i + 2; k + 1 < colon; ++k) {
+                    const std::string s3 = str(clang_getTokenSpelling(c.tu, tokens[k]));
+                    if (s3 == "const" || s3 == "&" || s3 == "auto") continue;
+                    elemType = glslType(s3);
+                }
+
+                long long len = 0;
+                for (const auto& al : c.arrayLengths) if (al.first == arr) len = al.second;
+
+                if (!elemType.empty() && len > 0) {
+                    const std::string idx = elem + "_i";
+                    put("for (int " + idx + " = 0; " + idx + " < "
+                        + std::to_string(len) + "; ++" + idx + ")", true);
+
+                    pendingLoopElem = elemType + " " + elem + " = " + arr + "[" + idx + "];";
+                    i = j;
+                    prevSpelling = ")";
+                    continue;
+                }
+            }
+        }
+
+        // the declaration a sampler local came from; the name is already a
+        // constant everywhere it is used
+        if (t == "Sampler" && i + 1 < count) {
+            unsigned j = i;
+            while (j < count && str(clang_getTokenSpelling(c.tu, tokens[j])) != ";") ++j;
+
+            bool isDecl = false;
+            for (const std::string& n : c.samplerLocals)
+                if (i + 1 < count && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == n)
+                    isDecl = true;
+
+            if (isDecl) {
+                while (!out.empty() && (out.back() == ' ' || out.back() == '\n')) out.pop_back();
+                // "const" was already emitted ahead of the type
+                const std::string tail = "const";
+                if (out.size() >= tail.size()
+                    && out.compare(out.size() - tail.size(), tail.size(), tail) == 0)
+                    out.erase(out.size() - tail.size());
+                i = j;
+                continue;
+            }
+        }
+
         if (kind == CXToken_Keyword && t == "using") {
             while (i < count && str(clang_getTokenSpelling(c.tu, tokens[i])) != ";") ++i;
             continue;
@@ -771,9 +1153,17 @@ std::string translateRange(
             }
 
             braceIsCall.push_back(false);
+
             tight(" {", false);
             ++depth;
             newline();
+
+            // the range-for element, now that the body is open
+            if (!pendingLoopElem.empty()) {
+                put(pendingLoopElem, false);
+                newline();
+                pendingLoopElem.clear();
+            }
             prevSpelling = t;
             continue;
         }
@@ -782,7 +1172,13 @@ std::string translateRange(
             const bool call = !braceIsCall.empty() && braceIsCall.back();
             if (!braceIsCall.empty()) braceIsCall.pop_back();
 
-            if (call) { tight(")", true); }
+            if (call) {
+                // a trailing comma is legal in a C++ braced list and not in a
+                // GLSL constructor call
+                while (!out.empty() && (out.back() == ' ' || out.back() == '\n')) out.pop_back();
+                if (!out.empty() && out.back() == ',') out.pop_back();
+                tight(")", true);
+            }
             else {
                 if (depth > 1) --depth;
                 newline();
@@ -1041,17 +1437,80 @@ std::string emitHelpers(const Collect& c, const std::vector<Rename>& renames) {
     std::string out;
     std::vector<std::string> emitted;
 
-    struct Item { unsigned off; bool isFunction; CXCursor cursor; };
+    enum class Kind { Global, Function, Lambda };
+    struct Item { unsigned off; Kind kind; CXCursor cursor; std::string name; };
     std::vector<Item> items;
 
-    for (CXCursor g : c.globals) items.push_back({ cursorOffset(g), false, g });
-    for (CXCursor h : c.helpers) items.push_back({ cursorOffset(h), true,  h });
+    for (CXCursor g : c.globals) items.push_back({ cursorOffset(g), Kind::Global,   g, "" });
+    for (CXCursor h : c.helpers) items.push_back({ cursorOffset(h), Kind::Function, h, "" });
+
+    // hostOffset, minus one, so a hoisted lambda sorts immediately above the
+    // function whose body declared it - and after anything that body calls
+    for (const auto& l : c.lambdas)
+        items.push_back({ l.hostOffset ? l.hostOffset - 1 : 0, Kind::Lambda, l.expr, l.name });
 
     std::sort(items.begin(), items.end(),
         [](const Item& a, const Item& b) { return a.off < b.off; });
 
     for (const Item& item : items) {
-        if (!item.isFunction) {
+        if (item.kind == Kind::Lambda) {
+            CXCursor lam = item.cursor;
+
+            /*
+                A LambdaExpr exposes its parameters and body as direct children
+                and nothing else - its type is the closure class, so neither
+                clang_getCursorResultType nor getNumArguments says anything. The
+                return type therefore comes from the return expression.
+            */
+            struct Parts {
+                std::vector<CXCursor> params;
+                CXCursor body = clang_getNullCursor();
+            } parts;
+
+            clang_visitChildren(lam, [](CXCursor k, CXCursor, CXClientData d) {
+                auto* pp = static_cast<Parts*>(d);
+                if (clang_getCursorKind(k) == CXCursor_ParmDecl) pp->params.push_back(k);
+                else if (clang_getCursorKind(k) == CXCursor_CompoundStmt) pp->body = k;
+                return CXChildVisit_Continue;
+            }, &parts);
+
+            if (clang_Cursor_isNull(parts.body)) continue;
+
+            CXType retType = clang_getCursorType(parts.body);   // overwritten below
+            bool haveRet = false;
+            struct RetFind { CXType* t; bool* found; } rf{ &retType, &haveRet };
+
+            clang_visitChildren(parts.body, [](CXCursor k, CXCursor, CXClientData d) {
+                auto* r = static_cast<RetFind*>(d);
+                if (*r->found) return CXChildVisit_Break;
+                if (clang_getCursorKind(k) != CXCursor_ReturnStmt) return CXChildVisit_Recurse;
+
+                clang_visitChildren(k, [](CXCursor e, CXCursor, CXClientData d2) {
+                    auto* r2 = static_cast<RetFind*>(d2);
+                    *r2->t = clang_getCursorType(e);
+                    *r2->found = true;
+                    return CXChildVisit_Break;
+                }, d);
+                return CXChildVisit_Break;
+            }, &rf);
+
+            const std::string ret = haveRet
+                ? glslType(bareType(retType))
+                : std::string("void");
+
+            out += ret + " " + item.name + "(";
+            for (size_t i = 0; i < parts.params.size(); ++i) {
+                if (i) out += ", ";
+                out += glslType(bareType(clang_getCursorType(parts.params[i]))) + " "
+                     + str(clang_getCursorSpelling(parts.params[i]));
+            }
+            out += ") {\n";
+            out += translateRange(c, parts.body, renames, true);
+            out += "}\n\n";
+            continue;
+        }
+
+        if (item.kind == Kind::Global) {
             CXCursor g = item.cursor;
 
             const std::string name = str(clang_getCursorSpelling(g));
@@ -1132,11 +1591,38 @@ std::string emitHelpers(const Collect& c, const std::vector<Rename>& renames) {
                 if (ch == ',' && vdepth == 0) { value = value.substr(0, k); break; }
             }
 
-            out += "const " + type + " " + name + " =" + value + ";\n";
+            /*
+                GLSL will not take a global const initialised by a function call,
+                so it becomes a function and every reference gains "()". The
+                rename that does that is registered by the caller, which has
+                already scanned for this.
+            */
+            if (!initIsConstantExpression(value))
+                out += type + " " + name + "() {\n    return" + value + ";\n}\n\n";
+            else
+                out += "const " + type + " " + name + " =" + value + ";\n";
             continue;
         }
 
         CXCursor h = item.cursor;
+
+        /*
+            A helper named after a GLSL builtin is a C++-side polyfill for it -
+            fract, sign, mix, dot, length and friends exist only because C++ has
+            no such function. GLSL does, so the definition is dropped and every
+            call binds to the builtin. Emitting it instead is a redefinition,
+            not an overload, and glslc rejects it.
+        */
+        if (isGlslBuiltinFunction(str(clang_getCursorSpelling(h)))) continue;
+
+        // VALO_GLSL override: emit the hand-written GLSL, skip the C++ body
+        {
+            const std::string hn = str(clang_getCursorSpelling(h));
+            bool overridden = false;
+            for (const auto& o : c.glslOverrides)
+                if (o.first == hn) { out += o.second + "\n\n"; overridden = true; break; }
+            if (overridden) continue;
+        }
 
         const CXType fn = clang_getCursorType(h);
         const std::string ret = glslType(str(clang_getTypeSpelling(clang_getResultType(fn))));
@@ -1246,6 +1732,61 @@ std::string emit(const Collect& c, Stage stage) {
     renames.push_back({ "valo_PointSize",     "gl_PointSize" });
     renames.push_back({ "valo_PointCoord",    "gl_PointCoord" });
 
+    /*
+        GLSL will not accept a global const whose initialiser calls a function,
+        so those become zero-arg functions (see emitHelpers) and every reference
+        needs the call parens. Translating the initialiser here is the only way
+        to know which ones qualify, so it happens twice - once to classify, once
+        to emit.
+    */
+    for (CXCursor g : c.globals) {
+        CXType vt = clang_getCursorType(g);
+        if (vt.kind == CXType_ConstantArray) continue;
+
+        std::string raw = str(clang_getTypeSpelling(vt));
+        if (raw.rfind("const ", 0) == 0) raw = raw.substr(6);
+        const std::string type = glslType(raw);
+
+        // scalars are constant-folded by emitHelpers, so they never need this
+        if (type == "int" || type == "uint" || type == "float") continue;
+
+        const std::string init = translateRange(c, g, renames, false);
+        const size_t eq = init.find('=');
+        if (eq == std::string::npos) continue;
+
+        if (!initIsConstantExpression(init.substr(eq + 1))) {
+            const std::string name = str(clang_getCursorSpelling(g));
+            renames.push_back({ name, name + "()" });
+        }
+    }
+
+    /*
+        One uniform block per type a shader reads with uniformBuffer<T>(slot).
+        The instance is named after the type so the call can collapse to it, and
+        the fields are inlined rather than nested so `.exposure` still resolves.
+    */
+    for (const auto& [ty, slot] : c.uniformBlocks) {
+        const Struct* st = findStruct(c, ty);
+        if (!st) continue;
+
+        /*
+            The struct nested inside the block rather than its fields inlined,
+            so the whole thing is a value: `const T x = uniformBuffer<T>(n);`
+            translates to a struct copy, and a block cannot be assigned. The
+            define is what lets the call site stay a single name.
+        */
+        out += "layout(scalar, set = 0, binding = " + std::to_string(slot)
+             + ") uniform " + ty + "_Block {\n"
+             + "    " + ty + " value;\n"
+             + "} " + ty + "_buf;\n\n"
+             + "#define ub_" + ty + " " + ty + "_buf.value\n\n";
+        (void)st;
+    }
+
+    // a default-constructed Sampler is Repeat/Repeat/Linear
+    for (const std::string& n : c.samplerLocals)
+        renames.push_back({ n, samplerConstant({}) });
+
     out += emitHelpers(c, renames);
 
     out += "void main() {\n";
@@ -1282,8 +1823,28 @@ int main(int argc, char** argv) {
     std::vector<std::string> argStrings{ "-std=c++20", "-xc++" };
 
 #ifdef VALOC_CLANG_RESOURCE
-    // not a normal include path, so it is baked in at configure time
-    argStrings.push_back(std::string("-I") + VALOC_CLANG_RESOURCE);
+    // Baked in at configure time: libclang does not find its own builtins.
+    // -resource-dir rather than -I, so clang places them after libc++ in the
+    // search order - ahead of it, <cstddef> picks up the wrong stddef.h.
+    argStrings.push_back(std::string("-resource-dir=") + VALOC_CLANG_RESOURCE);
+#endif
+
+#ifdef VALOC_SYSTEM_INCLUDES
+    /*
+        The compiler's own system include path, baked in by CMake. libclang does
+        not inherit it, and the shader headers reach <vector> and <cmath> through
+        VALO's own headers, so without this nothing parses.
+    */
+    {
+        const std::string all = VALOC_SYSTEM_INCLUDES;
+        size_t start = 0;
+        while (start < all.size()) {
+            const size_t end = all.find('|', start);
+            if (end == std::string::npos) break;
+            if (end > start) argStrings.push_back("-isystem" + all.substr(start, end - start));
+            start = end + 1;
+        }
+    }
 #endif
 
     for (const auto& inc : includes) argStrings.push_back("-I" + inc);

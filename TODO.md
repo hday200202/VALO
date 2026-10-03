@@ -377,6 +377,29 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
       around it by declaring its own `Vertex` with a `Vec4f tangent` and
       computing the basis at load. That belongs in the parser (MikkTSpace-ish
       per-triangle accumulate) so every consumer gets it. ~2 hours.
+- [ ] **Storage buffers** — the one thing a shader cannot read today. It can
+      sample textures, read a depth texture and read a uniform buffer; there is
+      no way to hand it bulk data. That rules out anything a shader has to walk
+      rather than index by a known slot.
+
+      What it blocks, concretely: **a mesh raytracer**. `showcase` was asked for
+      as a raytraced scene - the real software-renderer stress test - and was
+      built as a rasteriser with an analytic ellipse for its floor shadow,
+      because a fragment shader has no way to reach the glTF triangles or a BVH
+      over them. Without storage buffers the only raytraced options are an SDF
+      scene (loses the mesh) or a software-only path (drops out of the
+      cross-backend set).
+
+      Shape: `createStorageBuffer` / `updateStorageBuffer` / `destroyStorageBuffer`
+      alongside the uniform-buffer trio, slot-bound the same way and for the
+      same reason. Software reads it straight out of a `std::vector`; Vulkan
+      needs a `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` binding, GLSL `buffer` blocks,
+      and valoc support for declaring and indexing one. Reads only to begin
+      with - writes mean synchronisation the frame loop does not have.
+
+      Also wanted by: skinning palettes, instance data larger than a push
+      constant, and anything that outgrows `MAX_UNIFORM_BYTES`.
+
 - [ ] **Texture formats** — at least R8 (font atlases, masks) and RGBA32F
       (HDR targets). `createTexture` gains a format; `texture()` unpacks per
       format. Vulkan has these for free; software needs them to exist so the

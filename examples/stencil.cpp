@@ -91,13 +91,13 @@ int main(int argc, char** argv) {
     // pass 1: the helmet, stamping stencil = 1
     valo::RenderCommand helmet;
     helmet.verts = vb; helmet.indices = ib;
-    helmet.program    = valo.createProgram("shaders/helmet.vert.hpp", "shaders/helmet.frag.hpp");
+    helmet.program    = valo.createProgram("examples/shaders/helmet.vert.hpp", "examples/shaders/helmet.frag.hpp");
     helmet.stencilOp  = valo::StencilOp::Replace;
     helmet.stencilRef = 1;
 
     // pass 2: extruded black shell, only where stencil != 1
     valo::RenderCommand outline = helmet;
-    outline.program     = valo.createProgram("shaders/outline.vert.hpp", "shaders/outline.frag.hpp");
+    outline.program     = valo.createProgram("examples/shaders/outline.vert.hpp", "examples/shaders/outline.frag.hpp");
     outline.stencilOp   = valo::StencilOp::Keep;
     outline.stencilTest = valo::StencilTest::NotEqual;
     outline.stencilRef  = 1;
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     valo::RenderCommand clip;
     clip.verts = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     clip.indices = valo.createIndexBuffer(quadIdx, 6);
-    clip.program    = valo.createProgram("shaders/clipcircle.vert.hpp", "shaders/clipcircle.frag.hpp");
+    clip.program    = valo.createProgram("examples/shaders/clipcircle.vert.hpp", "examples/shaders/clipcircle.frag.hpp");
     clip.cullmode   = valo::CullMode::None;
     clip.colorWrite = false; clip.depthTest = false; clip.depthWrite = false;
     clip.stencilOp  = valo::StencilOp::Incr;

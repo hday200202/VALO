@@ -54,6 +54,17 @@ struct GammaLUT {
 };
 static const GammaLUT kGamma;
 
+/*
+    The table is a CPU optimisation: std::pow six times a fragment is far too
+    slow there, and the fit stays inside a 255th of the real curve. A GPU does
+    pow in one instruction and has no way to hold the table, so the translated
+    half just says what the table approximates.
+*/
+VALO_GLSL(linearToSrgb,
+    "float linearToSrgb(float c) {\n"
+    "    return pow(clamp(c, 0.0, 1.0), 1.0 / 2.2);\n"
+    "}")
+
 static inline float linearToSrgb(const float c) {
     const float x = saturate(c) * GammaLUT::kSize;
     const int   i = std::min(int(x), GammaLUT::kSize - 1);   // c == 1 lands on the last pair, not past it

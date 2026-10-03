@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
     valo::RenderCommand cmd;
     cmd.verts     = valo.createVertexBuffer(tri, 3, layout);
     cmd.indices   = valo.createIndexBuffer(idx, 3);
-    cmd.program   = valo.createProgram("shaders/sdf.vert.hpp", "shaders/sdf.frag.hpp");
+    cmd.program   = valo.createProgram("examples/shaders/sdf.vert.hpp", "examples/shaders/sdf.frag.hpp");
     cmd.depthTest = false;
     cmd.cullmode  = valo::CullMode::None;
 

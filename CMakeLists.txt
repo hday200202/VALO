@@ -203,14 +203,36 @@ if(VALO_LIBCLANG AND VALO_LIBCLANG_INC)
     # libclang cannot parse C++ without its own builtin headers (stddef.h,
     # mm_malloc.h and friends), and they do not live on any normal include
     # path - so the location is baked in rather than left to the caller.
-    file(GLOB VALO_CLANG_RESOURCE_DIRS "${VALO_TOOLCHAIN_ROOT}/lib/clang/*/include")
+    # Derived from libclang's own location, not the compiler's: the compiler may
+    # be Apple clang in /usr/bin while libclang comes from Homebrew, and the
+    # builtin headers have to match the libclang actually doing the parsing.
+    get_filename_component(VALO_LIBCLANG_DIR "${VALO_LIBCLANG}" DIRECTORY)
+    file(GLOB VALO_CLANG_RESOURCE_DIRS
+        "${VALO_LIBCLANG_DIR}/clang/*/include"
+        "${VALO_TOOLCHAIN_ROOT}/lib/clang/*/include"
+    )
     if(VALO_CLANG_RESOURCE_DIRS)
         list(GET VALO_CLANG_RESOURCE_DIRS 0 VALO_CLANG_RESOURCE)
+        # -resource-dir wants the parent of include/, and letting clang place the
+        # builtins itself keeps them after libc++ in the search order. Passing the
+        # include dir as -I instead puts it first, and <cstddef> then finds the
+        # wrong stddef.h.
+        get_filename_component(VALO_CLANG_RESOURCE "${VALO_CLANG_RESOURCE}" DIRECTORY)
         target_compile_definitions(valoc PRIVATE "VALOC_CLANG_RESOURCE=\"${VALO_CLANG_RESOURCE}\"")
-        message(STATUS "valoc: clang builtin headers at ${VALO_CLANG_RESOURCE}")
+        message(STATUS "valoc: clang resource dir at ${VALO_CLANG_RESOURCE}")
     else()
         message(WARNING "valoc: clang builtin headers not found - parsing will fail")
     endif()
+
+    # The shader headers include <vector>, <cmath> and so on, so libclang needs
+    # the same system include path the compiler uses. CMake already computed it
+    # for this toolchain; passing it through means valoc does not have to guess
+    # at SDK locations or shell out to the compiler at runtime.
+    set(VALO_VALOC_SYSINC "")
+    foreach(dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        set(VALO_VALOC_SYSINC "${VALO_VALOC_SYSINC}${dir}|")
+    endforeach()
+    target_compile_definitions(valoc PRIVATE "VALOC_SYSTEM_INCLUDES=\"${VALO_VALOC_SYSINC}\"")
 
     message(STATUS "valoc: libclang at ${VALO_LIBCLANG}")
 else()

@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     valo::RenderCommand rect;
     rect.verts     = valo.createVertexBuffer(quad, 4, valo::VtxLayout({valo::VtxAttrib::Vec2f}));
     rect.indices   = valo.createIndexBuffer(idx, 6);
-    rect.program   = valo.createProgram("shaders/roundrect.vert.hpp", "shaders/roundrect.frag.hpp");
+    rect.program   = valo.createProgram("examples/shaders/roundrect.vert.hpp", "examples/shaders/roundrect.frag.hpp");
     rect.cullmode  = valo::CullMode::None;
     rect.depthTest = false; rect.depthWrite = false;
     rect.blendmode = valo::BlendMode::Alpha;

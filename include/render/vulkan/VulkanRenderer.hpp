@@ -189,6 +189,13 @@ private:
     std::vector<GPUBuffer>          m_vertexBuffers;
     std::vector<GPUBuffer>          m_indexBuffers;
     std::vector<GPUBuffer>          m_uniformBuffers;
+    /*
+        MAX_TEXTURES is the ceiling the shader is written against; the device may
+        allow far fewer. MoltenVK reports maxPerSetDescriptors 1212, so a 4096
+        array fails layout creation outright.
+    */
+    uint32_t                        m_maxTextures           = MAX_TEXTURES;
+
     std::vector<GPUTexture>         m_textures;
     std::vector<GPUProgram>         m_programs;
 
