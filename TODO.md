@@ -557,7 +557,7 @@ Both of these are API-visible rules, not implementation details, so they have to
 be decided before the backend rather than discovered during it. Neither costs
 anything in software - the point is that the same dev code stays correct on both.
 
-- [x] **Deferred destruction** (2026-09-28) - `destroy*` enqueues `(id, m_frame)`;
+- [✅] **Deferred destruction** (2026-09-28) - `destroy*` enqueues `(id, m_frame)`;
       `destroyAllQueued()` drains from `VALO::beginFrame` once an entry has aged
       `framesInFlight` frames; `shutdown()` forces a full drain. `m_frame`
       increments in `show()`, so `RenderConfig::framesInFlight` finally does
@@ -582,7 +582,7 @@ anything in software - the point is that the same dev code stays correct on both
       `updateIndexBuffer` are safe as the software backend stands, and are
       covered only for Vulkan forward-compatibility. See `PLAN.md` phase 0b.
 
-- [x] ~~Split `Renderer` into an abstract interface + `SoftwareRenderer`.~~
+- [✅] ~~Split `Renderer` into an abstract interface + `SoftwareRenderer`.~~
       **Done 2026-09-30, but not as an abstract interface.** `Renderer` stays
       one concrete class and dispatches through a 28-entry function-pointer
       table installed by `init()`. A base class would have duplicated ~40
@@ -601,7 +601,7 @@ anything in software - the point is that the same dev code stays correct on both
       silently) and `initBackend` (`init` picks the table so it is not *in* the
       table, but the backend half of startup still has to dispatch).
 
-- [x] ~~Decide the shader contract for the GPU side.~~ **Decided 2026-09-28:
+- [✅] ~~Decide the shader contract for the GPU side.~~ **Decided 2026-09-28:
       two implementations, one spec.** `createProgram` is overloaded - C++
       callbacks for software, GLSL/SPIR-V for Vulkan - and they stay separate.
       The dual-compile header was rejected: a C++ function pointer cannot become
@@ -614,7 +614,7 @@ anything in software - the point is that the same dev code stays correct on both
 
 Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 
-- [x] **Instance / device / queues / swapchain / frames-in-flight / sync**
+- [✅] **Instance / device / queues / swapchain / frames-in-flight / sync**
       (2026-09-30). All nine steps of `VULKAN_SETUP.md`. `VulkanContext`,
       `VulkanSwapchain`, `VulkanFrames`, `VulkanRenderer`. Dynamic rendering
       rather than render passes, `synchronization2`, validation on from the
@@ -622,55 +622,74 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       `imageAvailable`/`inFlight` are per frame in flight - different counts,
       and conflating them is the classic bug.
 
-- [x] **A window clearing through `VALO`** (2026-09-30). `vk-clear` runs
+- [✅] **A window clearing through `VALO`** (2026-09-30). `vk-clear` runs
       clean; `flush` is correctly a no-op, since it runs once per *layer* and
       anything that submits belongs in `show`.
 
-- [x] **One triangle** (2026-10-01). Shader modules, the pipeline, the pipeline
+- [✅] **One triangle** (2026-10-01). Shader modules, the pipeline, the pipeline
       cache, `draw`, push constants and depth. `vk-triangle` is a full `VALO`
       example: rotating, depth-tested, cull-mode-switchable, vsync-togglable,
       fps in the title.
 
-- [x] **Buffers** (2026-10-01). Vertex, index and uniform, all through one
+- [✅] **Buffers** (2026-10-01). Vertex, index and uniform, all through one
       `uploadBuffer` staging path. Updates retire the old allocation onto a
       `(buffer, frame)` queue drained from `show()` after `framesInFlight`
       frames, so a frame still in flight never reads freed memory.
 
-- [x] **Uniform buffers / descriptor sets** (2026-10-01) - as push descriptors.
+- [✅] **Uniform buffers / descriptor sets** (2026-10-01) - as push descriptors.
       See the State section for why that beat a pool.
 
-- [x] **Pipeline cache** keyed on `(program, packed state, vertex layout)`.
+- [✅] **Pipeline cache** keyed on `(program, packed state, vertex layout)`.
 
-- [x] **Textures** (2026-10-02) - bindless, with separate samplers. See the
+- [✅] **Textures** (2026-10-02) - bindless, with separate samplers. See the
       State section for the design and the traps. `createTexture`,
       `createTextureFromFile` and sampling in GLSL all work;
       `minimal --vulkan` renders the scene textured.
 
-- [ ] **`updateTexture` / `updateTextureRect`** - a staged copy into an existing
-      image, so mostly `uploadImage` with a `VkBufferImageCopy` offset and
-      extent, plus the layout round trip `SHADER_READ_ONLY -> TRANSFER_DST ->
-      SHADER_READ_ONLY`. The real question is in-flight frames: overwriting an
-      image a recorded command buffer still samples needs either a stall or the
-      retire-and-replace pattern the buffers use.
+- [✅] **`updateTexture` / `updateTextureRect`** - `uploadImageRect` stages a
+      `VkBufferImageCopy` with an offset and extent and does the layout round
+      trip from `GPUTexture::layout` (not `UNDEFINED`, which would discard the
+      rest of the image), rebuilding the mip chain afterwards since mip 0
+      changed. `updateTexture` is a full replace, so it just calls
+      `uploadImage`. Both go through `beginOneShot`/`endOneShot`, so a call
+      mid-frame on a texture the in-flight frame samples is still a race -
+      acceptable for load-time and between-frame updates, same exposure
+      `createTexture` already has.
 
-- [ ] **Texture destruction** - `destroyTextureNow` is immediate, which is only
-      valid when the GPU is idle (create-failure path, shutdown). Destroying
-      from the app mid-frame needs the retire queue, *and* the bindless slot
-      keeps pointing at a dead view until something overwrites it.
-      `PARTIALLY_BOUND` makes that legal while nothing reads it, but it should
-      be deliberate rather than incidental.
+- [✅] **Texture destruction** - `releaseTarget` runs off `Renderer`'s retire
+      queue, which only actually fired once `VulkanRenderer::show` started
+      incrementing `m_owner->m_frame` (it never did, so nothing retired until
+      shutdown and every destroyed resource leaked for the run). The bindless
+      slot is repointed at a 1x1 white `m_nullTexture` by
+      `clearTextureDescriptor` before the image dies, so a freed slot is never
+      a dangling view rather than merely an unread one. The retire gate is
+      `> framesInFlight`, not `>=`: `destroyAllQueued` runs at the top of
+      `VALO::beginFrame`, *before* the backend's fence wait, so a resource last
+      used in frame Q needs `N - Q >= framesInFlight + 1`.
 
-- [ ] **Render targets** - offscreen colour images with `VkRenderingInfo`
-      pointing at them instead of the swapchain, then layers as one
-      dynamic-rendering block per distinct target. This is the image-layout
-      phase: a target written by one layer and sampled by the next needs
-      `COLOR_ATTACHMENT_OPTIMAL` -> `SHADER_READ_ONLY_OPTIMAL` in between.
+- [✅] **Render targets** - `beginFrameIfNeeded` was split into the per-frame
+      part and `bindTarget`, which opens one dynamic-rendering block per
+      distinct target and reuses the open one when the target is unchanged and
+      the load op is `LOAD`. `GPUTexture` tracks `layout`, and
+      `endRenderingIfOpen` barriers `COLOR_ATTACHMENT_OPTIMAL` ->
+      `SHADER_READ_ONLY_OPTIMAL` so the next layer can sample it. Targets carry
+      their own `DepthBuffer` (the shared `m_depth` is swapchain-sized),
+      `show(target)` blits a non-backbuffer target over the swapchain image,
+      and `tracksWindow` targets are rebuilt in `recreateSwapchain`.
 
-      Cheaper than it was: `GPUTexture`, `createImage` and `transitionImage`
-      already exist, and a target is a texture with `COLOR_ATTACHMENT_BIT` and
-      no upload. What is genuinely new is tracking each target's *current*
-      layout, since it alternates between being drawn into and being sampled -
-      a field on `GPUTexture`, not a fixed constant.
+      Four things bit along the way, all now fixed: `m_textures` started empty
+      so the first target got id 0 and aliased `Renderer::BACKBUFFER` (slot 0
+      is now reserved, mirroring `SoftwareRenderer::init`); the pipeline cache
+      baked in the swapchain's colour format, so `PipelineKey` gained
+      `colorFormat`; `draw` took its default viewport from the swapchain rather
+      than the bound target; and `Renderer::shutdown` force-drained the destroy
+      queue *before* the backend went idle, so a `destroyTarget()` immediately
+      followed by `shutdown()` freed images the GPU was still reading - the
+      table gained a `waitIdle` entry.
+
+      `examples/rendertarget.cpp` covers all of it: default mode samples a
+      512x512 target, `--show-target` presents it directly, `--track` resizes
+      it with the window, `--update` swaps it for a CPU-updated texture.
 
 - [ ] **Stencil** - `RenderCommand` carries `stencilTest`/`stencilOp`/
       `stencilRef` and the software backend honours them; `createPipeline` sets
@@ -702,8 +721,6 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
   image count, because `VulkanFrames` sized `renderFinished` from the old one.
   Never observed; a driver that varies it would hit this. Fix is to rebuild
   `VulkanFrames` alongside the swapchain.
-- `clear` and `draw` ignore their `target`, so anything but the backbuffer
-  silently hits the backbuffer. Closes with render targets.
 - `uploadBuffer` has no zero-size guard, so `createUniformBuffer(data, 0)`
   reaches `vmaCreateBuffer` with `size = 0` - a validation error. One-line
   early return.

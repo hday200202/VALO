@@ -44,14 +44,6 @@ inline bool registerShader(const char* file, const ShaderEntry& entry) {
     return true;
 }
 
-/*
-    An override for valoc: `fn` keeps its C++ body for the software backend, and
-    the translator emits `src` verbatim instead of trying to read it. For the
-    cases where the two genuinely differ - a CPU lookup table standing in for
-    something the GPU does in one instruction, or anything with no C++ spelling.
-
-    The declaration is what valoc looks for; nothing reads it at runtime.
-*/
 #define VALO_GLSL(fn, src) \
     inline const char* valo_glsl_##fn = src;
 
@@ -64,7 +56,25 @@ inline bool registerShader(const char* file, const ShaderEntry& entry) {
 inline const ShaderEntry* findShader(const std::string& path) {
     auto normalize = [](std::string s) {
         for (auto& c : s) if (c == '\\') c = '/';
-        return s;
+
+        std::vector<std::string> parts;
+        for (size_t i = 0; i < s.size();) {
+            size_t j = s.find('/', i);
+            if (j == std::string::npos) j = s.size();
+
+            const std::string seg = s.substr(i, j - i);
+            if (seg == ".." && !parts.empty() && parts.back() != "..") parts.pop_back();
+            else if (seg != "." && !seg.empty()) parts.push_back(seg);
+
+            i = j + 1;
+        }
+
+        std::string out;
+        for (const auto& seg : parts) {
+            if (!out.empty()) out += '/';
+            out += seg;
+        }
+        return out;
     };
 
     const std::string want = normalize(path);

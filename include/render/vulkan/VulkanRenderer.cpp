@@ -1,5 +1,5 @@
 #include "VulkanRenderer.hpp"
-#include "../Renderer.hpp"   // m_owner: config, free lists, destroy queues
+#include "../Renderer.hpp"
 
 #ifdef VALO_HAS_VULKAN
 
@@ -24,11 +24,7 @@ bool VulkanRenderer::initDevice(Window& window, const uint32_t framesInFlight, c
 }
 
 
-bool VulkanRenderer::beginFrameIfNeeded(
-    const VkAttachmentLoadOp loadOp,
-    const Color& clearColor,
-    const float clearDepth
-) {
+bool VulkanRenderer::beginFrameIfNeeded() {
     if (m_frameOpen) return true;
 
     const VkDevice device = m_ctx.device();
@@ -69,17 +65,55 @@ bool VulkanRenderer::beginFrameIfNeeded(
     };
     vkBeginCommandBuffer(cmd, &bi);
 
+    m_frameOpen = true;
+    return true;
+}
+
+
+bool VulkanRenderer::bindTarget(
+    const RenderTargetID target,
+    const VkAttachmentLoadOp loadOp,
+    const Color& clearColor,
+    const float clearDepth
+) {
+    if (!beginFrameIfNeeded()) return false;
+
+    if (m_renderingOpen && m_currentTarget == target && loadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+        return true;
+
+    endRenderingIfOpen();
+
+    const uint32_t frame = m_frameIndex;
+    const VkCommandBuffer cmd = m_frames.commandBuffer(frame);
+
+    const bool toBackbuffer = (target == 0);
+
+    GPUTexture* tex = nullptr;
+    if (!toBackbuffer) {
+        if (target >= m_textures.size() || !m_textures[target].isTarget) return false;
+        tex = &m_textures[target];
+    }
+
+    const VkImage     colorImage = toBackbuffer ? m_swapchain.images()[m_imageIndex] : tex->image;
+    const VkImageView colorView  = toBackbuffer ? m_swapchain.views()[m_imageIndex]  : tex->view;
+    const VkExtent2D  extent     = toBackbuffer ? m_swapchain.extent()
+                                                : VkExtent2D{ tex->width, tex->height };
+    const VkFormat colorFormat = toBackbuffer ? m_swapchain.format() : tex->format;
+    DepthBuffer& db = toBackbuffer ? m_depth[frame] : tex->depth;
+    const bool depthFresh = (db.layout == VK_IMAGE_LAYOUT_UNDEFINED);
+
     const VkImageMemoryBarrier2 toAttachment{
         .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask           = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        .srcAccessMask          = 0,
+        .srcStageMask           = toBackbuffer ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                                      : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .srcAccessMask          = toBackbuffer ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .dstStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .oldLayout              = VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout              = toBackbuffer ? VK_IMAGE_LAYOUT_UNDEFINED : tex->layout,
         .newLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .image                  = m_swapchain.images()[m_imageIndex],
+        .image                  = colorImage,
         .subresourceRange       = {
             .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
             .baseMipLevel       = 0,
@@ -91,16 +125,19 @@ bool VulkanRenderer::beginFrameIfNeeded(
 
     const VkImageMemoryBarrier2 toDepth{
         .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask           = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-        .srcAccessMask          = 0,
+        .srcStageMask           = depthFresh ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                                             : VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+                                             | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        .srcAccessMask          = depthFresh ? 0
+                                             : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         .dstStageMask           = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                 | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         .dstAccessMask          = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        .oldLayout              = VK_IMAGE_LAYOUT_UNDEFINED,
+        .oldLayout              = db.layout,
         .newLayout              = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .image                  = m_depth[frame].image,
+        .image                  = db.image,
         .subresourceRange       = {
             .aspectMask         = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
             .baseMipLevel       = 0,
@@ -121,7 +158,7 @@ bool VulkanRenderer::beginFrameIfNeeded(
 
     const VkRenderingAttachmentInfo color{
         .sType          = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView      = m_swapchain.views()[m_imageIndex],
+        .imageView      = colorView,
         .imageLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp         = loadOp,
         .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
@@ -130,16 +167,16 @@ bool VulkanRenderer::beginFrameIfNeeded(
 
     const VkRenderingAttachmentInfo depth{
         .sType          = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView      = m_depth[frame].view,
+        .imageView      = db.view,
         .imageLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .loadOp         = loadOp,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue     = { .depthStencil = { .depth = clearDepth, .stencil = 0 } }
     };
 
     const VkRenderingInfo ri{
         .sType                  = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea             = { {0, 0}, m_swapchain.extent() },
+        .renderArea             = { {0, 0}, extent },
         .layerCount             = 1,
         .colorAttachmentCount   = 1,
         .pColorAttachments      = &color,
@@ -148,9 +185,57 @@ bool VulkanRenderer::beginFrameIfNeeded(
 
     vkCmdBeginRendering(cmd, &ri);
 
-    m_frameOpen = true;
+    m_currentTarget = target;
+    m_currentColorFormat = colorFormat;
+    m_currentExtent = extent;
+    db.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    if (tex) tex->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     m_renderingOpen = true;
     return true;
+}
+
+
+void VulkanRenderer::endRenderingIfOpen() {
+    if (!m_renderingOpen) return;
+
+    const VkCommandBuffer cmd = m_frames.commandBuffer(m_frameIndex);
+    vkCmdEndRendering(cmd);
+    m_renderingOpen = false;
+
+    if (m_currentTarget == 0 || m_currentTarget >= m_textures.size()) return;
+
+    GPUTexture& tex = m_textures[m_currentTarget];
+    if (!tex.isTarget || tex.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return;
+
+    const VkImageMemoryBarrier2 toRead{
+        .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstStageMask           = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        .dstAccessMask          = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        .oldLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout              = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+        .image                  = tex.image,
+        .subresourceRange       = {
+            .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel       = 0,
+            .levelCount         = 1,
+            .baseArrayLayer     = 0,
+            .layerCount         = 1
+        }
+    };
+
+    const VkDependencyInfo depIn{
+        .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount    = 1,
+        .pImageMemoryBarriers       = &toRead
+    };
+    vkCmdPipelineBarrier2(cmd, &depIn);
+
+    tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 
@@ -297,6 +382,117 @@ bool VulkanRenderer::uploadImage(GPUTexture& tex, const uint32_t* data) {
 
     const bool ok = m_ctx.endOneShot(cmd);
     vmaDestroyBuffer(alloc, staging, stagingAlloc);
+    if (ok) tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return ok;
+}
+
+
+/*
+    Partial upload into an existing image. uploadImage can transition from
+    UNDEFINED because it overwrites everything; a sub-rect has to keep what is
+    already there, so it transitions from the layout the image is actually in -
+    which is what tex.layout is for.
+*/
+bool VulkanRenderer::uploadImageRect(
+    GPUTexture& tex,
+    const uint32_t x, const uint32_t y,
+    const uint32_t w, const uint32_t h,
+    const uint32_t* data
+) {
+    if (!w || !h || !data) return false;
+
+    if (x + w > tex.width || y + h > tex.height) {
+        std::fprintf(
+            stderr, "[vulkan] updateTextureRect: %ux%u at (%u,%u) does not fit a %ux%u texture\n",
+            w, h, x, y, tex.width, tex.height
+        );
+        return false;
+    }
+
+    const VmaAllocator alloc = m_ctx.allocator();
+    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
+
+    const VkBufferCreateInfo sci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size  = bytes,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    };
+
+    const VmaAllocationCreateInfo sai{
+        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+               | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO
+    };
+
+    VkBuffer staging = VK_NULL_HANDLE;
+    VmaAllocation stagingAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+
+    if (vmaCreateBuffer(alloc, &sci, &sai, &staging, &stagingAlloc, &stagingInfo) != VK_SUCCESS)
+        return false;
+
+    std::memcpy(stagingInfo.pMappedData, data, size_t(bytes));
+
+    const VkCommandBuffer cmd = m_ctx.beginOneShot();
+    if (!cmd) { vmaDestroyBuffer(alloc, staging, stagingAlloc); return false; }
+
+    transitionImage(
+        cmd, tex.image,
+        tex.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0, tex.mipLevels
+    );
+
+    const VkBufferImageCopy region{
+        .imageSubresource   = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset        = { int32_t(x), int32_t(y), 0 },
+        .imageExtent        = { w, h, 1 }
+    };
+    vkCmdCopyBufferToImage(cmd, staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // mip 0 changed, so the rest of the chain is stale and gets rebuilt
+    int32_t mw = int32_t(tex.width), mh = int32_t(tex.height);
+
+    for (uint32_t i = 1; i < tex.mipLevels; ++i) {
+        transitionImage(cmd, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
+
+        const int32_t nw = mw > 1 ? mw / 2 : 1;
+        const int32_t nh = mh > 1 ? mh / 2 : 1;
+
+        const VkImageBlit blit{
+            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 },
+            .srcOffsets     = { {0, 0, 0}, {mw, mh, 1} },
+            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i,     0, 1 },
+            .dstOffsets     = { {0, 0, 0}, {nw, nh, 1} }
+        };
+
+        vkCmdBlitImage(
+            cmd,
+            tex.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit, VK_FILTER_LINEAR
+        );
+
+        transitionImage(
+            cmd, tex.image,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            i - 1, 1
+        );
+
+        mw = nw;
+        mh = nh;
+    }
+
+    transitionImage(
+        cmd, tex.image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        tex.mipLevels - 1, 1
+    );
+
+    const bool ok = m_ctx.endOneShot(cmd);
+    vmaDestroyBuffer(alloc, staging, stagingAlloc);
+    if (ok) tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return ok;
 }
 
@@ -322,9 +518,32 @@ void VulkanRenderer::writeTextureDescriptor(const TextureID id) {
 }
 
 
+void VulkanRenderer::clearTextureDescriptor(const TextureID id) {
+    if (id >= m_maxTextures || !m_nullTexture.view) return;
+
+    const VkDescriptorImageInfo info{
+        .imageView      = m_nullTexture.view,
+        .imageLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    };
+
+    const VkWriteDescriptorSet write{
+        .sType              = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet             = m_bindlessSet,
+        .dstBinding         = 0,
+        .dstArrayElement    = id,
+        .descriptorCount    = 1,
+        .descriptorType     = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .pImageInfo         = &info
+    };
+    vkUpdateDescriptorSets(m_ctx.device(), 1, &write, 0, nullptr);
+}
+
+
 // immediate, not deferred - only safe once the GPU is known to be idle, which
 // is why the callers are the create failure path and shutdown
 void VulkanRenderer::destroyTextureNow(GPUTexture& tex) {
+    if (tex.depth.view)  vkDestroyImageView(m_ctx.device(), tex.depth.view, nullptr);
+    if (tex.depth.image) vmaDestroyImage(m_ctx.allocator(), tex.depth.image, tex.depth.allocation);
     if (tex.view)  vkDestroyImageView(m_ctx.device(), tex.view, nullptr);
     if (tex.image) vmaDestroyImage(m_ctx.allocator(), tex.image, tex.allocation);
 
@@ -452,6 +671,7 @@ bool VulkanRenderer::recreateSwapchain() {
     }
 
     if (!createDepthBuffers()) return false;
+    if (!resizeTrackingTargets()) return false;
 
     m_needsRecreate = false;
     return true;
@@ -595,7 +815,8 @@ VkShaderModule VulkanRenderer::createShaderModule(const std::vector<uint32_t>& s
 VkPipeline VulkanRenderer::createPipeline(
     const RenderCommand& cmd, 
     const GPUProgram& prog, 
-    const VtxLayout& layout
+    const VtxLayout& layout,
+    const VkFormat colorFormat
 ) {
     const VkPipelineShaderStageCreateInfo stages[2]{
         {
@@ -704,8 +925,6 @@ VkPipeline VulkanRenderer::createPipeline(
         .pDynamicStates     = dynamics
     };
 
-    const VkFormat colorFormat = m_swapchain.format();
-
     const VkPipelineRenderingCreateInfo rendering{
         .sType                      = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount       = 1,
@@ -740,8 +959,8 @@ VkPipeline VulkanRenderer::createPipeline(
 }
 
 
-VkPipeline VulkanRenderer::pipelineFor(const RenderCommand& cmd, const VtxLayout& layout) {
-    const PipelineKey key{ cmd.program, packPipelineState(cmd), layout };
+VkPipeline VulkanRenderer::pipelineFor(const RenderCommand& cmd, const VtxLayout& layout, const VkFormat colorFormat) {
+    const PipelineKey key{ cmd.program, packPipelineState(cmd), colorFormat, layout };
 
     for (const auto& [k, pipeline] : m_pipelines)
         if (k == key) return pipeline;
@@ -751,7 +970,7 @@ VkPipeline VulkanRenderer::pipelineFor(const RenderCommand& cmd, const VtxLayout
     const GPUProgram& prog = m_programs[cmd.program];
     if (!prog.vs || !prog.fs) return VK_NULL_HANDLE;
 
-    const VkPipeline pipeline = createPipeline(cmd, prog, layout);
+    const VkPipeline pipeline = createPipeline(cmd, prog, layout, colorFormat);
     if (pipeline) m_pipelines.push_back({key, pipeline});
 
     return pipeline;
@@ -771,13 +990,7 @@ void VulkanRenderer::destroyDepthBuffers() {
 
 
 bool VulkanRenderer::createBindlessSet() {
-    /*
-        Clamp the array to what this device accepts. The whole set has to fit
-        maxPerSetDescriptors and the sampled images their own limit; asking for
-        more fails layout creation rather than degrading.
-    */
     {
-        // maxPerSetDescriptors is a maintenance3 property, not a base limit
         VkPhysicalDeviceMaintenance3Properties m3{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES
         };
@@ -1000,11 +1213,96 @@ bool VulkanRenderer::createDepthBuffers() {
 }
 
 
+bool VulkanRenderer::createTargetDepth(GPUTexture& tex) {
+    const VkImageCreateInfo ici{
+        .sType          = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType      = VK_IMAGE_TYPE_2D,
+        .format         = m_depthFormat,
+        .extent         = { tex.width, tex.height, 1 },
+        .mipLevels      = 1,
+        .arrayLayers    = 1,
+        .samples        = VK_SAMPLE_COUNT_1_BIT,
+        .tiling         = VK_IMAGE_TILING_OPTIMAL,
+        .usage          = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED
+    };
+
+    const VmaAllocationCreateInfo aci{ .usage = VMA_MEMORY_USAGE_AUTO };
+
+    if (vmaCreateImage(
+            m_ctx.allocator(), &ici, &aci,
+            &tex.depth.image, &tex.depth.allocation, nullptr) != VK_SUCCESS
+    ) {
+        std::fprintf(stderr, "[vulkan] vmaCreateImage failed for a target's depth buffer\n");
+        return false;
+    }
+
+    const VkImageViewCreateInfo vci{
+        .sType              = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image              = tex.depth.image,
+        .viewType           = VK_IMAGE_VIEW_TYPE_2D,
+        .format             = m_depthFormat,
+        .subresourceRange   = {
+            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1
+        }
+    };
+
+    if (vkCreateImageView(m_ctx.device(), &vci, nullptr, &tex.depth.view) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] vkCreateImageView failed for a target's depth buffer\n");
+        return false;
+    }
+
+    tex.depth.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    return true;
+}
+
+
+bool VulkanRenderer::resizeTrackingTargets() {
+    const VkExtent2D extent = m_swapchain.extent();
+
+    for (size_t id = 0; id < m_textures.size(); ++id) {
+        GPUTexture& tex = m_textures[id];
+
+        if (!tex.isTarget || !tex.tracksWindow) continue;
+        if (tex.width == extent.width && tex.height == extent.height) continue;
+
+        const VkFormat format = tex.format;
+
+        const VkImageUsageFlags usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT          |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+        destroyTextureNow(tex);
+
+        if (!createImage(extent.width, extent.height, format, 1, usage, tex)) {
+            std::fprintf(stderr, "[vulkan] failed to resize a window-tracking target\n");
+            return false;
+        }
+
+        tex.isTarget     = true;
+        tex.tracksWindow = true;
+
+        if (!createTargetDepth(tex)) {
+            std::fprintf(stderr, "[vulkan] failed to resize a tracking target's depth buffer\n");
+            return false;
+        }
+
+        writeTextureDescriptor(uint32_t(id));
+    }
+
+    return true;
+}
+
+
 void VulkanRenderer::shutdown() {
     if (m_ctx.device()) vkDeviceWaitIdle(m_ctx.device());
 
     drainRetiredBuffers(true);
-
     destroyDepthBuffers();
 
     for (auto& [key, pipeline] : m_pipelines)
@@ -1053,6 +1351,7 @@ void VulkanRenderer::shutdown() {
     }
 
     for (auto& t : m_textures) destroyTextureNow(t);
+    destroyTextureNow(m_nullTexture);
 
     m_vertexBuffers.clear();
     m_indexBuffers.clear();
@@ -1066,19 +1365,10 @@ void VulkanRenderer::shutdown() {
 }
 
 
-
-namespace {
-
-// Says so once per call site rather than once per call, so a frame loop hitting
-// an unimplemented entry does not bury everything else in output.
-void todo(const char* fn) {
-    static std::vector<const char*> seen;
-    for (const char* s : seen) if (s == fn) return;
-    seen.push_back(fn);
-    std::fprintf(stderr, "[vulkan] TODO: %s is not implemented\n", fn);
+void VulkanRenderer::waitIdle() {
+    if (m_ctx.device()) vkDeviceWaitIdle(m_ctx.device());
 }
 
-} // namespace
 
 
 /* ========================================================================= //
@@ -1157,6 +1447,15 @@ bool VulkanRenderer::init() {
 
     if (!createSamplers()) return false;
 
+    const uint32_t white = (uint32_t)0xFFFFFFFFu;
+    const VkImageUsageFlags usage = 
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+    if (!createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, 1, usage, m_nullTexture)) return false;
+    if (!uploadImage(m_nullTexture, &white)) return false;
+
+    m_textures.push_back(GPUTexture{});
+
     m_depthFormat = pickDepthFormat();
     if (m_depthFormat == VK_FORMAT_UNDEFINED) return false;
 
@@ -1169,16 +1468,12 @@ bool VulkanRenderer::init() {
 // ========================================================================= */
 
 void VulkanRenderer::clear(const Color& clearColor, const RenderTargetID target, const float clearDepth) {
-    (void)target;       // render targets are not implemented yet
-
-    beginFrameIfNeeded(VK_ATTACHMENT_LOAD_OP_CLEAR, clearColor, clearDepth);
+    bindTarget(target, VK_ATTACHMENT_LOAD_OP_CLEAR, clearColor, clearDepth);
 }
 
 
 void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target) {
-    (void)target;
-
-    if (!beginFrameIfNeeded(VK_ATTACHMENT_LOAD_OP_LOAD, {})) return;
+    if (!bindTarget(target, VK_ATTACHMENT_LOAD_OP_LOAD, {})) return;
 
     static const VtxLayout noVerts;
 
@@ -1190,7 +1485,7 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     const VtxLayout& layout = 
         hasVerts ? m_vertexBuffers[cmd.verts].layout : noVerts;
 
-    const VkPipeline pipeline = pipelineFor(cmd, layout);
+    const VkPipeline pipeline = pipelineFor(cmd, layout, m_currentColorFormat);
     if (!pipeline) return;
 
     const VkCommandBuffer buf = m_frames.commandBuffer(m_frameIndex);
@@ -1254,23 +1549,13 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
         );
     }
 
-    const VkExtent2D extent = m_swapchain.extent();
+    const VkExtent2D extent = m_currentExtent;
 
     const float vpX = cmd.viewport.width  > 0.f ? cmd.viewport.x : 0.f;
     const float vpY = cmd.viewport.height > 0.f ? cmd.viewport.y : 0.f;
     const float vpW = cmd.viewport.width  > 0.f ? cmd.viewport.width  : float(extent.width);
     const float vpH = cmd.viewport.height > 0.f ? cmd.viewport.height : float(extent.height);
 
-    /*
-        Negative height, so the viewport transform flips Y. VALO's clip space is
-        Y-up: Mat4f::perspective does not negate Y, and the software backend
-        flips at DrawFuncs.cpp:79 with (1 - ndc.y). Vulkan's is natively Y-down
-        and would not flip, which renders mirrored AND reverses the sign of the
-        signed area - so the same mesh culls the opposite way on each backend.
-
-        Flipping here rather than in the projection keeps one matrix meaning one
-        thing on both backends. VK_KHR_maintenance1, core since 1.1.
-    */
     const VkViewport viewport{
         .x          = vpX,
         .y          = vpY + vpH,
@@ -1329,9 +1614,125 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
 }
 
 
-void VulkanRenderer::show(const RenderTargetID target) {
-    (void)target;       // render targets are not implemented yet
+void VulkanRenderer::blitToSwapchain(const VkCommandBuffer cmd, GPUTexture& tex) {
+    const VkExtent2D extent = m_swapchain.extent();
+    const VkImage    swap   = m_swapchain.images()[m_imageIndex];
 
+    const VkImageSubresourceRange color{
+        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel   = 0,
+        .levelCount     = 1,
+        .baseArrayLayer = 0,
+        .layerCount     = 1
+    };
+
+    const VkImageMemoryBarrier2 pre[2]{
+        {
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask          = VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask          = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout              = tex.layout,
+            .newLayout              = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = tex.image,
+            .subresourceRange       = color
+        },
+        {
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcAccessMask          = 0,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .dstAccessMask          = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout              = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout              = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = swap,
+            .subresourceRange       = color
+        }
+    };
+
+    const VkDependencyInfo preDep{
+        .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount    = 2,
+        .pImageMemoryBarriers       = pre
+    };
+    vkCmdPipelineBarrier2(cmd, &preDep);
+
+    const VkImageBlit2 region{
+        .sType              = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+        .srcSubresource     = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel       = 0,
+            .baseArrayLayer = 0,
+            .layerCount     = 1
+        },
+        .srcOffsets         = { {0, 0, 0}, {int32_t(tex.width), int32_t(tex.height), 1} },
+        .dstSubresource     = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel       = 0,
+            .baseArrayLayer = 0,
+            .layerCount     = 1
+        },
+        .dstOffsets         = { {0, 0, 0}, {int32_t(extent.width), int32_t(extent.height), 1} }
+    };
+
+    const VkBlitImageInfo2 blit{
+        .sType          = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+        .srcImage       = tex.image,
+        .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .dstImage       = swap,
+        .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .regionCount    = 1,
+        .pRegions       = &region,
+        .filter         = VK_FILTER_LINEAR
+    };
+    vkCmdBlitImage2(cmd, &blit);
+
+    const VkImageMemoryBarrier2 post[2]{
+        {
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .srcAccessMask          = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            .dstAccessMask          = 0,
+            .oldLayout              = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout              = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = swap,
+            .subresourceRange       = color
+        },
+        {
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
+            .srcAccessMask          = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask          = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout              = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout              = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = tex.image,
+            .subresourceRange       = color
+        }
+    };
+
+    const VkDependencyInfo postDep{
+        .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount    = 2,
+        .pImageMemoryBarriers       = post
+    };
+    vkCmdPipelineBarrier2(cmd, &postDep);
+
+    tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
+
+void VulkanRenderer::show(const RenderTargetID target) {
     if (!m_frameOpen) return;
 
     drainRetiredBuffers();
@@ -1339,37 +1740,42 @@ void VulkanRenderer::show(const RenderTargetID target) {
     const uint32_t frame = m_frameIndex;
     const VkCommandBuffer cmd = m_frames.commandBuffer(frame);
 
-    if (m_renderingOpen) {
-        vkCmdEndRendering(cmd);
-        m_renderingOpen = false;
+    endRenderingIfOpen();
+
+    const bool fromTarget =
+        target != 0 && target < m_textures.size() && m_textures[target].isTarget;
+
+    if (fromTarget) {
+        blitToSwapchain(cmd, m_textures[target]);
     }
+    else {
+        const VkImageMemoryBarrier2 toPresent{
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            .dstAccessMask          = 0,
+            .oldLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout              = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = m_swapchain.images()[m_imageIndex],
+            .subresourceRange       = {
+                .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel       = 0,
+                .levelCount         = 1,
+                .baseArrayLayer     = 0,
+                .layerCount         = 1
+            }
+        };
 
-    const VkImageMemoryBarrier2 toPresent{
-        .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstStageMask           = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-        .dstAccessMask          = 0,
-        .oldLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .newLayout              = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
-        .image                  = m_swapchain.images()[m_imageIndex],
-        .subresourceRange       = {
-            .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel       = 0,
-            .levelCount         = 1,
-            .baseArrayLayer     = 0,
-            .layerCount         = 1
-        }
-    };
-
-    const VkDependencyInfo depOut{
-        .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount    = 1,
-        .pImageMemoryBarriers       = &toPresent
-    };
-    vkCmdPipelineBarrier2(cmd, &depOut);
+        const VkDependencyInfo depOut{
+            .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount    = 1,
+            .pImageMemoryBarriers       = &toPresent
+        };
+        vkCmdPipelineBarrier2(cmd, &depOut);
+    }
 
     vkEndCommandBuffer(cmd);
 
@@ -1427,6 +1833,7 @@ void VulkanRenderer::show(const RenderTargetID target) {
     }
 
     m_frameIndex = (frame + 1) % m_frames.framesInFlight();
+    ++m_owner->m_frame;
 }
 
 
@@ -1437,10 +1844,35 @@ void VulkanRenderer::flush() { /* no flush for vulkan */}
     Render targets
 // ========================================================================= */
 
-RenderTargetID VulkanRenderer::createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {
-    (void)w; (void)h; (void)tracksWindow; (void)srgb;
-    todo(__func__);
-    return EMPTY_TEXTURE;
+RenderTargetID VulkanRenderer::createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {    
+    if (!w || !h) return EMPTY_TEXTURE;
+    if (m_textures.size() >= m_maxTextures) {
+        std::fprintf(stderr, "[vulkan] texture limit (%u) reached\n", m_maxTextures);
+        return EMPTY_TEXTURE;
+    }
+
+    const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
+    GPUTexture tex;
+
+    const VkImageUsageFlags usage = 
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT          |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+    if (!createImage(w, h, format, 1, usage, tex)) return EMPTY_TEXTURE;
+
+    tex.isTarget = true;
+    tex.tracksWindow = tracksWindow;
+
+    if (!createTargetDepth(tex)) {
+        destroyTextureNow(tex);
+        return EMPTY_TEXTURE;
+    }
+
+    const RenderTargetID id = m_owner->allocSlot(m_textures, m_owner->m_freeTargets, std::move(tex));
+    writeTextureDescriptor(id);
+    return id;
 }
 
 
@@ -1597,8 +2029,13 @@ TextureID VulkanRenderer::createTextureFromFile(const std::string& path, const b
 
 
 void VulkanRenderer::updateTexture(const TextureID texture, const uint32_t* data) {
-    (void)texture; (void)data;
-    todo(__func__);
+    if (texture >= m_textures.size() || !data) return;
+
+    GPUTexture& tex = m_textures[texture];
+    if (!tex.image) return;
+
+    // a full replace, so uploadImage transitioning from UNDEFINED is correct
+    uploadImage(tex, data);
 }
 
 
@@ -1608,8 +2045,12 @@ void VulkanRenderer::updateTextureRect(
     const uint32_t w, const uint32_t h,
     const uint32_t* data
 ) {
-    (void)texture; (void)x; (void)y; (void)w; (void)h; (void)data;
-    todo(__func__);
+    if (texture >= m_textures.size() || !data) return;
+
+    GPUTexture& tex = m_textures[texture];
+    if (!tex.image) return;
+
+    uploadImageRect(tex, x, y, w, h, data);
 }
 
 
@@ -1653,7 +2094,11 @@ ProgramID VulkanRenderer::createProgramFromFiles(const std::string& vsPath, cons
     Releases
 // ========================================================================= */
 
-void VulkanRenderer::releaseTarget(const RenderTargetID id)         { (void)id; todo(__func__); }
+void VulkanRenderer::releaseTarget(const RenderTargetID id) { 
+    if (id >= m_textures.size()) return;
+    clearTextureDescriptor(id);
+    destroyTextureNow(m_textures[id]);
+}
 
 
 void VulkanRenderer::releaseVertexBuffer(const VertexBufferID id) { 

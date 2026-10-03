@@ -31,17 +31,21 @@ struct DepthBuffer {
     VkImage         image       = VK_NULL_HANDLE;
     VmaAllocation   allocation  = VK_NULL_HANDLE;
     VkImageView     view        = VK_NULL_HANDLE;
+    VkImageLayout   layout      = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 struct GPUTexture {
-    VkImage         image       = VK_NULL_HANDLE;
-    VmaAllocation   allocation  = VK_NULL_HANDLE;
-    VkImageView     view        = VK_NULL_HANDLE;
-    uint32_t        width       = 0;
-    uint32_t        height      = 0;
-    uint32_t        mipLevels   = 1;
-    VkFormat        format      = VK_FORMAT_UNDEFINED;
-    bool            isTarget    = false;
+    VkImage         image           = VK_NULL_HANDLE;
+    VmaAllocation   allocation      = VK_NULL_HANDLE;
+    VkImageView     view            = VK_NULL_HANDLE;
+    uint32_t        width           = 0;
+    uint32_t        height          = 0;
+    uint32_t        mipLevels       = 1;
+    VkFormat        format          = VK_FORMAT_UNDEFINED;
+    bool            isTarget        = false;
+    bool            tracksWindow    = false;
+    DepthBuffer     depth{};
+    VkImageLayout   layout          = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 inline constexpr uint32_t MAX_TEXTURES  = 4096;
@@ -63,12 +67,14 @@ inline constexpr uint64_t packPipelineState(const RenderCommand& cmd) {
 struct PipelineKey {
     ProgramID   program;
     uint64_t    state;
+    VkFormat    colorFormat;
 
     VtxLayout   layout;
 
     bool operator==(const PipelineKey& o) const {
         return program == o.program
             && state   == o.state
+            && colorFormat == o.colorFormat
             && layout.getAttribs() == o.layout.getAttribs();
     }
 };
@@ -82,8 +88,9 @@ public:
 
     bool initDevice(Window& window, const uint32_t framesInFlight = 2, const bool validation = true);
     void shutdown();
+    void waitIdle();
 
-    bool beginFrameIfNeeded(const VkAttachmentLoadOp loadOp, const Color& clearColor, const float clearDepth = 0.f);
+    bool beginFrameIfNeeded();
     bool uploadBuffer(
         const void* data,
         const VkDeviceSize bytes,
@@ -91,7 +98,23 @@ public:
         GPUBuffer& out
     );
 
+    bool bindTarget(
+        const RenderTargetID target,
+        const VkAttachmentLoadOp loadOp,
+        const Color& clearColor,
+        const float clearDepth = 1.0f
+    );
+
+    void endRenderingIfOpen();
+
     bool uploadImage(GPUTexture& tex, const uint32_t* data);
+
+    bool uploadImageRect(
+        GPUTexture& tex,
+        const uint32_t x, const uint32_t y,
+        const uint32_t w, const uint32_t h,
+        const uint32_t* data
+    );
 
     bool createImage(
         const uint32_t w, const uint32_t h,
@@ -101,6 +124,9 @@ public:
         GPUTexture& out
     );
 
+    bool createTargetDepth(GPUTexture& tex);
+    bool resizeTrackingTargets();
+
     void transitionImage(
         const VkCommandBuffer cmd,
         const VkImage image,
@@ -109,6 +135,7 @@ public:
     );
 
     void writeTextureDescriptor(const TextureID id);
+    void clearTextureDescriptor(const TextureID id);
 
     void destroyTextureNow(GPUTexture& tex);
 
@@ -118,6 +145,7 @@ public:
 
     void                    clear(const Color& clearColor, const RenderTargetID target, const float clearDepth);
     void                    draw(const RenderCommand& cmd, const RenderTargetID target);
+    void                    blitToSwapchain(const VkCommandBuffer cmd, GPUTexture& tex);
     void                    show(const RenderTargetID target);
     void                    flush();
 
@@ -158,8 +186,8 @@ private:
     void                    drainRetiredBuffers(const bool force = false);
     std::vector<uint32_t>   loadSpirv(const std::string& path);
     VkShaderModule          createShaderModule(const std::vector<uint32_t>& spirv);
-    VkPipeline              createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout);
-    VkPipeline              pipelineFor(const RenderCommand& cmd, const VtxLayout& layout);
+    VkPipeline              createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout, const VkFormat colorFormat);
+    VkPipeline              pipelineFor(const RenderCommand& cmd, const VtxLayout& layout, const VkFormat colorFormat);
     VkFormat                pickDepthFormat() const;
     bool                    createDepthBuffers();
     void                    destroyDepthBuffers();
@@ -175,6 +203,7 @@ private:
     uint32_t                        m_imageIndex            = 0;
     bool                            m_frameOpen             = false;
     bool                            m_renderingOpen         = false;
+    RenderTargetID                  m_currentTarget         = 0;    // Renderer::BACKBUFFER
     bool                            m_needsRecreate         = false;
 
     uint32_t                        m_pushConstantSize      = 0;
@@ -208,7 +237,10 @@ private:
     VkDescriptorPool                m_bindlessPool          = VK_NULL_HANDLE;
     VkDescriptorSet                 m_bindlessSet           = VK_NULL_HANDLE;
     VkSampler                       m_samplers[SAMPLER_COUNT] = {};
+    GPUTexture                      m_nullTexture{};
     VkFormat                        m_depthFormat           = VK_FORMAT_UNDEFINED;
+    VkFormat                        m_currentColorFormat    = VK_FORMAT_UNDEFINED;
+    VkExtent2D                      m_currentExtent         = {0, 0};
 };
 
 

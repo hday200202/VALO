@@ -28,17 +28,11 @@ bool Renderer::init(const RenderConfig& cfg) {
 
 
 void Renderer::shutdown() {
-    if (!m_backendFuncs.shutdown) return;   // never init()ed, nothing to undo
+    if (!m_backendFuncs.shutdown) return;
 
-    destroyAllQueued(true);                 // nothing is in flight any more
+    if (m_backendFuncs.waitIdle) m_backendFuncs.waitIdle(*this);
+    destroyAllQueued(true);
     m_backendFuncs.shutdown(*this);
-
-    /*
-        The shutdown entry deletes the backend and nulls the pointer, so a
-        second call would dispatch through a dangling table into a null
-        backend. Clearing the table makes shutdown() idempotent - which it has
-        to be, since the destructor calls it after any explicit call.
-    */
     m_backendFuncs = {};
 }
 
@@ -274,6 +268,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
 
             .initBackend = [](Renderer& r) { return (r.m_software = new SoftwareRenderer(r), r.m_software->init()); },
             .shutdown    = [](Renderer& r) { r.m_software->shutdown(); delete r.m_software; r.m_software = nullptr; },
+            .waitIdle    = [](Renderer&) {}
         };
 
         case Backend::Vulkan:
@@ -312,6 +307,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
 
             .initBackend = [](Renderer& r) { return (r.m_vulkan = new VulkanRenderer(r), r.m_vulkan->init()); },
             .shutdown    = [](Renderer& r) { r.m_vulkan->shutdown(); delete r.m_vulkan; r.m_vulkan = nullptr; },
+            .waitIdle    = [](Renderer& r) {r.m_vulkan->waitIdle(); }
         };
 #else
             std::cout << "Renderer: Backend::Vulkan requested but this build has no "

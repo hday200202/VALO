@@ -280,14 +280,14 @@ struct Uniforms {
     Mat4f model;                 // pure rotation, doubles as the normal matrix
     Vec3f albedo; float metallic, roughness;
     float bump, noiseScale, variation;
-    bool  detail, displace;
+    uint32_t detail, displace;
 };
 
 struct Varyings { Vec3f objPos; Vec3f objNormal; Vec3f worldPos; };
 
 inline void pbrVS(const Vertex& in, const Uniforms& u, Varyings& out) {
     Vec3f pos = in.pos;
-    if (u.displace && u.detail && u.bump > 0.f) {
+    if (u.displace != 0 && u.detail != 0 && u.bump > 0.f) {
         const float h = heightField(in.pos, u.noiseScale) - 0.5f;
         pos += in.normal * (h * u.bump * kDisplaceScale);
     }

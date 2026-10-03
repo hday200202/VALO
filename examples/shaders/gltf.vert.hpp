@@ -188,7 +188,7 @@ struct Uniforms {
     TextureID aoTex;
     TextureID emissiveTex;
 
-    bool useNormalMap;
+    uint32_t useNormalMap;
 };
 
 struct Varyings {

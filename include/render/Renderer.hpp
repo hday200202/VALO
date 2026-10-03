@@ -207,7 +207,7 @@ protected:
         size_t keep = 0;
         for (size_t i = 0; i < queue.size(); ++i) {
             const auto [id, frame] = queue[i];
-            if (force || m_frame - frame >= m_cfg.framesInFlight) {
+            if (force || m_frame - frame > m_cfg.framesInFlight) {
                 release(id);
                 freeList.push_back(id);
             } else queue[keep++] = queue[i];
@@ -273,6 +273,7 @@ protected:
 
         bool (*initBackend)(Renderer&);
         void (*shutdown)(Renderer&);
+        void (*waitIdle)(Renderer&);
     } m_backendFuncs{};
 
     RenderBackend fetchBackendFuncs();
