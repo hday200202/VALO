@@ -93,10 +93,30 @@ if(VALO_VULKAN AND VALO_VULKAN_ROOT AND EXISTS "${VALO_VULKAN_ROOT}/include/vulk
             set(VALO_VULKAN_LIB "${VALO_VULKAN_ROOT}/Lib/vulkan-1.dll" CACHE FILEPATH "" FORCE)
         endif()
     else()
-        find_library(VALO_VULKAN_LIB NAMES vulkan PATHS "${VALO_VULKAN_ROOT}/lib" NO_DEFAULT_PATH)
+        # SDK 1.4.3xx moved the loader down into lib/VulkanLoader/lib; older
+        # layouts keep it directly in lib/, so both are searched.
+        find_library(VALO_VULKAN_LIB NAMES vulkan
+            PATHS "${VALO_VULKAN_ROOT}/lib/VulkanLoader/lib" "${VALO_VULKAN_ROOT}/lib"
+            NO_DEFAULT_PATH)
+        # A vendored SDK that ships no loader still leaves a usable system one,
+        # and the loader ABI is stable (libvulkan.so.1), so this is safe.
+        if(NOT VALO_VULKAN_LIB)
+            find_library(VALO_VULKAN_LIB NAMES vulkan)
+        endif()
     endif()
     message(STATUS "VALO: vendored Vulkan SDK at ${VALO_VULKAN_ROOT}")
     message(STATUS "VALO: vulkan loader ${VALO_VULKAN_LIB}")
+
+    # The backend compiles whether or not a loader turns up, so a miss here
+    # surfaces only as a wall of undefined vk* symbols at link time. Say so now.
+    if(NOT VALO_VULKAN_LIB)
+        message(FATAL_ERROR
+            "VALO: Vulkan headers found at ${VALO_VULKAN_ROOT}, but no loader to link against.\n"
+            "Fix one of:\n"
+            "  - install a system Vulkan loader (vulkan-icd-loader / libvulkan1)\n"
+            "  - ./build.sh rebuild-vulkan   to re-fetch the vendored SDK\n"
+            "  - ./build.sh no-vulkan        to build the software renderer only")
+    endif()
 else()
     set(VALO_HAS_VULKAN OFF)
     if(NOT VALO_VULKAN)

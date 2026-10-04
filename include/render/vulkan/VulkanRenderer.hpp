@@ -86,7 +86,7 @@ public:
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    bool initDevice(Window& window, const uint32_t framesInFlight = 2, const bool validation = true);
+    bool initDevice(Window& window, const uint32_t framesInFlight = 2, const bool validation = false);
     void shutdown();
     void waitIdle();
 

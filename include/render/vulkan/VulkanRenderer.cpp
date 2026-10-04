@@ -1381,7 +1381,7 @@ bool VulkanRenderer::init() {
         return false;
     }
 
-    if (!initDevice(*m_owner->m_cfg.window, m_owner->m_cfg.framesInFlight)) return false;
+    if (!initDevice(*m_owner->m_cfg.window, m_owner->m_cfg.framesInFlight, m_owner->m_cfg.validation)) return false;
 
     VkPhysicalDeviceProperties props{};
     vkGetPhysicalDeviceProperties(m_ctx.physicalDevice(), &props);

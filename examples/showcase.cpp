@@ -7,7 +7,10 @@
 // maps have a frame to work in.
 //
 // Usage
-//   showcase [path/to/model.gltf]      defaults to the Barracuda
+//   showcase [--vulkan] [--validation] [path/to/model.gltf]
+//
+//   --validation turns on the Vulkan validation layers. They are off by default
+//   because they dominate the frame: 26 fps with, 120 (vsync capped) without.
 //
 // Controls
 //   left click     grab the mouse to look around; right click or click releases
@@ -30,13 +33,16 @@
 #include "engines/ShowcaseEngine.hpp"
 
 int main(int argc, char** argv) {
-    bool useVulkan = false;
-    for (int i = 1; i < argc; ++i)
-        if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
+    bool useVulkan = false, validation = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--vulkan"))     useVulkan  = true;
+        if (!std::strcmp(argv[i], "--validation")) validation = true;
+    }
 
     sc::Engine engine;
     if (!engine.init("VALO - PBR Showcase", {1280, 720},
-                     useVulkan ? valo::Backend::Vulkan : valo::Backend::Software)) return 1;
+                     useVulkan ? valo::Backend::Vulkan : valo::Backend::Software,
+                     validation)) return 1;
 
     /*
         addModel fits whatever it is handed: scaled uniformly until its longest
@@ -48,9 +54,9 @@ int main(int argc, char** argv) {
         downstream (camera framing, light rig, contact shadow) keys off the
         fitted size, so nothing needs placing by hand.
     */
-    const char* path = "examples/gltf/DamagedHelmet/DamagedHelmet.gltf";
+    const char* path = "examples/gltf/lego/scene.gltf";
     for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--vulkan") != 0) { path = argv[i]; break; }
+        if (argv[i][0] != '-') { path = argv[i]; break; }
 
     sc::Model& model = engine.addModel(path);
     if (!model.isLoaded()) {

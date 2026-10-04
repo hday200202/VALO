@@ -387,8 +387,11 @@ export VK_ICD_FILENAMES="$VULKAN_SDK/share/vulkan/icd.d/MoltenVK_icd.json"
 export DYLD_LIBRARY_PATH="$VULKAN_SDK/lib:${DYLD_LIBRARY_PATH:-}"
 ENVEOF
         elif [[ "$(uname -s)" == "Linux" ]]; then
+            # SDK 1.4.3xx keeps the loader in lib/VulkanLoader/lib, older ones in
+            # lib/; without the first the vendored loader is never picked up and
+            # the system one is used instead.
             cat >> "$VULKAN_DIR/env.sh" <<'ENVEOF'
-export LD_LIBRARY_PATH="$VULKAN_SDK/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$VULKAN_SDK/lib/VulkanLoader/lib:$VULKAN_SDK/lib:${LD_LIBRARY_PATH:-}"
 ENVEOF
         fi
         echo "==> wrote $VULKAN_DIR/env.sh"
@@ -458,6 +461,7 @@ cmake --build "$BUILD_DIR" --parallel "$JOBS"
 # and a half-working symlink is worse than an honest copy. Note this only
 # refreshes when build.sh runs - .vscode/c_cpp_properties.json points straight
 # at the build dir so IntelliSense never sees a stale database.
+rm -f compile_commands.json   # may be a symlink from the ln -s era, which cp -f cannot overwrite
 cp -f "$BUILD_DIR/compile_commands.json" compile_commands.json
 
 echo

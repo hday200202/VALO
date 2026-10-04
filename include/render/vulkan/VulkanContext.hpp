@@ -17,7 +17,7 @@ public:
     VulkanContext(const VulkanContext&) = delete;
     VulkanContext& operator=(const VulkanContext&) = delete;
 
-    bool init(Window& window, const bool validation = true);
+    bool init(Window& window, const bool validation = false);
     void shutdown();
 
     VkInstance instance() const { return m_instance; }

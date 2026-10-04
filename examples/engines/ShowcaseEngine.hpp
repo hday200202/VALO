@@ -315,7 +315,8 @@ public:
     bool init(
         const std::string& title = "VALO - PBR Showcase",
         const Vec2u& size = {1280, 720},
-        const Backend backend = Backend::Software
+        const Backend backend = Backend::Software,
+        const bool validation = false
     ) {
         /*
             Every pixel of this runs on the CPU, and the frame is fragment bound
@@ -327,6 +328,7 @@ public:
         cfg.vsync       = true;
         cfg.renderScale = 0.65f;
         cfg.backend     = backend;
+        cfg.validation  = validation;   // Vulkan only, and costs ~4.6x the frame rate
 
         // SDL has to be told at creation; a surface cannot be attached later
         WinFlags flags = WinFlags::Resize | WinFlags::HiDPI;

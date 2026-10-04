@@ -37,6 +37,15 @@ struct RenderConfig {
     bool            vsync           = false;
     bool            srgbBackbuffer  = false;
 
+    /*
+        Vulkan validation layers. Off by default because they are a development
+        tool that costs far more than the driver they wrap: measured on a 7900
+        XT, the showcase example runs at 26 fps with them and 120 (vsync capped)
+        without, with ~87% of the frame inside the layer and 5.9% in the actual
+        driver. Turn it on while working on the backend, never for a timed run.
+    */
+    bool            validation      = false;
+
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
     float           renderScale     = 1.f;
