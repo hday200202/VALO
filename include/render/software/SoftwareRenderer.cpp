@@ -183,6 +183,18 @@ uint32_t SoftwareRenderer::height() const { return m_targets[Renderer::BACKBUFFE
 
 /* ---- resources and state ------------------------------------------------ */
 
+uint32_t SoftwareRenderer::slotCount(const ResourceKind kind) const {
+    switch (kind) {
+        case ResourceKind::Target:        return uint32_t(m_targets.size());
+        case ResourceKind::VertexBuffer:  return uint32_t(m_vertexBuffers.size());
+        case ResourceKind::IndexBuffer:   return uint32_t(m_indexBuffers.size());
+        case ResourceKind::Program:       return uint32_t(m_programs.size());
+        case ResourceKind::UniformBuffer: return uint32_t(m_uniformBuffers.size());
+    }
+    return 0;
+}
+
+
 RenderTargetID SoftwareRenderer::createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb) {
     auto target = std::make_unique<RenderTarget>(w, h, tracksWindow);
     target->setSrgb(srgb);

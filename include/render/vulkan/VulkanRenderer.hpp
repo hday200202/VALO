@@ -90,6 +90,8 @@ public:
     void shutdown();
     void waitIdle();
 
+    uint32_t slotCount(const ResourceKind kind) const;
+
     bool beginFrameIfNeeded();
     bool uploadBuffer(
         const void* data,
@@ -232,6 +234,13 @@ private:
                                     m_pipelines;
 
     std::vector<DepthBuffer>        m_depth;
+
+    /*
+        Per-swapchain-image layout. Without it a LOAD_OP_LOAD frame has to name
+        UNDEFINED as the old layout, which discards - so an app that draws
+        without clearing first reads garbage.
+    */
+    std::vector<VkImageLayout>      m_swapLayouts;
 
     VkDescriptorSetLayout           m_bindlessLayout        = VK_NULL_HANDLE;
     VkDescriptorPool                m_bindlessPool          = VK_NULL_HANDLE;

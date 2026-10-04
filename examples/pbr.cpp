@@ -256,6 +256,7 @@ int main(int argc, char** argv) {
         if (window.wasKeyPressed(valo::Key::C)) useSphere = !useSphere;
         if (window.wasKeyPressed(valo::Key::D)) detail    = !detail;
         if (window.wasKeyPressed(valo::Key::G)) displace  = !displace;
+        if (window.wasKeyPressed(valo::Key::V)) valo.setVsync(!valo.getVsync());
 
         // wheel or brackets step through the material table; adding
         // kMaterialCount before the modulo keeps -1 from going negative

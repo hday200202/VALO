@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
         downstream (camera framing, light rig, contact shadow) keys off the
         fitted size, so nothing needs placing by hand.
     */
-    const char* path = "examples/gltf/lego/scene.gltf";
+    const char* path = "examples/gltf/raptor/scene.gltf";
     for (int i = 1; i < argc; ++i)
         if (argv[i][0] != '-') { path = argv[i]; break; }
 

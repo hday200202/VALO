@@ -55,6 +55,8 @@ public:
 
     RenderTargetID  createTarget(const uint32_t w, const uint32_t h, const bool tracksWindow, const bool srgb);
 
+    uint32_t        slotCount(const ResourceKind kind) const;
+
     VertexBufferID  createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout);
     void            updateVertexBuffer(const VertexBufferID vertices, const void* data, const size_t count, const VtxLayout& newLayout);
 

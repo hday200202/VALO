@@ -21,6 +21,16 @@ using VertexBufferID    = uint32_t;
 using IndexBufferID     = uint32_t;
 using ProgramID         = uint32_t;
 using TextureID         = uint32_t;
+
+// Which pool a slot id indexes. Each backend owns its own storage, so the
+// bounds half of Renderer's valid* predicates has to be asked of the backend.
+enum class ResourceKind {
+    Target,
+    VertexBuffer,
+    IndexBuffer,
+    Program,
+    UniformBuffer
+};
 using UniformBufferID   = uint32_t;
 
 enum class Topology     { Points, Lines, Triangles };

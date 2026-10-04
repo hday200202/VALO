@@ -86,6 +86,9 @@ bool VulkanRenderer::bindTarget(
     const uint32_t frame = m_frameIndex;
     const VkCommandBuffer cmd = m_frames.commandBuffer(frame);
 
+    if (m_swapLayouts.size() != m_swapchain.imageCount())
+        m_swapLayouts.assign(m_swapchain.imageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
+
     const bool toBackbuffer = (target == 0);
 
     GPUTexture* tex = nullptr;
@@ -109,7 +112,12 @@ bool VulkanRenderer::bindTarget(
         .srcAccessMask          = toBackbuffer ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .dstStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .dstAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        .oldLayout              = toBackbuffer ? VK_IMAGE_LAYOUT_UNDEFINED : tex->layout,
+        // CLEAR overwrites the image, so UNDEFINED (which discards) is fine and
+        // cheaper; LOAD has to name the layout the image is actually in
+        .oldLayout              = !toBackbuffer           ? tex->layout
+                                : loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR
+                                                          ? VK_IMAGE_LAYOUT_UNDEFINED
+                                                          : m_swapLayouts[m_imageIndex],
         .newLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
@@ -184,6 +192,8 @@ bool VulkanRenderer::bindTarget(
     };
 
     vkCmdBeginRendering(cmd, &ri);
+
+    if (toBackbuffer) m_swapLayouts[m_imageIndex] = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     m_currentTarget = target;
     m_currentColorFormat = colorFormat;
@@ -662,13 +672,20 @@ bool VulkanRenderer::recreateSwapchain() {
         return false;
     }
 
+    // renderFinished is one semaphore per swapchain image, so a driver that
+    // varies the count needs VulkanFrames rebuilt rather than an error
     if (m_swapchain.imageCount() != oldImageCount) {
-        std::fprintf(
-            stderr, "[vulkan] swapchain image count changed %u -> %u; VulkanFrames needs rebuilding\n",
-            oldImageCount, m_swapchain.imageCount()
-        );
-        return false;
+        m_frames.shutdown();
+
+        if (!m_frames.init(m_ctx, m_owner->m_cfg.framesInFlight, m_swapchain.imageCount())) {
+            std::fprintf(stderr, "[vulkan] VulkanFrames rebuild failed after an image-count change\n");
+            return false;
+        }
+
+        m_frameIndex = 0;
     }
+
+    m_swapLayouts.assign(m_swapchain.imageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
 
     if (!createDepthBuffers()) return false;
     if (!resizeTrackingTargets()) return false;
@@ -1365,6 +1382,18 @@ void VulkanRenderer::shutdown() {
 }
 
 
+uint32_t VulkanRenderer::slotCount(const ResourceKind kind) const {
+    switch (kind) {
+        case ResourceKind::Target:        return uint32_t(m_textures.size());
+        case ResourceKind::VertexBuffer:  return uint32_t(m_vertexBuffers.size());
+        case ResourceKind::IndexBuffer:   return uint32_t(m_indexBuffers.size());
+        case ResourceKind::Program:       return uint32_t(m_programs.size());
+        case ResourceKind::UniformBuffer: return uint32_t(m_uniformBuffers.size());
+    }
+    return 0;
+}
+
+
 void VulkanRenderer::waitIdle() {
     if (m_ctx.device()) vkDeviceWaitIdle(m_ctx.device());
 }
@@ -1728,6 +1757,7 @@ void VulkanRenderer::blitToSwapchain(const VkCommandBuffer cmd, GPUTexture& tex)
     };
     vkCmdPipelineBarrier2(cmd, &postDep);
 
+    m_swapLayouts[m_imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -1775,6 +1805,7 @@ void VulkanRenderer::show(const RenderTargetID target) {
             .pImageMemoryBarriers       = &toPresent
         };
         vkCmdPipelineBarrier2(cmd, &depOut);
+        m_swapLayouts[m_imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     }
 
     vkEndCommandBuffer(cmd);

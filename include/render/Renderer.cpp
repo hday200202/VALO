@@ -268,7 +268,8 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
 
             .initBackend = [](Renderer& r) { return (r.m_software = new SoftwareRenderer(r), r.m_software->init()); },
             .shutdown    = [](Renderer& r) { r.m_software->shutdown(); delete r.m_software; r.m_software = nullptr; },
-            .waitIdle    = [](Renderer&) {}
+            .waitIdle    = [](Renderer&) {},
+            .slotCount   = [](const Renderer& r, const ResourceKind k) { return r.m_software->slotCount(k); }
         };
 
         case Backend::Vulkan:
@@ -307,7 +308,8 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
 
             .initBackend = [](Renderer& r) { return (r.m_vulkan = new VulkanRenderer(r), r.m_vulkan->init()); },
             .shutdown    = [](Renderer& r) { r.m_vulkan->shutdown(); delete r.m_vulkan; r.m_vulkan = nullptr; },
-            .waitIdle    = [](Renderer& r) {r.m_vulkan->waitIdle(); }
+            .waitIdle    = [](Renderer& r) { r.m_vulkan->waitIdle(); },
+            .slotCount   = [](const Renderer& r, const ResourceKind k) { return r.m_vulkan->slotCount(k); }
         };
 #else
             std::cout << "Renderer: Backend::Vulkan requested but this build has no "

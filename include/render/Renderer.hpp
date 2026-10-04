@@ -187,16 +187,22 @@ protected:
 
     // EMPTY_BUFFER, DEFAULT_PROGRAM and stale IDs are all out of range
     /*
-        These straddle: the bounds come from the software backend's storage,
-        the rest from Renderer's own queues and free lists. The Vulkan backend
-        will need its own equivalents once it stores resources - until then a
-        null m_software just reports everything invalid.
+        These straddle: the bounds come from whichever backend is installed,
+        via its slotCount entry, and the rest from Renderer's own queues and
+        free lists. A released slot is always in one of those two - the destroy
+        queue until it retires, the free list afterwards - so the bounds check
+        plus those two is the whole test, with no backend-specific liveness
+        probe needed.
     */
-    bool validTarget (const RenderTargetID id)  const { return m_software && id < m_software->m_targets.size()        && !destroyed(m_destroyedTargets, id)        && m_software->m_targets[id] && !inFreeList(m_freeTargets, id); }
-    bool validVerts  (const VertexBufferID id)  const { return m_software && id < m_software->m_vertexBuffers.size()  && !destroyed(m_destroyedVertexBuffers, id)  && !inFreeList(m_freeVertexBuffers, id); }
-    bool validIndices(const IndexBufferID id)   const { return m_software && id < m_software->m_indexBuffers.size()   && !destroyed(m_destroyedIndexBuffers, id)   && !inFreeList(m_freeIndexBuffers, id); }
-    bool validProgram(const ProgramID id)       const { return m_software && id < m_software->m_programs.size()       && !destroyed(m_destroyedPrograms, id)       && !inFreeList(m_freePrograms, id); }
-    bool validUniform(const UniformBufferID id) const { return m_software && id < m_software->m_uniformBuffers.size() && !destroyed(m_destroyedUniformBuffers, id) && !inFreeList(m_freeUniformBuffers, id); }
+    uint32_t slots(const ResourceKind kind) const {
+        return m_backendFuncs.slotCount ? m_backendFuncs.slotCount(*this, kind) : 0;
+    }
+
+    bool validTarget (const RenderTargetID id)  const { return id < slots(ResourceKind::Target)        && !destroyed(m_destroyedTargets, id)        && !inFreeList(m_freeTargets, id); }
+    bool validVerts  (const VertexBufferID id)  const { return id < slots(ResourceKind::VertexBuffer)  && !destroyed(m_destroyedVertexBuffers, id)  && !inFreeList(m_freeVertexBuffers, id); }
+    bool validIndices(const IndexBufferID id)   const { return id < slots(ResourceKind::IndexBuffer)   && !destroyed(m_destroyedIndexBuffers, id)   && !inFreeList(m_freeIndexBuffers, id); }
+    bool validProgram(const ProgramID id)       const { return id < slots(ResourceKind::Program)       && !destroyed(m_destroyedPrograms, id)       && !inFreeList(m_freePrograms, id); }
+    bool validUniform(const UniformBufferID id) const { return id < slots(ResourceKind::UniformBuffer) && !destroyed(m_destroyedUniformBuffers, id) && !inFreeList(m_freeUniformBuffers, id); }
 
     template <typename Storage, typename FreeList, typename T>
     static uint32_t allocSlot(Storage& storage, FreeList& freeList, T&& value) {
@@ -283,6 +289,7 @@ protected:
         bool (*initBackend)(Renderer&);
         void (*shutdown)(Renderer&);
         void (*waitIdle)(Renderer&);
+        uint32_t (*slotCount)(const Renderer&, const ResourceKind);
     } m_backendFuncs{};
 
     RenderBackend fetchBackendFuncs();

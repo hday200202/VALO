@@ -707,37 +707,45 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 
 ### Known gaps, deliberately left
 
-- **Every `valid*` predicate is false on Vulkan.** All five on
-  `Renderer.hpp:186-190` begin with `m_software &&`, so ID validation is
-  effectively off for the Vulkan backend. Harmless today only because the
-  `destroy*` methods assert rather than early-return, and asserts are compiled
-  out of RelWithDebInfo. `destroyTexture` will hit this the moment textures
-  exist.
-- **`draw` opens a frame with `LOAD_OP_LOAD` but the barrier always uses
-  `oldLayout = UNDEFINED`**, which discards. An app that draws without clearing
-  first loads garbage, colour and depth both. Invisible today because every
-  example clears first; the fix is tracking whether the frame was cleared.
-- `recreateSwapchain()` errors out if the new swapchain reports a different
-  image count, because `VulkanFrames` sized `renderFinished` from the old one.
-  Never observed; a driver that varies it would hit this. Fix is to rebuild
-  `VulkanFrames` alongside the swapchain.
-- `uploadBuffer` has no zero-size guard, so `createUniformBuffer(data, 0)`
-  reaches `vmaCreateBuffer` with `size = 0` - a validation error. One-line
-  early return.
+- ~~**Every `valid*` predicate is false on Vulkan**~~ - **fixed.** The bounds
+  half now goes through a `slotCount(Renderer&, ResourceKind)` entry on the
+  backend table, which each backend answers from its own storage, so the five
+  predicates are backend-agnostic. The software-only liveness probe
+  (`m_targets[id]` non-null) was dropped as redundant: a released slot is in
+  the destroy queue until it retires and in the free list afterwards, so the
+  bounds check plus those two is the whole test.
+- ~~**`draw` opens a frame with `LOAD_OP_LOAD` but the barrier always uses
+  `oldLayout = UNDEFINED`**~~ - **fixed.** `m_swapLayouts` tracks a layout per
+  swapchain image; a CLEAR still names UNDEFINED (it overwrites anyway, and
+  discarding is cheaper) while a LOAD names the layout the image is actually
+  in. This was live, not theoretical: any frame that renders to a target and
+  then back to the backbuffer reopens the backbuffer scope with LOAD, so the
+  backbuffer's clear was being discarded.
+
+  Residual difference, inherent rather than a bug: there are 3 swapchain images
+  but one software backbuffer, so LOAD on Vulkan preserves *that image's* last
+  contents - three frames back - where software gives the previous frame.
+  Matching software exactly would mean rendering to an offscreen image and
+  blitting, which is a bigger call than this gap justifies.
+- ~~`recreateSwapchain()` errors out if the new swapchain reports a different
+  image count~~ - **fixed.** It now tears down and re-inits `VulkanFrames` at
+  the new image count and resets `m_frameIndex`, rather than failing. Still
+  never observed on this hardware.
+- ~~`uploadBuffer` has no zero-size guard~~ - already fixed; it opens with
+  `if (bytes == 0) return false;`. This entry was stale.
 - No validation-error counter. The debug messenger prints and returns
   `VK_FALSE`, so `vk-test`'s draw sections have no automatic oracle - clean
   stderr *is* the pass condition. A counter on `VulkanContext` would let the
   harness gate on it.
-- **Uniform block layout is still undecided**, only worked around. Push constant
-  blocks follow std430, where a `vec4` rounds up to a 16-byte boundary - and
-  `me::Uniforms` puts `baseColor` at offset 84, which std430 would read at 96.
-  `shaders/minimal.vert` sidesteps it by declaring that `vec4` as four loose
-  `float`s, since scalars are 4-byte aligned, with every offset commented
-  against its C++ counterpart. That works and cannot drift, but it is per-struct
-  and gets ugly fast. The general fix is `VK_EXT_scalar_block_layout` (core 1.2,
-  probed and supported here): add `scalarBlockLayout` to the feature chain and
-  write `layout(scalar, push_constant)`, and GLSL follows C++ rules everywhere.
-  `PLAN.md` phase 3 says decide this once; it is still open.
+- ~~**Uniform block layout is still undecided**~~ - **resolved.**
+  `scalarBlockLayout` is enabled in the feature chain (`VulkanContext.cpp`) and
+  every generated shader declares `layout(scalar, push_constant)`, so GLSL
+  follows C++ offsets field-for-field and the loose-`float` workaround is gone.
+  One exception remains that scalar layout cannot fix: a C++ `bool` is 1 byte
+  while a GLSL block `bool` is 32-bit, so uniform structs must use `uint32_t`
+  for flags. `pbr.vert.hpp` hit this - `displace` was read 4 bytes past the end
+  of the pushed range and was permanently false. `gltf.vert.hpp` has the same
+  shape. valoc should reject `bool` in a uniform struct outright.
 
 ## 5. Nice-to-have (either backend, not blocking)
 
