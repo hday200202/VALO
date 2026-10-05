@@ -124,6 +124,18 @@ void Window::setPosition(const Vec2i& position) {
     SDL_SetWindowPosition(m_window, position.x, position.y);
 }
 
+// the display the window is on, in pixels like getSize()
+Vec2u Window::getMonitorSize() const {
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(m_window);
+    const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    if (!mode) return {0, 0};
+
+    return {
+        static_cast<uint32_t>(mode->w * mode->pixel_density),
+        static_cast<uint32_t>(mode->h * mode->pixel_density)
+    };
+}
+
 Vec2i Window::getPosition() const {
     Vec2i pos;
     SDL_GetWindowPosition(m_window, &pos.x, &pos.y);

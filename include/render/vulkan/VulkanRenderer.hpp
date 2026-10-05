@@ -132,6 +132,10 @@ public:
     bool createTargetDepth(GPUTexture& tex);
     bool resizeTrackingTargets();
 
+    VkExtent2D     scaledExtent() const;
+    bool           applyRenderScale();
+    RenderTargetID resolveTarget(const RenderTargetID target) const;
+
     void transitionImage(
         const VkCommandBuffer cmd,
         const VkImage image,
@@ -213,6 +217,11 @@ private:
     bool                            m_frameOpen             = false;
     bool                            m_renderingOpen         = false;
     RenderTargetID                  m_currentTarget         = 0;    // Renderer::BACKBUFFER
+
+    // the backbuffer when renderScale != 1: drawn at the scaled size and
+    // blitted up to the swapchain on show, the way software stretches its own
+    RenderTargetID                  m_scaledBackbuffer      = 0;
+    float                           m_appliedScale          = 1.f;
     bool                            m_needsRecreate         = false;
 
     uint32_t                        m_pushConstantSize      = 0;

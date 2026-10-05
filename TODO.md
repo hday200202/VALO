@@ -884,6 +884,8 @@ the same scene on either backend; the shaders live in `examples/shaders/` as
 shader registry and the Vulkan backend translates with `valoc`.
 
 
+- `hello.cpp` — start here: one file, one spinning vertex-coloured triangle,
+  nothing but window → init → program → buffers → loop. `--vulkan` works.
 - `main.cpp` — instanced N^3 textured cube lattice, orbit camera, fps title.
 - `particles.cpp` — galaxy point-particle shader.
 - `sdf.cpp` — iq's raymarched primitives, fullscreen fragment shader, FPS camera.

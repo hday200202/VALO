@@ -98,6 +98,7 @@ public:
 
     void setSize(const Vec2u& size);
     Vec2u getSize() const;
+    Vec2u getMonitorSize() const;
 
     Vec2f getCenterGlobal() const;
     Vec2f getCenterLocal() const;

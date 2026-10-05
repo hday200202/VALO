@@ -35,6 +35,8 @@ bool VulkanRenderer::beginFrameIfNeeded() {
         if (m_needsRecreate) return false;
     }
 
+    if (!applyRenderScale()) return false;
+
     const VkFence fence = m_frames.inFlight(frame);
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
@@ -71,12 +73,14 @@ bool VulkanRenderer::beginFrameIfNeeded() {
 
 
 bool VulkanRenderer::bindTarget(
-    const RenderTargetID target,
+    const RenderTargetID requested,
     const VkAttachmentLoadOp loadOp,
     const Color& clearColor,
     const float clearDepth
 ) {
     if (!beginFrameIfNeeded()) return false;
+
+    const RenderTargetID target = resolveTarget(requested);
 
     if (m_renderingOpen && m_currentTarget == target && loadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
         return true;
@@ -1311,7 +1315,7 @@ bool VulkanRenderer::createTargetDepth(GPUTexture& tex) {
 
 
 bool VulkanRenderer::resizeTrackingTargets() {
-    const VkExtent2D extent = m_swapchain.extent();
+    const VkExtent2D extent = scaledExtent();
 
     for (size_t id = 0; id < m_textures.size(); ++id) {
         GPUTexture& tex = m_textures[id];
@@ -1345,6 +1349,48 @@ bool VulkanRenderer::resizeTrackingTargets() {
     }
 
     return true;
+}
+
+
+VkExtent2D VulkanRenderer::scaledExtent() const {
+    const VkExtent2D e = m_swapchain.extent();
+    const float scale  = m_owner->m_cfg.renderScale;
+    return {
+        std::max(1u, uint32_t(float(e.width)  * scale)),
+        std::max(1u, uint32_t(float(e.height) * scale))
+    };
+}
+
+
+/*
+    Picked up at the start of a frame rather than inside setRenderScale, which
+    lives on Renderer and doesn't know a backend exists. Waits for idle because
+    the targets it resizes may still be read by a frame in flight.
+*/
+bool VulkanRenderer::applyRenderScale() {
+    const float scale = m_owner->m_cfg.renderScale;
+    if (scale == m_appliedScale) return true;
+
+    vkDeviceWaitIdle(m_ctx.device());
+    m_appliedScale = scale;
+
+    if (scale != 1.f && m_scaledBackbuffer == 0) {
+        const VkExtent2D e = scaledExtent();
+        const RenderTargetID id = createTarget(e.width, e.height, true, m_owner->m_cfg.srgbBackbuffer);
+        if (id == EMPTY_TEXTURE) {
+            std::fprintf(stderr, "[vulkan] failed to create the scaled backbuffer\n");
+            return false;
+        }
+        m_scaledBackbuffer = id;
+    }
+
+    return resizeTrackingTargets();
+}
+
+
+RenderTargetID VulkanRenderer::resolveTarget(const RenderTargetID target) const {
+    if (target == 0 && m_appliedScale != 1.f && m_scaledBackbuffer != 0) return m_scaledBackbuffer;
+    return target;
 }
 
 
@@ -1862,11 +1908,13 @@ void VulkanRenderer::show(const RenderTargetID target) {
 
     endRenderingIfOpen();
 
+    const RenderTargetID shown = resolveTarget(target);
+
     const bool fromTarget =
-        target != 0 && target < m_textures.size() && m_textures[target].isTarget;
+        shown != 0 && shown < m_textures.size() && m_textures[shown].isTarget;
 
     if (fromTarget) {
-        blitToSwapchain(cmd, m_textures[target]);
+        blitToSwapchain(cmd, m_textures[shown]);
     }
     else {
         const VkImageMemoryBarrier2 toPresent{
@@ -2316,12 +2364,12 @@ void VulkanRenderer::setVsync(const bool vsync) {
 // ========================================================================= */
 
 uint32_t VulkanRenderer::width() const {
-    return m_swapchain.extent().width;
+    return scaledExtent().width;
 }
 
 
 uint32_t VulkanRenderer::height() const {
-    return m_swapchain.extent().height;
+    return scaledExtent().height;
 }
 
 
