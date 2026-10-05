@@ -1,73 +1,68 @@
 # VALO TODO
 
-Ordered by what it takes to bring the software renderer to parity with the
-eventual Vulkan backend's dev-facing API. Work top to bottom; each section is
-a gate for the next.
+Originally ordered by what it takes to bring the software renderer to parity
+with the eventual Vulkan backend's dev-facing API. **That backend now exists and
+is at state parity**, so sections 1-4 are largely a record of how it got there;
+the open work is the handful of unchecked items in section 1 (parser and format
+gaps that never gated the backend), the Vulkan known-gaps list at the end of
+section 4, and the never-blocking sections 5 and 6.
 
-## State (2026-10-01)
+## State (2026-10-05)
 
-~8.3k lines of library across 39 files (2.7k of that Vulkan), 13 examples,
+~9.1k lines of library across 40 files (3.4k of that Vulkan), 14 examples,
 every feature behind a sanitizer-verified harness. The dev-facing API (Window ->
 VALO -> create* -> RenderCommand -> submit, typed C++ shader callbacks) is
 settled and Vulkan-shaped.
 
-**The Vulkan backend renders a glTF scene.** `Renderer` dispatches every public
-method through a 28-entry function-pointer table; both backends fill all 28.
-`minimal.exe --vulkan` loads `sea_keep_lonely_watcher` **textured**, through the
-same `Engine`, the same `RenderCommand` state and the same camera as the
-software path - `PLAN.md`'s phase 6 finish line, minus the conformance diff
-harness. **Four of the 28 Vulkan entries are still `todo()` stubs:
-`updateTexture`, `updateTextureRect`, `createTarget` and `releaseTarget`.**
+**The Vulkan backend is at state parity with the software backend.** `Renderer`
+dispatches every public method through a 30-entry function-pointer table, both
+backends fill all 30, and **no entry is a `todo()` stub**. Buffers, textures,
+render targets, uniform buffers, depth and stencil all work;
+`minimal.exe --vulkan` renders `sea_keep_lonely_watcher` textured through the
+same `Engine`, camera and `RenderCommand` state as the software path.
 
-Vulkan examples: `vk-clear` (presentation), `vk-triangle` (rotating, depth-
-tested, push constants), `vk-cubes` (instanced grid, vertex/index buffers,
-perspective, wireframe), `vk-test` (the harness), and `minimal --vulkan`.
+**A C++ -> GLSL translator (`valoc`) exists** and converts **36 of the 38**
+shader files in `examples/shaders/` into GLSL that `glslc` accepts. The two
+holdouts are `gltf.frag` and `pbr.frag`, both for the same reason: a `uint`
+field used directly as a boolean (`if (!u.detail)`, `x && y`), which C++ allows
+and GLSL does not.
 
-Landed 2026-10-01 (the Vulkan draw path, in order):
+Examples: `main` (instanced cubes), `particles`, `sdf`, `clipstack`, `stencil`,
+`pbr`, `gltf`, `minimal`, `showcase`, `rendertarget`, plus the four Vulkan
+bring-up harnesses `vk-clear`, `vk-triangle`, `vk-cubes` and `vk-test`. Every
+non-Vulkan example takes `--vulkan` and runs the same scene on either backend.
 
-- **Shader modules** - `createProgram(vsPath, fsPath)` from GLSL or SPIR-V,
-  compiling through `glslc` and caching the `.spv` beside the source when the
-  source is newer. Passed through to `VALO` as a third `createProgram`
-  overload; the software backend rejects it and the Vulkan backend rejects the
-  callback overloads, which is the two-implementations contract working.
-- **The graphics pipeline**, plus a cache keyed on
-  `(program, packed state, vertex layout)`. `packPipelineState` folds the nine
-  `RenderCommand` fields `createPipeline` actually reads into one word.
-  **The layout is stored by value, not by pointer** - layouts live inside
-  `GPUBuffer` and `m_vertexBuffers` reallocates, so a cached pointer dangles
-  and, worse, a later buffer at the same address makes the key falsely match.
-- **`draw`** - pipeline lookup, dynamic viewport/scissor, vertex and index
-  binding, `vkCmdDraw` / `vkCmdDrawIndexed`. Handles all three `UINT32_MAX`
-  sentinels: no vertex buffer (shader-generated positions), no index buffer
-  (`indexCount` becomes a vertex count), and `ALL_INDICES`.
-- **Push constants** for the `RenderCommand::uniforms` blob, clamped to the
-  device limit. **The spec guarantees only 128 bytes**; this hardware reports
-  256, and `MAX_UNIFORM_BYTES` is 512 - so the blob is the reason uniform
-  buffers had to exist rather than a nice-to-have.
-- **Depth** - a combined depth/stencil image per frame in flight, recreated
-  with the swapchain. Format picked from `D32_SFLOAT_S8_UINT` /
-  `D24_UNORM_S8_UINT` rather than plain `D32_SFLOAT`, so stencil does not force
-  a rebuild later. `storeOp = DONT_CARE` with an `UNDEFINED` oldLayout, so the
-  buffer never makes a round trip to memory.
-- **Uniform buffers** via **`VK_KHR_push_descriptor`** - a deviation from
-  `PLAN.md`, which assumed a descriptor pool. Push descriptors write the set
-  inline into the command buffer exactly like push constants: no pool, no
-  allocation, no third lifetime to get wrong. `RenderCommand`'s eight uniform
-  slots map straight onto bindings 0-7, which is the slot design paying off.
-  `vkCmdPushDescriptorSetKHR` is **not exported by the loader** and has to come
-  from `vkGetDeviceProcAddr`.
-- **`resize` / `setVsync`** - both just set `m_needsRecreate` and let the next
-  `beginFrameIfNeeded` rebuild, so a resize drag rebuilds once rather than per
-  event. The width and height arguments are deliberately ignored: the surface's
-  `currentExtent` is the authority, and `Window::getSize()` keeps reporting the
-  restored size while a minimized surface goes to 0x0.
-- **The clip-space Y flip** - the one real correctness bug of the day, and the
-  only one a triangle could not have caught. See below.
-- **Per-backend shader halves in `MinimalEngine`** - `Model` now picks
-  `createProgram(vsPath, fsPath)` or `createProgram(vs, fs)` from the backend,
-  which is the two-implementations contract becoming ordinary application code
-  rather than a special case. `Engine::init` also has to add `WinFlags::Vulkan`,
-  since SDL cannot attach a surface to a window that was not created for one.
+Landed 2026-10-05:
+
+- **Stencil** - `VkStencilOpState` front and back, with `stencilTest`,
+  `stencilOp` and `stencilRef` added to `packPipelineState`. VALO has one
+  `StencilOp` where Vulkan has three, and `stencilApply()` in `DrawFuncs.cpp`
+  only runs once a fragment has survived both tests - so it is `passOp`, and
+  `failOp`/`depthFailOp` are both `KEEP`. `Incr`/`Decr` map to the `_AND_WRAP`
+  variants, matching the `uint8_t` arithmetic the software path does; the
+  `_CLAMP` variants would differ at 0 and 255, which is exactly where a
+  two-pass outline lands.
+
+  Three pieces of plumbing went with it: `stencilAttachmentFormat` on the
+  pipeline, `pStencilAttachment` on the `VkRenderingInfo`, and widening the
+  depth image views from `DEPTH` to `DEPTH | STENCIL` so one view can serve
+  both attachments. `stencilTestEnable` stays off for an `Always`/`Keep`
+  command, so ordinary draws neither pay for it nor split the pipeline cache.
+
+Landed 2026-10-02/05:
+
+- **Render targets**, via `bindTarget` and `m_currentTarget`. `clear` and
+  `draw` honour their `target` argument, and a dynamic-rendering block is
+  opened per distinct target rather than per draw.
+- **`updateTexture` / `updateTextureRect`**, as staged copies into an existing
+  image with the layout round trip either side.
+- **The `valid*` predicates are backend-agnostic**, keyed on
+  `slots(ResourceKind::...)` rather than reaching into `m_software`. They used
+  to begin with `m_software &&` and so returned false for every ID on the
+  Vulkan backend, which quietly disabled ID validation there.
+- **Scalar block layout** (`VK_EXT_scalar_block_layout`), so a GLSL block
+  mirrors a C++ struct field for field with no padding arithmetic. This is what
+  `PLAN.md` phase 3 called the uniform-padding decision, and it is now made.
 
 ### Textures: bindless, with separate samplers (2026-10-02)
 
@@ -405,7 +400,7 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
       format. Vulkan has these for free; software needs them to exist so the
       API doesn't change. ~2 hours.
 
-## 2. Cleanup — before the backend, because the backend duplicates the shape
+## 2. Cleanup — housekeeping, never blocked the backend
 
 - [ ] **Shared pixel path** — the three rasterizers duplicate the per-pixel
       sequence (depth test -> stencil test -> shade -> discard -> depth write ->
@@ -546,10 +541,12 @@ matching assert, naming the call).
       Fixed by the viewport work: `resolveClipRect` yields `x0 > x1` at width 0
       and `setupTriangle` returns before reaching the clamps.
 
-## 3. Backend interface extraction
+## 3. Backend interface extraction — DONE
 
-**See `PLAN.md`** for the phased Vulkan plan these items feed into, and for the
-shader-contract decision that gates all of it.
+Historical. The split landed 2026-09-30 and the function-pointer table it
+produced now carries 30 entries, both backends filling all 30. **See `PLAN.md`**
+for the phased plan these items fed into, and for the shader-contract decision
+that gated them.
 
 ### Semantics the software backend gets away with and Vulkan does not
 
@@ -691,19 +688,30 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       512x512 target, `--show-target` presents it directly, `--track` resizes
       it with the window, `--update` swaps it for a CPU-updated texture.
 
-- [ ] **Stencil** - `RenderCommand` carries `stencilTest`/`stencilOp`/
-      `stencilRef` and the software backend honours them; `createPipeline` sets
-      no `VkStencilOpState` at all. The depth format already carries a stencil
-      aspect, so this is pipeline state plus adding the fields to
-      `packPipelineState` (they are deliberately excluded today, because
-      keying on state the pipeline ignores would split the cache for nothing).
+- [✅] **Stencil** (2026-10-05). `VkStencilOpState` on front and back, with
+      `stencilTest`/`stencilOp`/`stencilRef` added to `packPipelineState` -
+      `stencilRef` has to be in the key because it bakes into the pipeline
+      rather than being dynamic state. VALO's single `StencilOp` is Vulkan's
+      `passOp` with the other two `KEEP`, because `stencilApply()` only runs
+      after a fragment survives both tests. `Incr`/`Decr` are the `_AND_WRAP`
+      variants, matching `uint8_t(s + 1)`.
+
+      The attachment side needed `stencilAttachmentFormat` on the pipeline,
+      `pStencilAttachment` on the `VkRenderingInfo`, and the depth image views
+      widened from `DEPTH` to `DEPTH | STENCIL` so one view serves both.
+
+      *Verified:* `stencil.exe --vulkan` matches the software build - the
+      outline pass would expose a wrong `passOp` and the circular clip a wrong
+      `compareOp`.
 
 - [~] **A glTF scene on both backends, switched by a runtime flag** - reached
       by `minimal --vulkan` (2026-10-01, textured 2026-10-02): same `Engine`,
-      same camera, same `RenderCommand` state, `me::vs`/`me::fs` on software and
-      `shaders/minimal.vert`/`.frag` on Vulkan. Only the conformance diff
-      harness is still missing, so this is not formally closed - but visually
-      it is there.
+      same camera, same `RenderCommand` state, resolved through one
+      `createProgram(vsPath, fsPath)` call that the software backend answers
+      from the shader registry and the Vulkan backend by translating. Every
+      other example takes `--vulkan` too. **The conformance diff harness is
+      still unwritten**, so nothing yet checks the two backends pixel against
+      pixel - this is closed by eye, not by test.
 
 ### Known gaps, deliberately left
 
@@ -746,6 +754,23 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
   for flags. `pbr.vert.hpp` hit this - `displace` was read 4 bytes past the end
   of the pushed range and was permanently false. `gltf.vert.hpp` has the same
   shape. valoc should reject `bool` in a uniform struct outright.
+- **valoc does not translate a `uint` flag used as a boolean**, which is the
+  only thing stopping full shader coverage: 36 of the 38 files in
+  `examples/shaders/` translate and compile, and the two that do not are
+  `pbr.frag` (`if (!u.detail || ...)`, line 11) and `gltf.frag`
+  (`if (u.useNormalMap && ...)`, line 47). C++ converts `uint` to `bool`
+  implicitly and GLSL does not, so the emitted `!u.detail` and `u.x && y` are
+  type errors.
+
+  This is the other half of the `bool` entry above: the flags became `uint32_t`
+  to fix the push-constant layout, and the shader bodies kept reading them as
+  booleans. Either valoc rewrites `!x` to `x == 0u` and `x &&` to `x != 0u &&`
+  when the operand is an integer, or the shaders spell the comparison out -
+  `pbr.vert.hpp:290` already does (`u.displace != 0 && u.detail != 0`).
+- **No conformance diff harness.** Nothing compares the two backends pixel
+  against pixel; `--vulkan` parity is checked by eye. `PLAN.md` phase 3 asked
+  for this to start with textures and it never did, so every parity claim in
+  this file rests on looking at two windows.
 
 ## 5. Nice-to-have (either backend, not blocking)
 
@@ -853,6 +878,12 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 
 ## Examples
 
+Every example below except the four Vulkan harnesses takes `--vulkan` and runs
+the same scene on either backend; the shaders live in `examples/shaders/` as
+`.vert.hpp` / `.frag.hpp` pairs, which the software backend resolves through the
+shader registry and the Vulkan backend translates with `valoc`.
+
+
 - `main.cpp` — instanced N^3 textured cube lattice, orbit camera, fps title.
 - `particles.cpp` — galaxy point-particle shader.
 - `sdf.cpp` — iq's raymarched primitives, fullscreen fragment shader, FPS camera.
@@ -878,6 +909,12 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
   choosing the GLSL or the C++ shader half from `cfg.backend`. Untextured until
   `createTexture` exists.
 
+- `rendertarget.cpp` — render to texture. Two layers: the first draws rounded
+  rects into an offscreen 512x512 target, the second samples it through a quad
+  on the backbuffer. `--show-target` hands the target straight to `endFrame()`
+  so the backend presents it directly; `--track` makes the target
+  window-tracking, so the backend has to rebuild it on every resize.
+
 ### Vulkan examples
 
 - `vk-clear.cpp` — a window clearing to a cycling hue. Proves frame-index wrap,
@@ -893,12 +930,14 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
 - `vk-test.cpp` — the harness. Sections for context, swapchain, programs,
   uniform buffers and the pipeline state tables. The draw sections have no
   automatic oracle: clean validation output *is* the pass condition.
-- `shaders/` — `valo.glsl` (the bindless prelude: `uTextures`, `uSamplers`,
-  `valoTexture()` and the sampler-index constants, pulled in with
-  `#include` thanks to `glslc -I examples/shaders`), plus `triangle`,
-  `ubo0`/`ubo3` (same shader at bindings 0 and 3, for the sparse-slot case),
-  `cube` and `minimal`. The `.spv` files beside them are `glslc` output and
-  regenerate when the source is newer.
+- `shaders/` — 38 `.vert.hpp` / `.frag.hpp` C++ shader files, one per shader,
+  each registering its entry point with `VALO_VERTEX_SHADER` /
+  `VALO_FRAGMENT_SHADER`. Alongside them, `valo.glsl` is the bindless prelude
+  (`uTextures`, `uSamplers`, `valoTexture()`, the sampler-index constants),
+  pulled in by every generated shader thanks to `glslc -I examples/shaders`.
+  The `.vert` / `.frag` files are valoc output and the `.spv` beside them is
+  glslc output; both regenerate when the source is newer.
+
 - `bench/` — **untracked, not in git** (never committed; a fresh clone has no
   `examples/bench`). `vk_helmet.cpp` (headless Vulkan) and `valo_helmet.cpp`, same
   scene/shader/resolution. Run the Vulkan one on SwiftShader with

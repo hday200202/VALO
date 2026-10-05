@@ -778,6 +778,58 @@ std::string takeReceiver(std::string& out) {
 }
 
 
+
+/*
+    C++ converts an integer to bool implicitly and GLSL does not, so a uint flag
+    read as a condition - "if (!u.detail)", "u.useNormalMap && x" - is a type
+    error once translated. Spelling the comparison out keeps the translation
+    one to one:
+
+        !x        ->  x == 0u
+        x && y    ->  x != 0u && y
+        if (x)    ->  if (x != 0u)
+
+    Only member chains rooted at the uniform parameter are resolved, which is
+    where flags live; a local of integer type used as a condition is not caught.
+*/
+bool isIntegerMemberChain(
+    const Collect& c,
+    unsigned start,
+    unsigned count,
+    CXToken* tokens,
+    const std::string& uniformParam,
+    const std::string& uniformType,
+    unsigned& endsAt
+) {
+    if (str(clang_getTokenSpelling(c.tu, tokens[start])) != uniformParam) return false;
+
+    const Struct* current = findStruct(c, uniformType);
+    if (!current) return false;
+
+    unsigned i = start;
+    std::string fieldType;
+
+    while (i + 2 < count
+        && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "."
+    ) {
+        const std::string field = str(clang_getTokenSpelling(c.tu, tokens[i + 2]));
+
+        const Field* found = nullptr;
+        for (const auto& f : current->fields) if (f.name == field) found = &f;
+        if (!found) return false;
+
+        fieldType = glslType(found->type);
+        i += 2;
+
+        if (fieldType == "uint" || fieldType == "int") { endsAt = i; return true; }
+
+        current = findStruct(c, fieldType);
+        if (!current) return false;
+    }
+
+    return false;
+}
+
 std::string translateRange(
     const Collect& c,
     CXCursor cursor,
@@ -798,6 +850,14 @@ std::string translateRange(
     int  depth      = 1;
     int  parenDepth = 0;
     bool lineStart  = true;
+
+    // the uniform parameter keeps its own name, so a member chain off it is
+    // recognisable by spelling alone
+    const std::string uniformParam = c.paramNames.size() > 1 ? c.paramNames[1] : std::string();
+    const std::string uniformType  = c.paramTypes.size() > 1 ? c.paramTypes[1] : std::string();
+
+    unsigned intChainEndsAt = count;    // token index that completes an integer chain
+    bool     lastWasInt     = false;    // the expression just emitted was one
 
     auto indent = [&]() {
         for (int i = 0; i < depth; ++i) out += "    ";
@@ -990,6 +1050,35 @@ std::string translateRange(
             continue;
         }
 
+        /*
+            "!flag" is the only place the negation has to move: the operand is
+            emitted first and the comparison takes its place, so the ! is
+            dropped rather than translated.
+        */
+        if (t == "!" && i + 1 < count && !uniformParam.empty()) {
+            unsigned endsAt = 0;
+            if (isIntegerMemberChain(c, i + 1, count, tokens, uniformParam, uniformType, endsAt)) {
+                std::string chain;
+                for (unsigned k = i + 1; k <= endsAt; ++k)
+                    chain += str(clang_getTokenSpelling(c.tu, tokens[k]));
+
+                put(chain + " == 0u");
+                i = endsAt;
+                lastWasInt = false;     // it is a bool now
+                prevSpelling = ")";
+                continue;
+            }
+        }
+
+        const bool wasInt = lastWasInt;
+        lastWasInt = false;
+
+        // "flag && x" needs the operand made boolean before the operator
+        if ((t == "&&" || t == "||") && wasInt) {
+            while (!out.empty() && out.back() == ' ') out.pop_back();
+            out += " != 0u ";
+        }
+
         if (kind == CXToken_Identifier) {
             // Sampler(...) collapses to its index in uSamplers
             if (t == "Sampler" && i + 1 < count
@@ -1083,8 +1172,17 @@ std::string translateRange(
                 continue;
             }
 
+            // record where this chain ends so the flag can be set once the
+            // last field has actually been emitted
+            if (!uniformParam.empty() && t == uniformParam) {
+                unsigned endsAt = 0;
+                intChainEndsAt = isIntegerMemberChain(
+                    c, i, count, tokens, uniformParam, uniformType, endsAt) ? endsAt : count;
+            }
+
             put(t);
             prevSpelling = t;
+            lastWasInt = (i == intChainEndsAt);
             continue;
         }
 

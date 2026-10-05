@@ -60,7 +60,10 @@ inline constexpr uint64_t packPipelineState(const RenderCommand& cmd) {
          |  (uint64_t(cmd.fillmode)     << 10)
          |  (uint64_t(cmd.depthTest)    << 11)
          |  (uint64_t(cmd.depthWrite)   << 12)
-         |  (uint64_t(cmd.colorWrite)   << 13);
+         |  (uint64_t(cmd.colorWrite)   << 13)
+         |  (uint64_t(cmd.stencilTest)  << 14)
+         |  (uint64_t(cmd.stencilOp)    << 17)
+         |  (uint64_t(cmd.stencilRef)   << 20);
 }
 
 
@@ -229,19 +232,10 @@ private:
 
     std::vector<GPUTexture>         m_textures;
     std::vector<GPUProgram>         m_programs;
-
     std::vector<std::pair<PipelineKey, VkPipeline>> 
                                     m_pipelines;
-
     std::vector<DepthBuffer>        m_depth;
-
-    /*
-        Per-swapchain-image layout. Without it a LOAD_OP_LOAD frame has to name
-        UNDEFINED as the old layout, which discards - so an app that draws
-        without clearing first reads garbage.
-    */
     std::vector<VkImageLayout>      m_swapLayouts;
-
     VkDescriptorSetLayout           m_bindlessLayout        = VK_NULL_HANDLE;
     VkDescriptorPool                m_bindlessPool          = VK_NULL_HANDLE;
     VkDescriptorSet                 m_bindlessSet           = VK_NULL_HANDLE;
@@ -280,6 +274,30 @@ inline constexpr VkCullModeFlags vkCullOf(const CullMode m) {
         case CullMode::Front: return VK_CULL_MODE_FRONT_BIT;
     }
     return VK_CULL_MODE_NONE;
+}
+
+
+inline constexpr VkCompareOp vkStencilCompareOf(const StencilTest t) {
+    switch (t) {
+        case StencilTest::Always:   return VK_COMPARE_OP_ALWAYS;
+        case StencilTest::Equal:    return VK_COMPARE_OP_EQUAL;
+        case StencilTest::NotEqual: return VK_COMPARE_OP_NOT_EQUAL;
+        case StencilTest::Less:     return VK_COMPARE_OP_LESS;
+        case StencilTest::Greater:  return VK_COMPARE_OP_GREATER;
+    }
+    return VK_COMPARE_OP_ALWAYS;
+}
+
+
+inline constexpr VkStencilOp vkStencilOpOf(const StencilOp op) {
+    switch (op) {
+        case StencilOp::Keep:    return VK_STENCIL_OP_KEEP;
+        case StencilOp::Zero:    return VK_STENCIL_OP_ZERO;
+        case StencilOp::Replace: return VK_STENCIL_OP_REPLACE;
+        case StencilOp::Incr:    return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        case StencilOp::Decr:    return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    }
+    return VK_STENCIL_OP_KEEP;
 }
 
 

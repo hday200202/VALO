@@ -182,13 +182,23 @@ bool VulkanRenderer::bindTarget(
         .clearValue     = { .depthStencil = { .depth = clearDepth, .stencil = 0 } }
     };
 
+    const VkRenderingAttachmentInfo stencil{
+        .sType          = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView      = db.view,
+        .imageLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .loadOp         = loadOp,
+        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue     = { .depthStencil = { .depth = clearDepth, .stencil = 0 } }
+    };
+
     const VkRenderingInfo ri{
         .sType                  = VK_STRUCTURE_TYPE_RENDERING_INFO,
         .renderArea             = { {0, 0}, extent },
         .layerCount             = 1,
         .colorAttachmentCount   = 1,
         .pColorAttachments      = &color,
-        .pDepthAttachment       = &depth
+        .pDepthAttachment       = &depth,
+        .pStencilAttachment     = &stencil
     };
 
     vkCmdBeginRendering(cmd, &ri);
@@ -904,11 +914,27 @@ VkPipeline VulkanRenderer::createPipeline(
         .rasterizationSamples   = VK_SAMPLE_COUNT_1_BIT
     };
 
+    const VkStencilOpState stencilState{
+        .failOp         = VK_STENCIL_OP_KEEP,
+        .passOp         = vkStencilOpOf(cmd.stencilOp),
+        .depthFailOp    = VK_STENCIL_OP_KEEP,
+        .compareOp      = vkStencilCompareOf(cmd.stencilTest),
+        .compareMask    = 0xFF,
+        .writeMask      = 0xFF,
+        .reference      = cmd.stencilRef
+    };
+
+    const bool usesStencil = cmd.stencilTest != StencilTest::Always
+                          || cmd.stencilOp   != StencilOp::Keep;
+
     const VkPipelineDepthStencilStateCreateInfo depthStencil{
         .sType              = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable    = cmd.depthTest ? VK_TRUE : VK_FALSE,
         .depthWriteEnable   = cmd.depthWrite ? VK_TRUE : VK_FALSE,
-        .depthCompareOp     = vkCompareOf(cmd.depthCompare)
+        .depthCompareOp     = vkCompareOf(cmd.depthCompare),
+        .stencilTestEnable  = usesStencil ? VK_TRUE : VK_FALSE,
+        .front              = stencilState,
+        .back               = stencilState
     };
 
     const VkPipelineColorBlendAttachmentState blendAttachment{
@@ -946,7 +972,8 @@ VkPipeline VulkanRenderer::createPipeline(
         .sType                      = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
         .colorAttachmentCount       = 1,
         .pColorAttachmentFormats    = &colorFormat,
-        .depthAttachmentFormat      = m_depthFormat
+        .depthAttachmentFormat      = m_depthFormat,
+        .stencilAttachmentFormat    = m_depthFormat
     };
 
     const VkGraphicsPipelineCreateInfo ci{
@@ -1020,13 +1047,18 @@ bool VulkanRenderer::createBindlessSet() {
         const uint32_t perSet = m3.maxPerSetDescriptors > SAMPLER_COUNT
             ? m3.maxPerSetDescriptors - SAMPLER_COUNT : 1u;
 
-        m_maxTextures = std::min({ uint32_t(MAX_TEXTURES),
-                                   props2.properties.limits.maxDescriptorSetSampledImages,
-                                   perSet });
+        m_maxTextures = std::min({ 
+            uint32_t(MAX_TEXTURES),
+            props2.properties.limits.maxDescriptorSetSampledImages,
+            perSet 
+        });
 
         if (m_maxTextures != MAX_TEXTURES)
-            std::fprintf(stderr, "[vulkan] texture array capped at %u (device limit)\n",
-                         m_maxTextures);
+            std::fprintf(
+                stderr, 
+                "[vulkan] texture array capped at %u (device limit)\n",
+                m_maxTextures
+            );
     }
 
     const VkDescriptorSetLayoutBinding bindings[2]{
@@ -1212,7 +1244,7 @@ bool VulkanRenderer::createDepthBuffers() {
             .viewType           = VK_IMAGE_VIEW_TYPE_2D,
             .format             = m_depthFormat,
             .subresourceRange   = {
-                .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+                .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                 .baseMipLevel   = 0,
                 .levelCount     = 1,
                 .baseArrayLayer = 0,
@@ -1260,7 +1292,7 @@ bool VulkanRenderer::createTargetDepth(GPUTexture& tex) {
         .viewType           = VK_IMAGE_VIEW_TYPE_2D,
         .format             = m_depthFormat,
         .subresourceRange   = {
-            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
             .baseMipLevel   = 0,
             .levelCount     = 1,
             .baseArrayLayer = 0,
