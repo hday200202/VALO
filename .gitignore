@@ -21,3 +21,5 @@ ext/swiftshader/
 bench/
 
 *.spv
+*.vert
+*.frag

@@ -23,6 +23,7 @@
 #include "../buffers/VertexBuffer.hpp"
 #include "../buffers/IndexBuffer.hpp"
 #include "../buffers/UniformBuffer.hpp"
+#include "../buffers/StorageBuffer.hpp"
 #include "../ShaderProgram.hpp"
 #include "../ShaderRegistry.hpp"
 #include "../RenderCommand.hpp"
@@ -66,6 +67,9 @@ public:
     UniformBufferID createUniformBuffer(const void* data, const size_t bytes);
     void            updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
 
+    StorageBufferID createStorageBuffer(const void* data, const size_t bytes);
+    void            updateStorageBuffer(const StorageBufferID buffer, const void* data, const size_t bytes);
+
     TextureID       createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
     TextureID       createTextureFromFile(const std::string& path, const bool srgb, const bool mips);
     void            updateTexture(const TextureID texture, const uint32_t* data);
@@ -81,6 +85,7 @@ public:
     void            releaseVertexBuffer(const VertexBufferID id);
     void            releaseIndexBuffer(const IndexBufferID id);
     void            releaseUniformBuffer(const UniformBufferID id);
+    void            releaseStorageBuffer(const StorageBufferID id);
     void            releaseProgram(const ProgramID id);
 
     uint32_t        width() const;
@@ -95,6 +100,7 @@ public:
     std::vector<IndexBuffer>                    m_indexBuffers;
     std::vector<Program>                        m_programs;
     std::vector<UniformBuffer>                  m_uniformBuffers;
+    std::vector<StorageBuffer>                  m_storageBuffers;
 
     /* ---- presentation --------------------------------------------------- */
     SDL_Renderer*   m_sdlRenderer   = nullptr;
@@ -112,6 +118,8 @@ public:
 
     // resolved once per draw, handed down through DrawContext
     const void* m_resolvedUniforms[MAX_UNIFORM_SLOTS] = {};
+    const void* m_resolvedStorage[MAX_STORAGE_SLOTS] = {};
+    uint32_t m_resolvedStorageBytes[MAX_STORAGE_SLOTS] = {};
 };
 
 } // namespace valo

@@ -284,6 +284,29 @@ void VALO::destroyUniformBuffer(const UniformBufferID buffer)
 
 
 /* ========================================================================= //
+    Storage buffers
+// ========================================================================= */
+
+StorageBufferID VALO::createStorageBuffer(
+    const void* data,
+    const size_t bytes
+) { return m_renderer.createStorageBuffer(data, bytes); }
+
+
+void VALO::updateStorageBuffer(
+    const StorageBufferID buffer,
+    const void* data,
+    const size_t bytes
+) { m_renderer.updateStorageBuffer(buffer, data, bytes); }
+
+
+void VALO::destroyStorageBuffer(
+    const StorageBufferID buffer
+) { m_renderer.destroyStorageBuffer(buffer); }
+
+
+
+/* ========================================================================= //
     Textures
 // ========================================================================= */
 

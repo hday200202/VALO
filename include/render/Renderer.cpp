@@ -151,6 +151,27 @@ void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
 
 
 /* ========================================================================= //
+    Storage buffers
+// ========================================================================= */
+
+StorageBufferID Renderer::createStorageBuffer(const void* data, const size_t bytes) {
+    return m_backendFuncs.createStorageBuffer(*this, data, bytes);
+}
+
+
+void Renderer::updateStorageBuffer(const StorageBufferID buffer, const void* data, const size_t bytes) {
+    m_backendFuncs.updateStorageBuffer(*this, buffer, data, bytes);
+}
+
+
+void Renderer::destroyStorageBuffer(const StorageBufferID buffer) {
+    assert(validStorage(buffer) && "destroyStorageBuffer(): Storage buffer ID out of range");
+    m_destroyedStorageBuffers.push_back({buffer, m_frame});
+}
+
+
+
+/* ========================================================================= //
     Textures
 // ========================================================================= */
 
@@ -247,6 +268,8 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) { r.m_software->updateIndexBuffer(id, d, n); },
             .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_software->createUniformBuffer(d, n); },
             .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) { r.m_software->updateUniformBuffer(id, d, n); },
+            .createStorageBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_software->createStorageBuffer(d, n); },
+            .updateStorageBuffer = [](Renderer& r, StorageBufferID id, const void* d, const size_t n) { r.m_software->updateStorageBuffer(id, d, n); },
             .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) { return r.m_software->createTexture(w, h, d, srgb, mips); },
             .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) { return r.m_software->createTextureFromFile(p, srgb, mips); },
             .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) { r.m_software->updateTexture(id, d); },
@@ -259,6 +282,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.m_software->releaseIndexBuffer(id); },
             .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.m_software->releaseUniformBuffer(id); },
             .releaseProgram       = [](Renderer& r, ProgramID id)         { r.m_software->releaseProgram(id); },
+            .releaseStorageBuffer = [](Renderer& r, StorageBufferID id)   { r.m_software->releaseStorageBuffer(id); },
 
             .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.m_software->resize(w, h); },
             .setVsync = [](Renderer& r, bool v) { r.m_software->setVsync(v); },
@@ -287,6 +311,8 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .updateIndexBuffer = [](Renderer& r, IndexBufferID id, const uint32_t* d, size_t n) { r.m_vulkan->updateIndexBuffer(id, d, n); },
             .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_vulkan->createUniformBuffer(d, n); },
             .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) { r.m_vulkan->updateUniformBuffer(id, d, n); },
+            .createStorageBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_vulkan->createStorageBuffer(d, n); },
+            .updateStorageBuffer = [](Renderer& r, StorageBufferID id, const void* d, const size_t n) { r.m_software->updateStorageBuffer(id, d, n); },
             .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) { return r.m_vulkan->createTexture(w, h, d, srgb, mips); },
             .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) { return r.m_vulkan->createTextureFromFile(p, srgb, mips); },
             .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) { r.m_vulkan->updateTexture(id, d); },
@@ -299,6 +325,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.m_vulkan->releaseIndexBuffer(id); },
             .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.m_vulkan->releaseUniformBuffer(id); },
             .releaseProgram       = [](Renderer& r, ProgramID id)         { r.m_vulkan->releaseProgram(id); },
+            .releaseStorageBuffer = [](Renderer& r, StorageBufferID id)   { r.m_software->releaseStorageBuffer(id); },
 
             .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.m_vulkan->resize(w, h); },
             .setVsync = [](Renderer& r, bool v) { r.m_vulkan->setVsync(v); },

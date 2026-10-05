@@ -16,6 +16,8 @@ inline constexpr uint32_t MAX_VARYINGS = 32;
 namespace detail {
     inline thread_local const std::vector<std::unique_ptr<RenderTarget>>* boundTargets = nullptr;
     inline thread_local const void* const* boundUniforms = nullptr;
+    inline thread_local const void* const* boundStorage = nullptr;
+    inline thread_local const uint32_t* boundStorageBytes = nullptr;
 
     struct VaryingDerivs {
         const float* interp = nullptr;
@@ -66,6 +68,25 @@ template <typename T>
 const T& uniformBuffer(const uint32_t slot) {
     assert(slot < MAX_UNIFORM_SLOTS && detail::boundUniforms[slot] && "uniformBuffer(): nothing bound to slot");
     return *static_cast<const T*>(detail::boundUniforms[slot]);
+}
+
+template <typename T>
+struct StorageView {
+    const T* data = nullptr;
+    uint32_t count = 0;
+
+    const T& operator[](const uint32_t i) const { return data[i]; }
+    uint32_t size() const { return count; }
+};
+
+template <typename T>
+StorageView<T> storageBuffer(const uint32_t slot) {
+    assert(slot < MAX_STORAGE_SLOTS && detail::boundStorage[slot] && "storageBuffer(): nothing bound to slot");
+
+    return {
+        static_cast<const T*>(detail::boundStorage[slot]),
+        detail::boundStorageBytes[slot] / uint32_t(sizeof(T))
+    };
 }
 
 #define discard valo::vDiscard()

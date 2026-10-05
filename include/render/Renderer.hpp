@@ -96,6 +96,11 @@ public:
     void updateUniformBuffer(const UniformBufferID uniforms, const void* data, const size_t bytes);
     void destroyUniformBuffer(const UniformBufferID buffer);
 
+    /* ---- storage buffers ------------------------------------------------ */
+    StorageBufferID createStorageBuffer(const void* data, const size_t bytes);
+    void updateStorageBuffer(const StorageBufferID buffer, const void* data, const size_t bytes);
+    void destroyStorageBuffer(const StorageBufferID buffer);
+
     /* ---- textures ------------------------------------------------------- */
     TextureID createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb = false, const bool mips = true);
     TextureID createTexture(const std::string& path, const bool srgb = false, const bool mips = true);
@@ -163,12 +168,14 @@ protected:
     std::vector<std::pair<IndexBufferID, uint64_t>>      m_destroyedIndexBuffers;
     std::vector<std::pair<ProgramID, uint64_t>>          m_destroyedPrograms;
     std::vector<std::pair<UniformBufferID, uint64_t>>    m_destroyedUniformBuffers;
+    std::vector<std::pair<StorageBufferID, uint64_t>>    m_destroyedStorageBuffers;
 
     std::vector<RenderTargetID>     m_freeTargets;
     std::vector<VertexBufferID>     m_freeVertexBuffers;
     std::vector<IndexBufferID>      m_freeIndexBuffers;
     std::vector<ProgramID>          m_freePrograms;
     std::vector<UniformBufferID>    m_freeUniformBuffers;
+    std::vector<StorageBufferID>    m_freeStorageBuffers;
 
     // takes ownership of a target/texture, reusing a freed slot if there is one
     // (straddles: software storage, Renderer's free list)
@@ -203,6 +210,7 @@ protected:
     bool validIndices(const IndexBufferID id)   const { return id < slots(ResourceKind::IndexBuffer)   && !destroyed(m_destroyedIndexBuffers, id)   && !inFreeList(m_freeIndexBuffers, id); }
     bool validProgram(const ProgramID id)       const { return id < slots(ResourceKind::Program)       && !destroyed(m_destroyedPrograms, id)       && !inFreeList(m_freePrograms, id); }
     bool validUniform(const UniformBufferID id) const { return id < slots(ResourceKind::UniformBuffer) && !destroyed(m_destroyedUniformBuffers, id) && !inFreeList(m_freeUniformBuffers, id); }
+    bool validStorage(const StorageBufferID id) const { return id < slots(ResourceKind::StorageBuffer) && !destroyed(m_destroyedStorageBuffers, id) && !inFreeList(m_freeStorageBuffers, id); }
 
     template <typename Storage, typename FreeList, typename T>
     static uint32_t allocSlot(Storage& storage, FreeList& freeList, T&& value) {
@@ -247,6 +255,10 @@ protected:
 
         retireQueue(m_destroyedUniformBuffers, m_freeUniformBuffers,
             [this](UniformBufferID id) { m_backendFuncs.releaseUniformBuffer(*this, id); }, force);
+
+        retireQueue(m_destroyedStorageBuffers, m_freeStorageBuffers,
+            [this](StorageBufferID id) { m_backendFuncs.releaseStorageBuffer(*this, id); }, force);
+
     }
 
     struct RenderBackend {
@@ -266,6 +278,9 @@ protected:
         UniformBufferID (*createUniformBuffer)(Renderer&, const void*, const size_t);
         void (*updateUniformBuffer)(Renderer&, UniformBufferID, const void*, const size_t);
 
+        StorageBufferID (*createStorageBuffer)(Renderer&, const void*, const size_t);
+        void (*updateStorageBuffer)(Renderer&, StorageBufferID, const void*, const size_t);
+
         TextureID (*createTexture)(Renderer&, uint32_t, uint32_t, const uint32_t*, bool, bool);
         TextureID (*createTextureFromFile)(Renderer&, const std::string&, bool, bool);
         void (*updateTexture)(Renderer&, TextureID, const uint32_t*);
@@ -279,6 +294,7 @@ protected:
         void (*releaseIndexBuffer)(Renderer&, IndexBufferID);
         void (*releaseUniformBuffer)(Renderer&, UniformBufferID);
         void (*releaseProgram)(Renderer&, ProgramID);
+        void (*releaseStorageBuffer)(Renderer&, StorageBufferID);
 
         void (*resize)(Renderer&, uint32_t, uint32_t);
         void (*setVsync)(Renderer&, bool);

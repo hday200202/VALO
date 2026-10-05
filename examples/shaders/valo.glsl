@@ -28,3 +28,16 @@ vec4 valoTexture(uint tex, vec2 uv, uint samp) {
 vec4 valoTexture(uint tex, vec2 uv) {
     return valoTexture(tex, uv, VALO_REPEAT_LINEAR);
 }
+
+// Mip 0, explicitly. The software backend derives a LOD only when the uv it is
+// given is an interpolated varying; for any computed uv - a ray-traced hit, say
+// - it samples level 0. Hardware derivatives of a computed uv jump at every
+// triangle edge and would pick the smallest mip there, so valoc emits this
+// instead of valoTexture whenever the uv is not a varying.
+vec4 valoTextureLod0(uint tex, vec2 uv, uint samp) {
+    return textureLod(sampler2D(uTextures[nonuniformEXT(tex)], uSamplers[samp]), uv, 0.0);
+}
+
+vec4 valoTextureLod0(uint tex, vec2 uv) {
+    return valoTextureLod0(tex, uv, VALO_REPEAT_LINEAR);
+}

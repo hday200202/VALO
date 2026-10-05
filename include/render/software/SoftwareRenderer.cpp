@@ -56,10 +56,21 @@ void SoftwareRenderer::draw(const RenderCommand& cmd, const RenderTargetID targe
         assert((id == EMPTY_BUFFER || m_owner->validUniform(id)) && "draw(): stale uniform buffer bound");
         m_resolvedUniforms[i] = m_owner->validUniform(id) ? m_uniformBuffers[id].data.data() : nullptr;
     }
+
+    for (uint32_t i = 0; i < MAX_STORAGE_SLOTS; ++i) {
+        const StorageBufferID id = cmd.storageBuffers[i];
+        assert((id == EMPTY_BUFFER || m_owner.validStorage(id)) && "draw(): stale storage buffer bound");
+
+        const bool live = m_owner->validStorage(id);
+        m_resolvedStorage[i] = live ? m_storageBuffers[id].data.data() : nullptr;
+        m_resolvedStorageBytes[i] = live ? uint32_t(m_storageBuffers[id].data.size()) : 0;
+    }
     
-    const DrawContext ctx{&m_targets, m_resolvedUniforms};
-    detail::boundTargets = ctx.targets;
-    detail::boundUniforms = ctx.uniforms;
+    const DrawContext ctx{&m_targets, m_resolvedUniforms, m_resolvedStorage, m_resolvedStorageBytes};
+    detail::boundTargets      = ctx.targets;
+    detail::boundUniforms     = ctx.uniforms;
+    detail::boundStorage      = ctx.storage;
+    detail::boundStorageBytes = ctx.storageBytes;
 
     switch (cmd.topology) {
         case Topology::Triangles:
@@ -190,6 +201,7 @@ uint32_t SoftwareRenderer::slotCount(const ResourceKind kind) const {
         case ResourceKind::IndexBuffer:   return uint32_t(m_indexBuffers.size());
         case ResourceKind::Program:       return uint32_t(m_programs.size());
         case ResourceKind::UniformBuffer: return uint32_t(m_uniformBuffers.size());
+        case ResourceKind::StorageBuffer: return uint32_t(m_storageBuffers.size());
     }
     return 0;
 }
@@ -255,6 +267,23 @@ void SoftwareRenderer::updateUniformBuffer(const UniformBufferID buffer, const v
     const uint8_t* src = static_cast<const uint8_t*>(data);
     m_uniformBuffers[buffer].data.assign(src, src + bytes);
 }
+
+StorageBufferID SoftwareRenderer::createStorageBuffer(const void* data, const size_t bytes) {
+    StorageBuffer newBuffer;
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    newBuffer.data.assign(src, src + bytes);
+
+    return m_owner->allocSlot(m_storageBuffers, m_owner->m_freeStorageBuffers, std::move(newBuffer));
+}
+
+void SoftwareRenderer::updateStorageBuffer(const StorageBufferID buffer, const void* data, const size_t bytes) {
+    assert(buffer < m_storageBuffers.size() && "updateStorageBuffer(): ID out of range");
+
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    m_storageBuffers[buffer].data.assign(src, src + bytes);
+}
+
+void SoftwareRenderer::releaseStorageBuffer(const StorageBufferID id) { m_storageBuffers[id] = StorageBuffer{}; }
 
 TextureID SoftwareRenderer::createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadFromMemory(w, h, data));

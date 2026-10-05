@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     }
 
     sc::Engine engine;
-    if (!engine.init("VALO - PBR Showcase", {1280, 720},
+    if (!engine.init("VALO - PBR Showcase", {800, 600},
                      useVulkan ? valo::Backend::Vulkan : valo::Backend::Software,
                      validation)) return 1;
 
@@ -63,6 +63,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "showcase: could not load '%s'\n", path);
         return 1;
     }
+    engine.buildTraceScene();
+
 
     while (engine.isRunning()) {
         engine.update();

@@ -165,6 +165,10 @@ public:
     UniformBufferID         createUniformBuffer(const void* data, const size_t bytes);
     void                    updateUniformBuffer(const UniformBufferID buffer, const void* data, const size_t bytes);
 
+    StorageBufferID         createStorageBuffer(const void*, const size_t);
+    void                    updateStorageBuffer(const StorageBufferID, const void*, const size_t);
+    void                    releaseStorageBuffer(const StorageBufferID);
+
     TextureID               createTexture(const uint32_t w, const uint32_t h, const uint32_t* data, const bool srgb, const bool mips);
     TextureID               createTextureFromFile(const std::string& path, const bool srgb, const bool mips);
     void                    updateTexture(const TextureID texture, const uint32_t* data);
@@ -215,6 +219,7 @@ private:
 
     VkPipelineLayout                m_pipelineLayout        = VK_NULL_HANDLE;
     VkDescriptorSetLayout           m_uniformSetLayout      = VK_NULL_HANDLE;
+    VkDescriptorSetLayout           m_storageSetLayout      = VK_NULL_HANDLE;
     PFN_vkCmdPushDescriptorSetKHR   m_pushDescriptorSet     = nullptr;
 
     std::vector<std::pair<GPUBuffer, uint64_t>> 
@@ -223,6 +228,8 @@ private:
     std::vector<GPUBuffer>          m_vertexBuffers;
     std::vector<GPUBuffer>          m_indexBuffers;
     std::vector<GPUBuffer>          m_uniformBuffers;
+    std::vector<GPUBuffer>          m_storageBuffers;
+    
     /*
         MAX_TEXTURES is the ceiling the shader is written against; the device may
         allow far fewer. MoltenVK reports maxPerSetDescriptors 1212, so a 4096

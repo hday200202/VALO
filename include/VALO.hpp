@@ -103,6 +103,23 @@ public:
         const UniformBufferID buffer
     );
 
+    /* ---- storage buffers ------------------------------------------------ */
+    StorageBufferID createStorageBuffer(
+        const void* data,
+        const size_t bytes
+    );
+
+    void updateStorageBuffer(
+        const StorageBufferID buffer,
+        const void* data,
+        const size_t bytes
+    );
+
+    void destroyStorageBuffer(
+        const StorageBufferID buffer
+    );
+
+
     /* ---- textures ------------------------------------------------------- */
     /*
         srgb = the file/bytes are sRGB-encoded, as almost every colour image is

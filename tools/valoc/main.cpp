@@ -26,6 +26,7 @@ namespace {
 struct Field {
     std::string type;
     std::string name;
+    std::string init;       // the default member initialiser, already GLSL; empty if none
 };
 
 struct Struct {
@@ -156,12 +157,44 @@ CXChildVisitResult visitEntry(CXCursor c, CXCursor, CXClientData data) {
 }
 
 
+std::string stripFloatSuffix(const std::string& lit);
+
+/*
+    A default member initialiser is the field's last expression child. Only a
+    plain expression is kept - a braced one would need its type spelled out,
+    and a struct using one gets no defaults rather than wrong ones.
+*/
+std::string fieldInit(CXCursor field) {
+    CXCursor expr = clang_getNullCursor();
+    clang_visitChildren(field, [](CXCursor k, CXCursor, CXClientData d) {
+        if (clang_isExpression(clang_getCursorKind(k))) *static_cast<CXCursor*>(d) = k;
+        return CXChildVisit_Continue;
+    }, &expr);
+    if (clang_Cursor_isNull(expr)) return {};
+
+    CXTranslationUnit tu = clang_Cursor_getTranslationUnit(field);
+    CXToken* tokens = nullptr;
+    unsigned count = 0;
+    clang_tokenize(tu, clang_getCursorExtent(expr), &tokens, &count);
+
+    std::string out;
+    for (unsigned i = 0; i < count; ++i) {
+        const std::string t = str(clang_getTokenSpelling(tu, tokens[i]));
+        if (t == "{" || t == "}") { out.clear(); break; }
+        out += clang_getTokenKind(tokens[i]) == CXToken_Literal ? stripFloatSuffix(t) : t;
+    }
+    clang_disposeTokens(tu, tokens, count);
+    return out;
+}
+
+
 CXChildVisitResult visitFields(CXCursor c, CXCursor, CXClientData data) {
     if (clang_getCursorKind(c) == CXCursor_FieldDecl) {
         auto* s = static_cast<Struct*>(data);
         s->fields.push_back({
             str(clang_getTypeSpelling(clang_getCursorType(c))),
-            str(clang_getCursorSpelling(c))
+            str(clang_getCursorSpelling(c)),
+            fieldInit(c)
         });
     }
     return CXChildVisit_Continue;
@@ -830,11 +863,153 @@ bool isIntegerMemberChain(
     return false;
 }
 
+
+/*
+    A storage buffer is declared inside the body in C++ and at file scope in
+    GLSL:
+
+        const StorageView<float> numbers = storageBuffer<float>(0);
+            ->  layout(scalar, set = 2, binding = 0)
+                    readonly buffer Storage0 { float data[]; } s0;
+
+    so the declaration is lifted out and every use of the local name is
+    rewritten onto the block. .size() becomes data.length() and [i] stays a
+    subscript, which is the whole of the mapping.
+*/
+struct StorageDecl {
+    std::string name;       // the local the shader uses
+    std::string elemType;   // GLSL element type
+    unsigned    slot = 0;
+};
+
+
+std::vector<StorageDecl> findStorageDecls(const Collect& c, CXCursor body) {
+    std::vector<StorageDecl> out;
+    if (clang_Cursor_isNull(body)) return out;
+
+    CXToken* tokens = nullptr;
+    unsigned count = 0;
+    clang_tokenize(c.tu, clang_getCursorExtent(body), &tokens, &count);
+
+    auto tok = [&](unsigned i) {
+        return i < count ? str(clang_getTokenSpelling(c.tu, tokens[i])) : std::string();
+    };
+
+    for (unsigned i = 0; i + 10 < count; ++i) {
+        if (tok(i) != "StorageView" || tok(i + 1) != "<") continue;
+
+        // StorageView < T > name = storageBuffer < T > ( N )
+        unsigned j = i + 2;
+        std::string elem;
+        while (j < count && tok(j) != ">") { elem += tok(j); ++j; }
+        if (j >= count) break;
+
+        const std::string name = tok(j + 1);
+        if (tok(j + 2) != "=" || tok(j + 3) != "storageBuffer") continue;
+
+        unsigned k = j + 4;
+        while (k < count && tok(k) != "(") ++k;
+        if (k + 1 >= count) break;
+
+        out.push_back({ name, glslType(elem), unsigned(std::atoi(tok(k + 1).c_str())) });
+        i = k + 1;
+    }
+
+    clang_disposeTokens(c.tu, tokens, count);
+    return out;
+}
+
+
+std::vector<StorageDecl> findAllStorageDecls(const Collect& c) {
+    std::vector<StorageDecl> out = findStorageDecls(c, c.body);
+
+    for (CXCursor h : c.helpers) {
+        CXCursor body = clang_getNullCursor();
+        clang_visitChildren(h, [](CXCursor k, CXCursor, CXClientData d) {
+            if (clang_getCursorKind(k) == CXCursor_CompoundStmt)
+                *static_cast<CXCursor*>(d) = k;
+            return CXChildVisit_Continue;
+        }, &body);
+
+        for (const auto& d : findStorageDecls(c, body)) out.push_back(d);
+    }
+
+    return out;
+}
+
+
+std::string emitStorageBlocks(const std::vector<StorageDecl>& decls) {
+    std::string out;
+    std::vector<unsigned> seen;
+
+    for (const auto& d : decls) {
+        bool already = false;
+        for (unsigned v : seen) if (v == d.slot) already = true;
+        if (already) continue;
+        seen.push_back(d.slot);
+
+        const std::string n = std::to_string(d.slot);
+        out += "layout(scalar, set = 2, binding = " + n + ") readonly buffer Storage" + n
+             + " { " + d.elemType + " data[]; } s" + n + ";\n";
+    }
+
+    if (!decls.empty()) out += "\n";
+    return out;
+}
+
+
+/*
+    A helper that takes the uniform struct has no GLSL equivalent: there the
+    block is a global, not something you can pass. The parameter is dropped from
+    the signature and the matching argument from every call, which leaves the
+    body reading the block directly - it already spells it with the same name.
+*/
+struct DroppedArg {
+    std::string function;
+    int         index = -1;
+};
+
+/*
+    The constructor call that gives a struct local its C++ defaults, or empty
+    when the struct has none or one can't be written. A field without an
+    initialiser is value-initialised, so it is zero, as in C++.
+*/
+std::string defaultConstruct(const Collect& c, const std::string& type, const bool nameFollows) {
+    if (!nameFollows) return {};
+
+    const Struct* s = findStruct(c, type);
+    if (!s) return {};
+
+    bool any = false;
+    for (const Field& f : s->fields) if (!f.init.empty()) any = true;
+    if (!any) return {};
+
+    std::string args;
+    for (const Field& f : s->fields) {
+        std::string v = f.init;
+        if (v.empty()) {
+            const std::string g = glslType(f.type);
+            if      (g == "float") v = "0.0";
+            else if (g == "uint")  v = "0u";
+            else if (g == "int")   v = "0";
+            else if (g == "bool")  v = "false";
+            else if (g.rfind("vec", 0) == 0 || g.rfind("ivec", 0) == 0
+                  || g.rfind("uvec", 0) == 0 || g.rfind("mat", 0) == 0) v = g + "(0)";
+            else return {};
+        }
+        args += (args.empty() ? "" : ", ") + v;
+    }
+    return glslType(s->name) + "(" + args + ")";
+}
+
+
 std::string translateRange(
     const Collect& c,
     CXCursor cursor,
     const std::vector<Rename>& renames,
-    bool dropOuterBraces
+    bool dropOuterBraces,
+    const std::vector<StorageDecl>& storage = {},
+    const std::vector<DroppedArg>& dropped = {}
 ) {
     if (clang_Cursor_isNull(cursor)) return "    // not found\n";
 
@@ -1044,10 +1219,86 @@ std::string translateRange(
             continue;
         }
 
+        // `T x;` default-constructs in C++, but a GLSL local starts undefined
+        if (t == ";" && parenDepth == 0 && i >= 2) {
+            const std::string ctor = defaultConstruct(c,
+                str(clang_getTokenSpelling(c.tu, tokens[i - 2])),
+                clang_getTokenKind(tokens[i - 1]) == CXToken_Identifier);
+            if (!ctor.empty()) put("= " + ctor, false);
+        }
+
         if (kind == CXToken_Literal) {
             put(stripFloatSuffix(t));
             prevSpelling = t;
             continue;
+        }
+
+        // a call to a helper that lost a parameter loses the argument with it
+        if (kind == CXToken_Identifier && !dropped.empty()
+            && i + 1 < count && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "("
+        ) {
+            const DroppedArg* d = nullptr;
+            for (const auto& e : dropped) if (e.function == t) d = &e;
+
+            if (d && d->index == 0) {
+                // only the first argument is handled: that is where a uniform
+                // parameter is written, and a later one would need the commas
+                // counted rather than just the opening paren skipped
+                unsigned j = i + 2;
+                int parens = 0;
+
+                while (j < count) {
+                    const std::string a = str(clang_getTokenSpelling(c.tu, tokens[j]));
+                    if (a == "(" || a == "[") ++parens;
+                    if (a == ")" || a == "]") { if (parens == 0) break; --parens; }
+                    if (a == "," && parens == 0) { ++j; break; }
+                    ++j;
+                }
+
+                put(t, false);
+                out += "(";
+                i = j - 1;
+                ++parenDepth;
+                prevSpelling = "(";
+                continue;
+            }
+        }
+
+        /*
+            The declaration moved to file scope, so the statement that produced
+            it is dropped - including a leading const, which has already been
+            seen by the time StorageView shows up.
+        */
+        if (t == "StorageView" || (t == "const" && i + 1 < count
+            && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "StorageView")
+        ) {
+            while (i < count && str(clang_getTokenSpelling(c.tu, tokens[i])) != ";") ++i;
+            continue;
+        }
+
+        // and every use of the local name becomes the block it was lifted into
+        if (kind == CXToken_Identifier && !storage.empty() && prevSpelling != ".") {
+            const StorageDecl* decl = nullptr;
+            for (const auto& d : storage) if (d.name == t) decl = &d;
+
+            if (decl) {
+                const std::string block = "s" + std::to_string(decl->slot);
+
+                // .size() has no member equivalent; GLSL asks the array
+                if (i + 3 < count
+                    && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "."
+                    && str(clang_getTokenSpelling(c.tu, tokens[i + 2])) == "size"
+                ) {
+                    put(block + ".data.length()");
+                    i += 4;                     // . size ( )
+                    prevSpelling = ")";
+                    continue;
+                }
+
+                put(block + ".data", false);
+                prevSpelling = "data";
+                continue;
+            }
         }
 
         /*
@@ -1128,6 +1379,37 @@ std::string translateRange(
                 if (i + 1 < count && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "<")
                     while (i < count && str(clang_getTokenSpelling(c.tu, tokens[i])) != ">") ++i;
                 prevSpelling = "3.14159265358979";
+                continue;
+            }
+
+            /*
+                texture() picks its LOD the way the software backend does:
+                analytically when the uv argument is a varying (in.uv), and
+                mip 0 for anything computed. Implicit-LOD hardware sampling of
+                a computed uv takes derivatives that jump at triangle edges.
+            */
+            if (t == "texture" && i + 1 < count
+                && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "("
+                && !c.paramNames.empty()
+            ) {
+                // the second argument, as written
+                std::vector<std::string> arg;
+                int depth = 0, index = 0;
+
+                for (unsigned j = i + 2; j < count; ++j) {
+                    const std::string a = str(clang_getTokenSpelling(c.tu, tokens[j]));
+                    if (a == "(" || a == "[" || a == "{") ++depth;
+                    if (a == ")" || a == "]" || a == "}") { if (depth == 0) break; --depth; }
+                    if (a == "," && depth == 0) { if (++index > 1) break; continue; }
+                    if (index == 1) arg.push_back(a);
+                }
+
+                const bool isVarying = arg.size() == 3
+                                    && arg[0] == c.paramNames[0]
+                                    && arg[1] == ".";
+
+                put(isVarying ? "valoTexture" : "valoTextureLod0", false);
+                prevSpelling = "valoTexture";
                 continue;
             }
 
@@ -1428,6 +1710,18 @@ vec4 valoTexture(uint tex, vec2 uv, uint samp) {
 vec4 valoTexture(uint tex, vec2 uv) {
     return valoTexture(tex, uv, VALO_REPEAT_LINEAR);
 }
+// Mip 0, explicitly. The software backend derives a LOD only when the uv it is
+// given is an interpolated varying; for any computed uv - a ray-traced hit, say
+// - it samples level 0. Hardware derivatives of a computed uv jump at every
+// triangle edge and would pick the smallest mip there, so valoc emits this
+// instead of valoTexture whenever the uv is not a varying.
+vec4 valoTextureLod0(uint tex, vec2 uv, uint samp) {
+    return textureLod(sampler2D(uTextures[nonuniformEXT(tex)], uSamplers[samp]), uv, 0.0);
+}
+
+vec4 valoTextureLod0(uint tex, vec2 uv) {
+    return valoTextureLod0(tex, uv, VALO_REPEAT_LINEAR);
+}
 )GLSL";
 
 
@@ -1531,7 +1825,13 @@ std::string translateArrayInit(
     them in two passes puts every constant first, and a constant whose value
     calls a helper then references something GLSL has not seen yet.
 */
-std::string emitHelpers(const Collect& c, const std::vector<Rename>& renames) {
+std::string emitHelpers(
+    const Collect& c,
+    const std::vector<Rename>& renames,
+    const std::vector<StorageDecl>& storage,
+    const std::string& uniformTypeName,
+    std::vector<DroppedArg>& dropped
+) {
     std::string out;
     std::vector<std::string> emitted;
 
@@ -1725,14 +2025,37 @@ std::string emitHelpers(const Collect& c, const std::vector<Rename>& renames) {
         const CXType fn = clang_getCursorType(h);
         const std::string ret = glslType(str(clang_getTypeSpelling(clang_getResultType(fn))));
 
-        out += ret + " " + str(clang_getCursorSpelling(h)) + "(";
+        const std::string fnName = str(clang_getCursorSpelling(h));
+        out += ret + " " + fnName + "(";
 
         const int n = clang_Cursor_getNumArguments(h);
+        bool wroteOne = false;
+
         for (int i = 0; i < n; ++i) {
             CXCursor arg = clang_Cursor_getArgument(h, i);
-            if (i) out += ", ";
-            out += glslType(bareType(clang_getCursorType(arg))) + " "
-                 + str(clang_getCursorSpelling(arg));
+            const std::string argType = bareType(clang_getCursorType(arg));
+
+            // the uniform block is a global in GLSL, so a parameter of that
+            // type is dropped and the body reads the block instead
+            if (!uniformTypeName.empty() && argType == uniformTypeName) {
+                dropped.push_back({ fnName, i });
+                continue;
+            }
+
+            /*
+                GLSL passes parameters by value unless told otherwise, so a
+                C++ out-parameter (T&, not const T&) has to say inout or every
+                write the function makes is silently discarded.
+            */
+            const CXType argCx = clang_getCursorType(arg);
+            const bool writable =
+                argCx.kind == CXType_LValueReference
+             && !clang_isConstQualifiedType(clang_getPointeeType(argCx));
+
+            if (wroteOne) out += ", ";
+            out += std::string(writable ? "inout " : "")
+                 + glslType(argType) + " " + str(clang_getCursorSpelling(arg));
+            wroteOne = true;
         }
 
         out += ") {\n";
@@ -1744,7 +2067,9 @@ std::string emitHelpers(const Collect& c, const std::vector<Rename>& renames) {
             return CXChildVisit_Continue;
         }, &body);
 
-        out += translateRange(c, body, renames, true);
+        // scoped to this function: another one may use the same name for
+        // something else entirely
+        out += translateRange(c, body, renames, true, findStorageDecls(c, body), dropped);
         out += "}\n\n";
     }
 
@@ -1802,6 +2127,9 @@ std::string emit(const Collect& c, Stage stage) {
     // renaming when the body is translated
     emitBlock(out, uniforms, c.paramNames[stage == Stage::Vertex ? 1 : 1]);
 
+    const std::vector<StorageDecl> storage = findAllStorageDecls(c);
+    out += emitStorageBlocks(storage);
+
     /*
         in./out./uniform member access is rewritten by renaming the parameter
         itself: "in" becomes "a_" so "in.pos" falls out as "a_pos". The uniform
@@ -1817,6 +2145,7 @@ std::string emit(const Collect& c, Stage stage) {
     }
 
     renames.push_back({ "UINT32_MAX",     "0xFFFFFFFFu" });
+    renames.push_back({ "fmod",           "mod" });
     renames.push_back({ "lerp",           "mix" });
     renames.push_back({ "texture",        "valoTexture" });
     renames.push_back({ "EMPTY_TEXTURE",  "VALO_EMPTY_TEXTURE" });
@@ -1885,10 +2214,11 @@ std::string emit(const Collect& c, Stage stage) {
     for (const std::string& n : c.samplerLocals)
         renames.push_back({ n, samplerConstant({}) });
 
-    out += emitHelpers(c, renames);
+    std::vector<DroppedArg> dropped;
+    out += emitHelpers(c, renames, storage, c.paramTypes[1], dropped);
 
     out += "void main() {\n";
-    out += translateRange(c, c.body, renames, true);
+    out += translateRange(c, c.body, renames, true, findStorageDecls(c, c.body), dropped);
     out += "}\n";
     return out;
 }

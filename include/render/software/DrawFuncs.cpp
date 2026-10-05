@@ -522,6 +522,7 @@ void drawTriangles(
         wstate.cmd     = cmd;
         if (ctx.uniforms)
             for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) wstate.uniforms[i] = ctx.uniforms[i];
+        for (uint32_t i = 0; i < MAX_STORAGE_SLOTS; ++i) { wstate.storage[i] = ctx.storage[i]; wstate.storageBytes[i] = ctx.storageBytes[i]; }
 
         batch.states.push_back(wstate);
         uint32_t wi = uint32_t(batch.states.size() - 1);
@@ -578,6 +579,7 @@ void drawTriangles(
     state.cmd     = cmd;
     if (ctx.uniforms) {
         for (uint32_t i = 0; i < MAX_UNIFORM_SLOTS; ++i) state.uniforms[i] = ctx.uniforms[i];
+        for (uint32_t i = 0; i < MAX_STORAGE_SLOTS; ++i) { state.storage[i] = ctx.storage[i]; state.storageBytes[i] = ctx.storageBytes[i]; }
     }
 
     batch.states.push_back(state);
@@ -637,13 +639,17 @@ void flushTriBatch(TriBatch& batch, ThreadPool& pool, const DrawContext& ctx) {
     forEachBand(pool, target->height(), ctx, [&](int y0, int y1) {
         for (const ScreenTri& tri : batch.tris) {
             const DrawState& st = batch.states[tri.state];
-            detail::boundUniforms = st.uniforms;
+            detail::boundUniforms     = st.uniforms;
+            detail::boundStorage      = st.storage;
+            detail::boundStorageBytes = st.storageBytes;
             rasterizeTriangle(target, st.program, st.cmd, tri, y0, y1);
         }
 
         for (const WireTri& wt : batch.wires) {
             const DrawState& st = batch.states[wt.state];
-            detail::boundUniforms = st.uniforms;
+            detail::boundUniforms     = st.uniforms;
+            detail::boundStorage      = st.storage;
+            detail::boundStorageBytes = st.storageBytes;
 
             const Vec4f  pos[3]   = { wt.v[0].pos,  wt.v[1].pos,  wt.v[2].pos  };
             const float* varys[3] = { wt.v[0].vary, wt.v[1].vary, wt.v[2].vary };

@@ -22,11 +22,15 @@
 
 #include <string>
 #include <deque>
+#include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
 #include "../include/VALO.hpp"
+#include "BVH.hpp"
+#include "../shaders/trace.vert.hpp"
+#include "../shaders/trace.frag.hpp"
 #include "../shaders/scobject.vert.hpp"
 #include "../shaders/scobject.frag.hpp"
 #include "../shaders/scsky.vert.hpp"
@@ -109,6 +113,65 @@ public:
         const std::vector<Vertex> verts = buildTangents(gltf);
         m_vertices = m_valo->createVertexBuffer(verts.data(), verts.size(), Vertex::layout());
         m_indices  = m_valo->createIndexBuffer(gltf.indices.data(), gltf.indices.size());
+
+        // the raster path hands these to the GPU and forgets them; the tracer
+        // needs them on the CPU to build a BVH, so a copy stays behind
+        m_cpuVerts   = verts;
+        m_cpuIndices = gltf.indices;
+
+        /*
+            glTF splits normals at hard edges, which is right for a rasteriser
+            but leaves a traced hit interpolating between two unrelated normals
+            - the model reads as faceted. Averaging per unique position gives
+            the tracer a continuous field to interpolate across.
+
+            Quantised to 1e-4 before hashing, because two vertices at the same
+            corner rarely agree to the last bit.
+        */
+        {
+            struct Key {
+                int x, y, z;
+                bool operator==(const Key& o) const { return x == o.x && y == o.y && z == o.z; }
+            };
+            struct Hash {
+                size_t operator()(const Key& k) const {
+                    return size_t(k.x) * 73856093u ^ size_t(k.y) * 19349663u ^ size_t(k.z) * 83492791u;
+                }
+            };
+
+            auto key = [](const Vec3f& p) {
+                return Key{int(std::lround(p.x * 1e4f)),
+                           int(std::lround(p.y * 1e4f)),
+                           int(std::lround(p.z * 1e4f))};
+            };
+
+            std::unordered_map<Key, std::vector<Vec3f>, Hash> acc;
+            for (const Vertex& v : m_cpuVerts) acc[key(v.pos)].push_back(v.normal);
+
+            /*
+                Averaging everything at a position is wrong for this geometry:
+                a thin shell puts the inside and outside surface on the same
+                vertex with opposing normals, and summing them cancels out -
+                measured on DamagedHelmet, the worst case ended up pointing
+                0.73 the other way.
+
+                So only normals already within kSmoothAngle of this one are
+                averaged in. A hard edge keeps its split and a curved surface
+                still welds.
+            */
+            constexpr float kSmoothAngle = 0.5f;        // cos 60 degrees
+
+            m_smoothNormals.resize(m_cpuVerts.size());
+            for (size_t i = 0; i < m_cpuVerts.size(); ++i) {
+                const Vec3f own = m_cpuVerts[i].normal;
+
+                Vec3f sum = {0.f, 0.f, 0.f};
+                for (const Vec3f& n : acc[key(m_cpuVerts[i].pos)])
+                    if (n.dot(own) > kSmoothAngle) sum += n;
+
+                m_smoothNormals[i] = sum.length() > 1e-6f ? sum.normalized() : own;
+            }
+        }
         m_program  = m_valo->createProgram("examples/shaders/scobject.vert.hpp", "examples/shaders/scobject.frag.hpp");
 
         for (const GLTFMaterial& src : gltf.materials) {
@@ -185,6 +248,81 @@ public:
             if (!item.blended)
                 submit(item, viewProj, root,
                        handedness, dim, emissiveBoost, false, cull);
+    }
+
+    /*
+        Every primitive, baked through its node transform and the model's own
+        fit, so the tracer sees one flat world-space soup. Done once when the
+        BVH is built rather than per frame - nothing here animates.
+    */
+    void appendTriangles(std::vector<TraceTri>& out, std::vector<TraceMaterial>& mats) const {
+        if (!m_loaded) return;
+
+        const uint32_t materialBase = uint32_t(mats.size());
+        for (const Material& m : m_materials) {
+            mats.push_back(TraceMaterial{
+                .baseColor = m.baseColor,
+                .emissive  = m.emissive,
+                .metallic  = m.metallic,
+                .roughness = m.roughness,
+
+                .baseColorTex         = m.baseColorTex,
+                .metallicRoughnessTex = m.metallicRoughnessTex,
+                .normalTex            = m.normalTex,
+                .occlusionTex         = m.occlusionTex,
+                .emissiveTex          = m.emissiveTex,
+            });
+        }
+
+        // a primitive with no material still needs one to index
+        mats.push_back(TraceMaterial{
+            .baseColor = {0.8f, 0.8f, 0.8f, 1.f},
+            .emissive  = {0.f, 0.f, 0.f},
+            .metallic  = 0.f,
+            .roughness = 0.6f,
+
+            .baseColorTex         = EMPTY_TEXTURE,
+            .metallicRoughnessTex = EMPTY_TEXTURE,
+            .normalTex            = EMPTY_TEXTURE,
+            .occlusionTex         = EMPTY_TEXTURE,
+            .emissiveTex          = EMPTY_TEXTURE,
+        });
+        const uint32_t fallback = uint32_t(mats.size()) - 1u;
+
+        for (const Item& item : m_items) {
+            const Mat4f world  = m_transform * item.world;
+            const Mat4f normal = world;          // no non-uniform scale in the fit
+
+            const uint32_t mat = item.material >= 0
+                ? materialBase + uint32_t(item.material)
+                : fallback;
+
+            for (uint32_t i = 0; i + 2 < item.indexCount; i += 3) {
+                const uint32_t i0 = m_cpuIndices[item.firstIndex + i];
+                const uint32_t i1 = m_cpuIndices[item.firstIndex + i + 1];
+                const uint32_t i2 = m_cpuIndices[item.firstIndex + i + 2];
+
+                auto place  = [&](const Vec3f& v) { return (world  * Vec4f(v, 1.f)).xyz; };
+                auto rotate = [&](const Vec3f& v) { return (normal * Vec4f(v, 0.f)).xyz.normalized(); };
+
+                out.push_back(TraceTri{
+                    .p0 = place(m_cpuVerts[i0].pos), .material = mat,
+                    .p1 = place(m_cpuVerts[i1].pos),
+                    .p2 = place(m_cpuVerts[i2].pos),
+                    .n0 = rotate(m_smoothNormals[i0]),
+                    .n1 = rotate(m_smoothNormals[i1]),
+                    .n2 = rotate(m_smoothNormals[i2]),
+
+                    .t0 = Vec4f(rotate(m_cpuVerts[i0].tangent.xyz), m_cpuVerts[i0].tangent.w),
+                    .t1 = Vec4f(rotate(m_cpuVerts[i1].tangent.xyz), m_cpuVerts[i1].tangent.w),
+                    .t2 = Vec4f(rotate(m_cpuVerts[i2].tangent.xyz), m_cpuVerts[i2].tangent.w),
+
+                    .uv0 = m_cpuVerts[i0].uv,
+                    .uv1 = m_cpuVerts[i1].uv,
+                    .uv2 = m_cpuVerts[i2].uv,
+                });
+            }
+        }
     }
 
 private:
@@ -300,6 +438,11 @@ private:
     Vec3f m_boundsMin = { 1e30f,  1e30f,  1e30f};
     Vec3f m_boundsMax = {-1e30f, -1e30f, -1e30f};
 
+    // the raster path uploads and forgets; the tracer needs these on the CPU
+    std::vector<Vertex>   m_cpuVerts;
+    std::vector<uint32_t> m_cpuIndices;
+    std::vector<Vec3f>    m_smoothNormals;
+
     VALO* m_valo = nullptr;
     UniformBufferID m_sceneBuffer = EMPTY_BUFFER;
     bool  m_loaded = false;
@@ -376,6 +519,55 @@ public:
         resetCamera();
     }
 
+    /*
+        Flattens every model into one world-space triangle soup, builds a BVH
+        over it and uploads both. Called once after the models load - nothing in
+        this scene animates, so rebuilding per frame would buy nothing.
+    */
+    void buildTraceScene() {
+        std::vector<TraceTri>      tris;
+        std::vector<TraceMaterial> mats;
+
+        for (const Model& m : m_models) m.appendTriangles(tris, mats);
+
+        if (tris.empty()) {
+            std::fprintf(stderr, "showcase: nothing to trace\n");
+            return;
+        }
+
+        // the build reorders tris, so the BVH has to be uploaded from the
+        // same array afterwards rather than from a copy taken before
+        m_bvh.build(tris);
+
+        m_traceNodes = m_valo.createStorageBuffer(
+            m_bvh.nodes().data(), m_bvh.nodes().size() * sizeof(BVHNode));
+        m_traceTris = m_valo.createStorageBuffer(
+            tris.data(), tris.size() * sizeof(TraceTri));
+        m_traceMats = m_valo.createStorageBuffer(
+            mats.data(), mats.size() * sizeof(TraceMaterial));
+
+        // built from the reordered array, so index i still means the same
+        // triangle in both buffers
+        std::vector<TriPos> pos(tris.size());
+        for (size_t i = 0; i < tris.size(); ++i)
+            pos[i] = { tris[i].p0, tris[i].p1 - tris[i].p0, tris[i].p2 - tris[i].p0,
+                       std::clamp(mats[tris[i].material].baseColor.w, 0.f, 1.f) };
+
+        m_tracePos = m_valo.createStorageBuffer(pos.data(), pos.size() * sizeof(TriPos));
+
+        m_traceProgram = m_valo.createProgram(
+            "examples/shaders/trace.vert.hpp", "examples/shaders/trace.frag.hpp");
+
+        TraceVertex quad[4] = {{{-1,-1}}, {{1,-1}}, {{1,1}}, {{-1,1}}};
+        uint32_t    idx[6]  = {0, 1, 2, 0, 2, 3};
+
+        m_traceVerts   = m_valo.createVertexBuffer(quad, 4, VtxLayout({VtxAttrib::Vec2f}));
+        m_traceIndices = m_valo.createIndexBuffer(idx, 6);
+
+        std::printf("traced scene: %zu triangles, %zu BVH nodes, %zu materials\n",
+                    tris.size(), m_bvh.nodes().size(), mats.size());
+    }
+
     void update() {
         m_running = m_window.pollEvents();
         if (!m_running) return;
@@ -433,6 +625,7 @@ public:
 
     void render() {
         if (!m_running) return;
+        if (m_raytrace && m_traceProgram != DEFAULT_PROGRAM) { renderTraced(); return; }
 
         const Mat4f view = m_camera.view();
         const Mat4f proj = Mat4f::perspective(m_camera.fov, m_window.getAspect(),
@@ -470,6 +663,52 @@ public:
 
         if (m_showOrbs) drawOrbs(viewProj);
 
+        m_valo.endFrame();
+    }
+
+    /*
+        One fullscreen quad; every pixel builds its own ray. Nothing is
+        rasterised, so the sky, floor, reflection and shading all come out of
+        the fragment shader against the BVH.
+    */
+    void renderTraced() {
+        TraceUniforms u{};
+
+        u.camPos   = m_camera.pos;
+        u.camFwd   = m_camera.forward;
+        u.camRight = m_camera.right;
+        u.camUp    = m_camera.up;
+        u.tanHalf  = std::tan(m_camera.fov * 0.5f);
+        u.aspect   = m_window.getAspect();
+        u.exposure = m_exposure;
+        u.floorY   = kFloorY;
+
+        u.lightCount  = uint32_t(kLightCount);
+        u.showFloor   = m_showFloor   ? 1u : 0u;
+        u.reflections = m_reflections ? 1u : 0u;
+
+        for (int i = 0; i < kLightCount; ++i) {
+            u.lights[i].pos       = m_lights[i].pos;
+            u.lights[i].colour    = m_lights[i].colour;
+            u.lights[i].intensity = m_lights[i].intensity;
+        }
+
+        RenderCommand cmd;
+        cmd.verts      = m_traceVerts;
+        cmd.indices    = m_traceIndices;
+        cmd.program    = m_traceProgram;
+        cmd.cullmode   = CullMode::None;
+        cmd.depthTest  = false;
+        cmd.depthWrite = false;
+        cmd.setUniforms(u);
+
+        cmd.bindStorageBuffer(0, m_traceNodes);
+        cmd.bindStorageBuffer(1, m_traceTris);
+        cmd.bindStorageBuffer(2, m_traceMats);
+        cmd.bindStorageBuffer(3, m_tracePos);
+
+        m_valo.beginFrame();
+        m_valo.submit(cmd);
         m_valo.endFrame();
     }
 
@@ -683,6 +922,16 @@ private:
     std::chrono::steady_clock::time_point m_fpsMark = std::chrono::steady_clock::now();
 
     bool m_running     = false;
+
+    BVH             m_bvh;
+    bool            m_raytrace      = true;
+    ProgramID       m_traceProgram  = DEFAULT_PROGRAM;
+    StorageBufferID m_traceNodes    = EMPTY_BUFFER;
+    StorageBufferID m_traceTris     = EMPTY_BUFFER;
+    StorageBufferID m_traceMats     = EMPTY_BUFFER;
+    StorageBufferID m_tracePos      = EMPTY_BUFFER;
+    VertexBufferID  m_traceVerts    = EMPTY_BUFFER;
+    IndexBufferID   m_traceIndices  = EMPTY_BUFFER;
     bool m_reflections = true;
     bool m_showFloor   = true;
     bool m_showOrbs    = true;

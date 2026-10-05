@@ -83,6 +83,8 @@ int clipNear(
 struct DrawContext {
     const std::vector<std::unique_ptr<RenderTarget>>* targets = nullptr;
     const void* const* uniforms = nullptr;
+    const void* const* storage = nullptr;
+    const uint32_t* storageBytes = nullptr;
 };
 
 struct DrawState {
@@ -90,6 +92,11 @@ struct DrawState {
     Program         program = {};
     RenderCommand   cmd = {};
     const void*     uniforms[MAX_UNIFORM_SLOTS] = {};
+
+    // the workers get their own thread_local copies, so the binding has to
+    // travel with the state rather than being set once on the calling thread
+    const void*     storage[MAX_STORAGE_SLOTS]      = {};
+    uint32_t        storageBytes[MAX_STORAGE_SLOTS] = {};
 };
 
 

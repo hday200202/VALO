@@ -15,23 +15,24 @@ inline constexpr uint32_t ALL_INDICES       = UINT32_MAX;
 inline constexpr uint32_t MAX_INSTANCES     = UINT32_MAX; // Essentially unlimited for now
 inline constexpr uint32_t EMPTY_TEXTURE     = UINT32_MAX;
 inline constexpr uint32_t MAX_UNIFORM_SLOTS = 8;
+inline constexpr uint32_t MAX_STORAGE_SLOTS = 4;
 
 using RenderTargetID    = uint32_t;
 using VertexBufferID    = uint32_t;
 using IndexBufferID     = uint32_t;
 using ProgramID         = uint32_t;
 using TextureID         = uint32_t;
+using UniformBufferID   = uint32_t;
+using StorageBufferID   = uint32_t;
 
-// Which pool a slot id indexes. Each backend owns its own storage, so the
-// bounds half of Renderer's valid* predicates has to be asked of the backend.
 enum class ResourceKind {
     Target,
     VertexBuffer,
     IndexBuffer,
     Program,
-    UniformBuffer
+    UniformBuffer,
+    StorageBuffer
 };
-using UniformBufferID   = uint32_t;
 
 enum class Topology     { Points, Lines, Triangles };
 enum class CullMode     { None, Back, Front };
@@ -88,6 +89,9 @@ struct RenderCommand {
     uint8_t uniforms[MAX_UNIFORM_BYTES];
     size_t uniformSize = 0;
 
+    std::array<UniformBufferID, MAX_UNIFORM_SLOTS> uniformBuffers = emptyUniformSlots();
+    std::array<StorageBufferID, MAX_STORAGE_SLOTS> storageBuffers = emptyStorageSlots();
+
     template <typename T> void setUniforms(const T& t) {
         static_assert(std::is_trivially_copyable_v<T>, "...");
         static_assert(sizeof(T) <= MAX_UNIFORM_BYTES, "...");
@@ -102,11 +106,20 @@ struct RenderCommand {
         return slots;
     }
 
-    std::array<UniformBufferID, MAX_UNIFORM_SLOTS> uniformBuffers = emptyUniformSlots();
+    inline constexpr std::array<StorageBufferID, MAX_STORAGE_SLOTS> emptyStorageSlots() {
+        std::array<StorageBufferID, MAX_STORAGE_SLOTS> slots{};
+        for (auto& s : slots) s = EMPTY_BUFFER;
+        return slots;
+    }
 
     void bindUniformBuffer(const uint32_t slot, const UniformBufferID buffer) {
         assert(slot < MAX_UNIFORM_SLOTS && "bindUniformBuffer(): slot out of range");
         uniformBuffers[slot] = buffer;
+    }
+
+    void bindStorageBuffer(const uint32_t slot, const StorageBufferID buffer) {
+        assert(slot < MAX_STORAGE_SLOTS && "bindStorageBuffer(): slot out of range");
+        storageBuffers[slot] = buffer;
     }
 };
 

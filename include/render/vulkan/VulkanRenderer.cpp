@@ -1368,6 +1368,11 @@ void VulkanRenderer::shutdown() {
         m_uniformSetLayout = VK_NULL_HANDLE;
     }
 
+    if (m_storageSetLayout) {
+        vkDestroyDescriptorSetLayout(m_ctx.device(), m_storageSetLayout, nullptr);
+        m_storageSetLayout = VK_NULL_HANDLE;
+    }
+
     for (VkSampler& s : m_samplers) {
         if (s) vkDestroySampler(m_ctx.device(), s, nullptr);
         s = VK_NULL_HANDLE;
@@ -1393,7 +1398,8 @@ void VulkanRenderer::shutdown() {
         if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
     for (auto& b : m_uniformBuffers)
         if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
-
+    for (auto& b : m_storageBuffers)
+        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
     for (auto& p : m_programs) {
         if (p.vs) vkDestroyShaderModule(m_ctx.device(), p.vs, nullptr);
         if (p.fs) vkDestroyShaderModule(m_ctx.device(), p.fs, nullptr);
@@ -1405,6 +1411,7 @@ void VulkanRenderer::shutdown() {
     m_vertexBuffers.clear();
     m_indexBuffers.clear();
     m_uniformBuffers.clear();
+    m_storageBuffers.clear();
     m_programs.clear();
     m_textures.clear();
 
@@ -1421,6 +1428,7 @@ uint32_t VulkanRenderer::slotCount(const ResourceKind kind) const {
         case ResourceKind::IndexBuffer:   return uint32_t(m_indexBuffers.size());
         case ResourceKind::Program:       return uint32_t(m_programs.size());
         case ResourceKind::UniformBuffer: return uint32_t(m_uniformBuffers.size());
+        case ResourceKind::StorageBuffer: return uint32_t(m_storageBuffers.size());
     }
     return 0;
 }
@@ -1480,6 +1488,28 @@ bool VulkanRenderer::init() {
         return false;
     }
 
+    VkDescriptorSetLayoutBinding storageBindings[MAX_STORAGE_SLOTS]{};
+    for (uint32_t i = 0; i < MAX_STORAGE_SLOTS; ++i) {
+        storageBindings[i] = {
+            .binding            = i,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount    = 1,
+            .stageFlags         = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        };
+    }
+
+    const VkDescriptorSetLayoutCreateInfo sdsl{
+        .sType          = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .flags          = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+        .bindingCount   = MAX_STORAGE_SLOTS,
+        .pBindings      = storageBindings
+    };
+
+    if (vkCreateDescriptorSetLayout(m_ctx.device(), &sdsl, nullptr, &m_storageSetLayout) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] storage set layout failed\n");
+        return false;
+    }
+
     m_pushDescriptorSet = (PFN_vkCmdPushDescriptorSetKHR)
         vkGetDeviceProcAddr(m_ctx.device(), "vkCmdPushDescriptorSetKHR");
 
@@ -1491,11 +1521,11 @@ bool VulkanRenderer::init() {
     // before the pipeline layout, which names both sets
     if (!createBindlessSet()) return false;
 
-    const VkDescriptorSetLayout setLayouts[2]{ m_uniformSetLayout, m_bindlessLayout };
+    const VkDescriptorSetLayout setLayouts[3]{ m_uniformSetLayout, m_bindlessLayout, m_storageSetLayout };
 
     const VkPipelineLayoutCreateInfo li{
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount         = 2,
+        .setLayoutCount         = 3,
         .pSetLayouts            = setLayouts,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges    = &range
@@ -1600,6 +1630,34 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
 
     if (writeCount)
         m_pushDescriptorSet(buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, writeCount, writes);
+
+    VkDescriptorBufferInfo storageInfos[MAX_STORAGE_SLOTS]{};
+    VkWriteDescriptorSet   storageWrites[MAX_STORAGE_SLOTS]{};
+    uint32_t               storageCount = 0;
+
+    for (uint32_t slot = 0; slot < MAX_STORAGE_SLOTS; ++slot) {
+        const StorageBufferID id = cmd.storageBuffers[slot];
+        if (id == EMPTY_BUFFER || id >= m_storageBuffers.size()) continue;
+        if (!m_storageBuffers[id].buffer) continue;
+
+        storageInfos[storageCount] = {
+            .buffer = m_storageBuffers[id].buffer,
+            .offset = 0,
+            .range  = VK_WHOLE_SIZE
+        };
+
+        storageWrites[storageCount] = {
+            .sType              = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding         = slot,
+            .descriptorCount    = 1,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .pBufferInfo        = &storageInfos[storageCount]
+        };
+        ++storageCount;
+    }
+
+    if (storageCount)
+        m_pushDescriptorSet(buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 2, storageCount, storageWrites);
 
     // set 1 holds every texture and every sampler, so it is bound once per draw
     // and never rebuilt - the TextureID in the uniform blob is the array index
@@ -1903,6 +1961,20 @@ void VulkanRenderer::show(const RenderTargetID target) {
 void VulkanRenderer::flush() { /* no flush for vulkan */}
 
 
+namespace {
+
+// Says so once per call site rather than once per call, so a frame loop hitting
+// an unimplemented entry does not bury everything else in output.
+// void todo(const char* fn) {
+//     static std::vector<const char*> seen;
+//     for (const char* s : seen) if (s == fn) return;
+//     seen.push_back(fn);
+//     std::fprintf(stderr, "[vulkan] TODO: %s is not implemented\n", fn);
+// }
+
+} // namespace
+
+
 /* ========================================================================= //
     Render targets
 // ========================================================================= */
@@ -2033,6 +2105,40 @@ void VulkanRenderer::updateUniformBuffer(const UniformBufferID buffer, const voi
     retireBuffer(m_uniformBuffers[buffer]);
     m_uniformBuffers[buffer] = fresh;
 }
+
+
+
+/* ========================================================================= //
+    Storage buffers
+// ========================================================================= */
+
+StorageBufferID VulkanRenderer::createStorageBuffer(const void* data, const size_t bytes) {
+    GPUBuffer buffer;
+    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, buffer))
+        return EMPTY_BUFFER;
+
+    return m_owner->allocSlot(m_storageBuffers, m_owner->m_freeStorageBuffers, std::move(buffer));
+}
+
+
+void VulkanRenderer::updateStorageBuffer(const StorageBufferID buffer, const void* data, const size_t bytes) {
+    if (buffer >= m_storageBuffers.size()) {
+        std::fprintf(stderr, "[vulkan] updateStorageBuffer(): ID out of range\n");
+        return;
+    }
+
+    GPUBuffer fresh;
+    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, fresh)) return;
+
+    retireBuffer(m_storageBuffers[buffer]);
+    m_storageBuffers[buffer] = fresh;
+}
+
+
+void VulkanRenderer::releaseStorageBuffer(const StorageBufferID id) {
+    if (id < m_storageBuffers.size()) retireBuffer(m_storageBuffers[id]);
+}
+
 
 
 /* ========================================================================= //
