@@ -33,17 +33,18 @@ function(valo_embed_shaders target)
         endif()
 
         get_filename_component(name "${glsl}" NAME)
-        set(spv "${CMAKE_CURRENT_BINARY_DIR}/valo_spirv/${target}/${name}.spv")
-        set(cpp "${CMAKE_CURRENT_BINARY_DIR}/valo_spirv/${target}/${name}.cpp")
+        set(outdir "${CMAKE_CURRENT_BINARY_DIR}/valo_spirv/${target}")
+        set(spv "${outdir}/${name}.spv")
+        set(cpp "${outdir}/${name}.cpp")
 
         set(translate)
-        set(byproducts)
+        set(byproducts BYPRODUCTS "${spv}")
         set(depends "${source}" "${VALO_SHADER_INCLUDE_DIR}/valo.glsl")
 
         # a byproduct, so a missing GLSL reruns the rule instead of failing it
         if(TARGET valoc AND source MATCHES "\\.hpp$")
             set(translate COMMAND $<TARGET_FILE:valoc> "${source}" -o "${glsl}" ${valoc_includes} --if-stale)
-            set(byproducts BYPRODUCTS "${glsl}")
+            list(APPEND byproducts "${glsl}")
             list(APPEND depends valoc)
         elseif(EXISTS "${glsl}")
             list(APPEND depends "${glsl}")
@@ -55,6 +56,9 @@ function(valo_embed_shaders target)
             OUTPUT  "${cpp}"
             ${byproducts}
             ${translate}
+            # glslc will not create its output directory, and the Makefile
+            # generator does not create it for custom command outputs either
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${outdir}"
             COMMAND "${VALO_GLSLC}" -I "${VALO_SHADER_INCLUDE_DIR}" "${glsl}" -o "${spv}"
             COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${cpp} -DKEY=${source} -P "${VALO_EMBED_SPIRV_SCRIPT}"
             DEPENDS ${depends}
