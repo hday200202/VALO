@@ -151,7 +151,7 @@ public:
     Vec2f mousePosition() const;
     void setMousePositionGlobal(const Vec2f& position);
     void setMousePositionLocal(const Vec2f& position);
-    float scrollDelta() const   { return m_scrollDelta; }
+    Vec2f scrollDelta() const   { return m_scrollDelta; }
     float getAspect() const;
 
     bool create(
@@ -169,7 +169,7 @@ private:
     bool        m_owned             = true;
 
     Vec2f       m_mouseDelta        = {0.f, 0.f};
-    float       m_scrollDelta       = 0.f;
+    Vec2f       m_scrollDelta       = {0.f, 0.f};
 
     std::bitset<size_t(Key::Count)>         m_pressed, m_released;
     std::bitset<size_t(MouseButton::Count)> m_mousePressed, m_mouseReleased;

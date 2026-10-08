@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
         if (window.wasKeyPressed(valo::Key::Escape)) window.close();
         if (window.wasKeyPressed(valo::Key::C)) clipping = !clipping;
         if (window.wasKeyPressed(valo::Key::V)) valo.setVsync(!valo.getVsync());
-        scroll = std::clamp(scroll - window.scrollDelta() * 24.f, 0.f, 900.f);
+        scroll = std::clamp(scroll - window.scrollDelta().y * 24.f, 0.f, 900.f);
 
         ++fpsFrames; const auto now = clk::now();
         if (std::chrono::duration<float>(now - fpsStart).count() >= 1.f) { fps = int(fpsFrames); fpsFrames = 0; fpsStart = now; }

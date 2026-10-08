@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
         if (window.wasMousePressed(valo::MouseButton::Left)) window.grabMouse();
         if (window.wasMousePressed(valo::MouseButton::Right)) window.releaseMouse();
         if (window.isMouseGrabbed()) { const Vec2f d = window.mouseDelta(); orientation = Mat4f::rotationX(d.y * 0.005f) * Mat4f::rotationY(d.x * 0.005f) * orientation; }
-        outlineWidth = std::clamp(outlineWidth + window.scrollDelta() * 0.005f, 0.f, 0.2f);
+        outlineWidth = std::clamp(outlineWidth + window.scrollDelta().y * 0.005f, 0.f, 0.2f);
 
         ++fpsFrames; const auto now = clk::now();
         if (std::chrono::duration<float>(now - fpsStart).count() >= 1.f) { fps = int(fpsFrames); fpsFrames = 0; fpsStart = now; }

@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
                         * orientation;
         }
 
-        zoom = std::clamp(zoom - window.scrollDelta() * 0.05f, 0.3f, 3.f);
+        zoom = std::clamp(zoom - window.scrollDelta().y * 0.05f, 0.3f, 3.f);
 
         if (window.wasKeyPressed(valo::Key::Num1)) valo.setRenderScale(1.00f);
         if (window.wasKeyPressed(valo::Key::Num2)) valo.setRenderScale(0.75f);

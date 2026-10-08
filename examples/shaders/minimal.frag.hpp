@@ -10,7 +10,7 @@ inline void minimalFS(const Varyings& in, const Uniforms& u) {
         : texture(u.material.baseColorTex, in.uv,
                   Sampler(Wrap::Repeat, Wrap::Repeat, Filter::Nearest));
 
-    if (color.a < 0.1f) discard;
+    if (color.a < 0.3f) discard;
     // color.a = 1.f;
     valo_FragColor = color;
 }

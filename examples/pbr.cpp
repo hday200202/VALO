@@ -260,7 +260,7 @@ int main(int argc, char** argv) {
 
         // wheel or brackets step through the material table; adding
         // MATERIAL_COUNT before the modulo keeps -1 from going negative
-        int step = int(window.scrollDelta() > 0.f) - int(window.scrollDelta() < 0.f);
+        int step = int(window.scrollDelta().y > 0.f) - int(window.scrollDelta().y < 0.f);
         if (window.wasKeyPressed(valo::Key::RightBracket)) step =  1;
         if (window.wasKeyPressed(valo::Key::LeftBracket))  step = -1;
         materialIndex = (materialIndex + MATERIAL_COUNT + step) % MATERIAL_COUNT;

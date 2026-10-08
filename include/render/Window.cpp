@@ -161,7 +161,7 @@ void Window::setAlwaysOnTop(const bool alwaysOnTop) {
 bool Window::pollEvents() {
     m_resized     = false;
     m_mouseDelta  = {0.f, 0.f};
-    m_scrollDelta = 0.f;
+    m_scrollDelta = {0.f, 0.f};
     m_pressed.reset();
     m_released.reset();
     m_mousePressed.reset();
@@ -200,7 +200,8 @@ bool Window::pollEvents() {
                     m_mouseReleased.set(e.button.button);
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
-                m_scrollDelta += e.wheel.y;
+                m_scrollDelta.x += e.wheel.x;
+                m_scrollDelta.y += e.wheel.y;
                 break;
             default:
                 break;

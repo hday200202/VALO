@@ -562,7 +562,7 @@ public:
         if (m_window.wasKeyPressed(Key::Tab))    { resetCamera(); m_autoOrbit = true; }
         if (m_window.wasKeyPressed(Key::V))      { m_valo.setVsync(!m_valo.getVsync()); }
 
-        m_exposure = clampf(m_exposure + m_window.scrollDelta() * 0.06f, 0.15f, 6.f);
+        m_exposure = clampf(m_exposure + m_window.scrollDelta().y * 0.06f, 0.15f, 6.f);
         if (m_lightsMove) m_lightPhase += dt * 0.35f;
         animateLights();
 

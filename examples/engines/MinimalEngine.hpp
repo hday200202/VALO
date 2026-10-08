@@ -4,9 +4,12 @@
 #include <string_view>
 #include <cctype>
 #include <deque>
+#include <limits>
 #include "../include/VALO.hpp"
 #include "../shaders/minimal.vert.hpp"
 #include "../shaders/minimal.frag.hpp"
+
+#define PI 3.14159265f
 
 namespace me {
 
@@ -22,7 +25,7 @@ using namespace valo;
 */
 struct Camera {
     float pitch = 0.f, yaw = 0.f, roll = 0.f;
-    float nearPlane = 0.1f, farPlane = 1000.f, fov = 3.14159265f / 2.f;
+    float nearPlane = 0.1f, farPlane = 1000.f, fov = PI / 2.f;
 
     Vec3f pos     = {0.f, 0.f,  0.f};
     Vec3f forward = {0.f, 0.f, -1.f};
@@ -120,7 +123,7 @@ public:
 private:
     valo::Model     m_model;
     ProgramID       m_program   = DEFAULT_PROGRAM;
-    Mat4f           m_transform;    // identity until moved
+    Mat4f           m_transform;
 
     VALO*           m_valo      = nullptr;
     Backend         m_backend   = Backend::Software;
@@ -181,6 +184,12 @@ public:
         if (m_window.wasKeyPressed(Key::Num4))  { m_valo.setRenderScale(0.25f); }
         if (m_window.wasKeyPressed(Key::Tab))   { m_drawWireframe = !m_drawWireframe; }
         if (m_window.wasKeyPressed(Key::V))     { m_valo.setVsync(!m_valo.getVsync()); }
+        if (m_window.isKeyDown(Key::C))         {
+            m_zoomAmount += (m_window.scrollDelta().y * (m_zoomAmount / m_baseZoomAmount));
+            m_zoomAmount = std::clamp(m_zoomAmount, m_baseZoomAmount, m_maxZoomAmount);
+            m_camera.fov = PI / m_zoomAmount; 
+        }
+        else { m_camera.fov = PI / 2.f; m_zoomAmount = m_baseZoomAmount; }
 
         bool justGrabbed = false;
         if (m_window.wasMousePressed(MouseButton::Left)) {
@@ -196,7 +205,7 @@ public:
             the centre here - warping would only feed its own delta back in.
         */
         if (m_window.isMouseGrabbed())
-            m_camera.update(justGrabbed ? Vec2f{0.f, 0.f} : m_window.mouseDelta(), movement);
+            m_camera.update(justGrabbed ? Vec2f{0.f, 0.f} : m_window.mouseDelta() * (m_baseZoomAmount / m_zoomAmount), movement);
     }
 
     void render() {
@@ -267,6 +276,10 @@ private:
     std::deque<Model> m_models;
 
     bool m_drawWireframe = false;
+
+    float       m_zoomAmount        = 4.f;
+    const float m_baseZoomAmount    = 4.f;
+    const float m_maxZoomAmount     = std::numeric_limits<float>::max();
 };
 
 }

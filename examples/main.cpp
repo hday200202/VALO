@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
             pitch  = std::clamp(pitch + d.y * 0.005f, -1.5f, 1.5f);
         }
 
-        zoom = std::clamp(zoom - window.scrollDelta() * 0.05f, 0.05f, 5.f);
+        zoom = std::clamp(zoom - window.scrollDelta().y * 0.05f, 0.05f, 5.f);
 
         // camera sits on a sphere around the origin; the grid is centered there
         const float dist = gridExtent * 1.2f * zoom;
