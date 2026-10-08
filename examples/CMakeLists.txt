@@ -6,7 +6,7 @@ foreach(src IN LISTS VALO_EXAMPLE_SOURCES)
     add_executable(${name} "${src}")
     target_link_libraries(${name} PRIVATE VALO::VALO)
     target_compile_options(${name} PRIVATE
-        $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic -Wno-missing-field-initializers>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
     )
     set_target_properties(${name} PROPERTIES

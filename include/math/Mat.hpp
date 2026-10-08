@@ -99,6 +99,10 @@ template <typename T> struct Mat4 {
     }
 
 
+    Mat4& setTranslation(const Vec3<T>& t) { cols[3] = { t, 1.f }; return *this; }
+    const Vec3<T> getTranslation() const { return cols[3].xyz; }
+
+
     static constexpr Mat4 scale(const Vec3<T>& s) {
         return {{
             {s.x,   0,   0,   0},

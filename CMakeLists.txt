@@ -157,7 +157,7 @@ if(VALO_SOURCES)
         endif()
     endif()
     target_compile_options(VALO PRIVATE
-        $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall -Wextra -Wpedantic -Wno-missing-field-initializers>
         $<$<CXX_COMPILER_ID:MSVC>:/W4>
     )
     set_target_properties(VALO PROPERTIES
