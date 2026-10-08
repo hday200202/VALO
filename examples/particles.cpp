@@ -35,23 +35,23 @@ int main(int argc, char** argv) {
     if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
 
-    constexpr uint32_t kStars = 8000;
-    constexpr int      kArms  = 3;
-    std::vector<Star>     stars(kStars);
-    std::vector<uint32_t> sidx(kStars);
+    constexpr uint32_t STARS = 8000;
+    constexpr int      ARMS  = 3;
+    std::vector<Star>     stars(STARS);
+    std::vector<uint32_t> sidx(STARS);
     uint32_t seed = 12345;
-    for (uint32_t i = 0; i < kStars; ++i) {
-        const float r    = std::sqrt(frand(seed)) * kGalaxyRadius;       // uniform over the disk
-        const int   arm  = int(frand(seed) * kArms);
-        const float armA = arm * 6.2831853f / kArms + r * 1.6f;           // logarithmic-ish twist
-        const float scat = (frand(seed) - 0.5f) * (0.35f + 0.9f * (1.f - r / kGalaxyRadius));
+    for (uint32_t i = 0; i < STARS; ++i) {
+        const float r    = std::sqrt(frand(seed)) * GALAXY_RADIUS;       // uniform over the disk
+        const int   arm  = int(frand(seed) * ARMS);
+        const float armA = arm * 6.2831853f / ARMS + r * 1.6f;           // logarithmic-ish twist
+        const float scat = (frand(seed) - 0.5f) * (0.35f + 0.9f * (1.f - r / GALAXY_RADIUS));
         stars[i] = {r, armA + scat, (frand(seed) - 0.5f) * 2.f, frand(seed)};
         sidx[i]  = i;
     }
 
     VtxLayout      slayout({VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float, VtxAttrib::Float});
-    VertexBufferID svb   = valo.createVertexBuffer(stars.data(), kStars, slayout);
-    IndexBufferID  sib   = valo.createIndexBuffer(sidx.data(), kStars);
+    VertexBufferID svb   = valo.createVertexBuffer(stars.data(), STARS, slayout);
+    IndexBufferID  sib   = valo.createIndexBuffer(sidx.data(), STARS);
     ProgramID      sprog = valo.createProgram("examples/shaders/galaxy.vert.hpp", "examples/shaders/galaxy.frag.hpp");
 
     RenderCommand galaxy;

@@ -102,6 +102,24 @@ struct Collect {
 
     // uniformBuffer<T>(slot) - struct name and binding, one block per type
     std::vector<std::pair<std::string, long long>> uniformBlocks;
+
+    // `auto name = ...` that is not a lambda: location of the name -> GLSL type
+    std::vector<std::pair<std::string, std::string>> autoTypes;
+
+    // a use of an enum constant: location of the name -> its value as a literal
+    std::vector<std::pair<std::string, std::string>> enumValues;
+
+    /*
+        Storage slots share set 0 with the uniform slots, after them, because a
+        pipeline layout may hold only one push-descriptor set. Read from the
+        MAX_UNIFORM_SLOTS the shader was compiled against, so the two can never
+        disagree.
+    */
+    unsigned storageBindingBase = 0;
+
+    // valoc's own refusals. Any one is fatal, the same as a clang error, since
+    // each of these translates to GLSL that compiles and is silently wrong.
+    std::vector<std::string> errors;
 };
 
 
@@ -135,6 +153,75 @@ unsigned cursorOffset(CXCursor c) {
     unsigned line = 0, col = 0, off = 0;
     clang_getSpellingLocation(clang_getCursorLocation(c), &file, &line, &col, &off);
     return off;
+}
+
+
+// file + offset, so a location in a helper from the .vert.hpp and one in the
+// .frag.hpp body can never collide the way bare offsets can
+std::string locationKey(CXSourceLocation loc) {
+    CXFile file = nullptr;
+    unsigned line = 0, col = 0, off = 0;
+    clang_getSpellingLocation(loc, &file, &line, &col, &off);
+    return (file ? str(clang_getFileName(file)) : std::string()) + ":" + std::to_string(off);
+}
+
+std::string startKey(CXCursor c) {
+    return locationKey(clang_getRangeStart(clang_getCursorExtent(c)));
+}
+
+std::string tokenKey(CXTranslationUnit tu, CXToken t) {
+    return locationKey(clang_getTokenLocation(tu, t));
+}
+
+// "file.hpp:12:5", for pointing an error at the line the user wrote
+std::string where(CXCursor c) {
+    CXFile file = nullptr;
+    unsigned line = 0, col = 0, off = 0;
+    clang_getSpellingLocation(clang_getCursorLocation(c), &file, &line, &col, &off);
+    return (file ? str(clang_getFileName(file)) : std::string("?"))
+         + ":" + std::to_string(line) + ":" + std::to_string(col);
+}
+
+
+/*
+    The integer argument of a slot call - uniformBuffer<T>(slot) or
+    storageBuffer<T>(slot). Evaluating arbitrary cursors crashes libclang, so
+    only an integer literal or a reference to a constant is tried, and the
+    reference is resolved to its declaration first. False when it is neither,
+    which the caller turns into an error rather than a silent slot 0.
+*/
+bool evalSlotArg(CXCursor call, long long& slot) {
+    struct Slot { long long* v; bool got; };
+    Slot sl{ &slot, false };
+
+    clang_visitChildren(call, [](CXCursor k, CXCursor, CXClientData d) {
+        auto* sp = static_cast<Slot*>(d);
+        if (sp->got) return CXChildVisit_Break;
+
+        const CXCursorKind kk = clang_getCursorKind(k);
+        CXCursor target = clang_getNullCursor();
+
+        if (kk == CXCursor_IntegerLiteral) target = k;
+        else if (kk == CXCursor_DeclRefExpr) {
+            CXCursor ref = clang_getCursorReferenced(k);
+            if (!clang_Cursor_isNull(ref) && clang_getCursorKind(ref) == CXCursor_VarDecl)
+                target = ref;
+        }
+
+        if (clang_Cursor_isNull(target)) return CXChildVisit_Recurse;
+
+        CXEvalResult ev = clang_Cursor_Evaluate(target);
+        if (ev) {
+            if (clang_EvalResult_getKind(ev) == CXEval_Int) {
+                *sp->v = clang_EvalResult_getAsLongLong(ev);
+                sp->got = true;
+            }
+            clang_EvalResult_dispose(ev);
+        }
+        return CXChildVisit_Recurse;
+    }, &sl);
+
+    return sl.got;
 }
 
 
@@ -335,49 +422,27 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
 
         if (ty.empty()) return CXChildVisit_Recurse;
 
-        /*
-            The slot is the call's one argument. Evaluating arbitrary cursors
-            crashes libclang, so only an integer literal or a reference to a
-            constant is tried, and the reference is resolved to its declaration
-            first.
-        */
         long long slot = 0;
-        struct Slot { long long* v; bool* got; };
-        bool got = false;
-        Slot sl{ &slot, &got };
-
-        clang_visitChildren(c, [](CXCursor k, CXCursor, CXClientData d) {
-            auto* sp = static_cast<Slot*>(d);
-            if (*sp->got) return CXChildVisit_Break;
-
-            const CXCursorKind kk = clang_getCursorKind(k);
-            CXCursor target = clang_getNullCursor();
-
-            if (kk == CXCursor_IntegerLiteral) target = k;
-            else if (kk == CXCursor_DeclRefExpr) {
-                CXCursor ref = clang_getCursorReferenced(k);
-                if (!clang_Cursor_isNull(ref) && clang_getCursorKind(ref) == CXCursor_VarDecl)
-                    target = ref;
-            }
-
-            if (clang_Cursor_isNull(target)) return CXChildVisit_Recurse;
-
-            CXEvalResult ev = clang_Cursor_Evaluate(target);
-            if (ev) {
-                if (clang_EvalResult_getKind(ev) == CXEval_Int) {
-                    *sp->v = clang_EvalResult_getAsLongLong(ev);
-                    *sp->got = true;
-                }
-                clang_EvalResult_dispose(ev);
-            }
+        if (!evalSlotArg(c, slot)) {
+            out->errors.push_back(where(c) + ": uniformBuffer<" + ty + ">() needs a "
+                "compile-time slot - an integer literal or a constexpr constant");
             return CXChildVisit_Recurse;
-        }, &sl);
-
-        if (!ty.empty()) {
-            bool seen = false;
-            for (const auto& ub : out->uniformBlocks) if (ub.first == ty) seen = true;
-            if (!seen) out->uniformBlocks.push_back({ ty, slot });
         }
+
+        /*
+            GLSL gets one block per type, so the same type read from two slots
+            would quietly bind only the first.
+        */
+        bool seen = false;
+        for (const auto& ub : out->uniformBlocks) {
+            if (ub.first != ty) continue;
+            seen = true;
+            if (ub.second != slot)
+                out->errors.push_back(where(c) + ": uniformBuffer<" + ty + "> is read from slot "
+                    + std::to_string(ub.second) + " and slot " + std::to_string(slot)
+                    + " - one shader can bind a uniform type to only one slot");
+        }
+        if (!seen) out->uniformBlocks.push_back({ ty, slot });
     }
 
     // VALO_GLSL expands to `inline const char* valo_glsl_<fn> = "...";`
@@ -495,21 +560,22 @@ std::string glslType(const std::string& cxx) {
         the declaration used - so a function returning Vec3f can come back as
         either. Fold the template spelling onto the alias before matching.
     */
-    static const struct { const char* tmpl; const char* alias; } kTemplates[] = {
+    static const struct { const char* tmpl; const char* alias; } TEMPLATES[] = {
         { "Vec2<float>", "Vec2f" }, { "Vec3<float>", "Vec3f" }, { "Vec4<float>", "Vec4f" },
         { "Vec2<int>",   "Vec2i" }, { "Vec3<int>",   "Vec3i" }, { "Vec4<int>",   "Vec4i" },
         { "Vec2<unsigned int>", "Vec2u" }, { "Vec3<unsigned int>", "Vec3u" },
         { "Vec4<unsigned int>", "Vec4u" },
         { "Mat2<float>", "Mat2f" }, { "Mat3<float>", "Mat3f" }, { "Mat4<float>", "Mat4f" }
     };
-    for (const auto& k : kTemplates) if (t == k.tmpl) { t = k.alias; break; }
+    for (const auto& k : TEMPLATES) if (t == k.tmpl) { t = k.alias; break; }
 
     if (t == "float")    return "float";
     if (t == "double")   return "double";
     if (t == "bool")     return "bool";
     if (t == "int"    || t == "int32_t")  return "int";
     if (t == "unsigned int" || t == "uint32_t" || t == "TextureID"
-     || t == "RenderTargetID" || t == "UniformBufferID")  return "uint";
+     || t == "RenderTargetID" || t == "UniformBufferID" || t == "StorageBufferID"
+     || t == "VertexBufferID" || t == "IndexBufferID" || t == "ProgramID")  return "uint";
 
     if (t == "Vec2f") return "vec2";
     if (t == "Vec3f") return "vec3";
@@ -529,12 +595,12 @@ std::string glslType(const std::string& cxx) {
 
 
 bool isBuiltinType(const std::string& glsl) {
-    static const char* kBuiltins[] = {
+    static const char* BUILTINS[] = {
         "float", "double", "bool", "int", "uint",
         "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
         "uvec2", "uvec3", "uvec4", "mat2", "mat3", "mat4"
     };
-    for (const char* b : kBuiltins) if (glsl == b) return true;
+    for (const char* b : BUILTINS) if (glsl == b) return true;
     return false;
 }
 
@@ -640,7 +706,7 @@ struct Rename {
     a valo_ prefix and every call site follows.
 */
 bool isGlslBuiltinFunction(const std::string& n) {
-    static const char* kBuiltins[] = {
+    static const char* BUILTINS[] = {
         "abs", "sign", "floor", "ceil", "trunc", "round", "roundEven", "fract",
         "mod", "modf", "min", "max", "clamp", "mix", "step", "smoothstep",
         "sqrt", "inversesqrt", "pow", "exp", "log", "exp2", "log2",
@@ -652,7 +718,7 @@ bool isGlslBuiltinFunction(const std::string& n) {
         "any", "all", "not", "equal", "notEqual",
         "lessThan", "lessThanEqual", "greaterThan", "greaterThanEqual"
     };
-    for (const char* b : kBuiltins) if (n == b) return true;
+    for (const char* b : BUILTINS) if (n == b) return true;
     return false;
 }
 
@@ -660,14 +726,14 @@ bool isGlslBuiltinFunction(const std::string& n) {
 // vecN(...) and friends are constructors, not calls - a global const may use
 // them and still be a constant expression
 bool isGlslTypeConstructor(const std::string& n) {
-    static const char* kTypes[] = {
+    static const char* TYPES[] = {
         "float", "int", "uint", "bool",
         "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4",
         "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4",
         "mat2", "mat3", "mat4", "mat2x2", "mat2x3", "mat2x4",
         "mat3x2", "mat3x3", "mat3x4", "mat4x2", "mat4x3", "mat4x4"
     };
-    for (const char* t : kTypes) if (n == t) return true;
+    for (const char* t : TYPES) if (n == t) return true;
     return false;
 }
 
@@ -697,7 +763,7 @@ bool initIsConstantExpression(const std::string& init) {
 // GLSL keywords that are ordinary identifiers in C++, so a local named `out`
 // or `in` compiles here and not there
 bool isReservedInGlsl(const std::string& t) {
-    static const char* kReserved[] = {
+    static const char* RESERVED[] = {
         "in", "out", "inout", "uniform", "varying", "attribute", "buffer",
         "shared", "layout", "sampler", "image", "flat", "smooth", "noperspective",
         "centroid", "patch", "sample", "subroutine", "precision", "invariant",
@@ -706,7 +772,7 @@ bool isReservedInGlsl(const std::string& t) {
         "dvec2", "dvec3", "dvec4", "cast", "namespace", "using", "this",
         "filter", "input", "output"
     };
-    for (const char* r : kReserved) if (t == r) return true;
+    for (const char* r : RESERVED) if (t == r) return true;
     return false;
 }
 
@@ -729,8 +795,8 @@ std::string samplerConstant(const std::vector<std::string>& args) {
 
     // valo.glsl names the symmetric pairs; anything else has no name to use
     if (u == v) {
-        static const char* kWrap[] = { "REPEAT", "CLAMP", "MIRROR" };
-        return std::string("VALO_") + kWrap[u] + (f ? "_LINEAR" : "_NEAREST");
+        static const char* WRAP[] = { "REPEAT", "CLAMP", "MIRROR" };
+        return std::string("VALO_") + WRAP[u] + (f ? "_LINEAR" : "_NEAREST");
     }
 
     return std::to_string((u * 3 + v) * 2 + f) + "u";
@@ -880,48 +946,153 @@ struct StorageDecl {
     std::string name;       // the local the shader uses
     std::string elemType;   // GLSL element type
     unsigned    slot = 0;
+    std::string declKey;    // where the declaring statement starts, so it can be dropped
+    unsigned    stride = 0; // element size under scalar layout, for .size()
 };
 
 
-std::vector<StorageDecl> findStorageDecls(const Collect& c, CXCursor body) {
+/*
+    Byte size of a GLSL type under scalar layout - every member aligned to its
+    scalar component, so for the float/int types a shader uses this is the C++
+    sizeof. 0 for anything it cannot size.
+*/
+unsigned scalarSize(const Collect& c, const std::string& glsl, int depth = 0) {
+    if (glsl == "float" || glsl == "int" || glsl == "uint") return 4;
+    if (glsl == "vec2"  || glsl == "ivec2" || glsl == "uvec2") return 8;
+    if (glsl == "vec3"  || glsl == "ivec3" || glsl == "uvec3") return 12;
+    if (glsl == "vec4"  || glsl == "ivec4" || glsl == "uvec4") return 16;
+    if (glsl == "mat2") return 16;
+    if (glsl == "mat3") return 36;
+    if (glsl == "mat4") return 64;
+    if (depth > 8) return 0;
+
+    const Struct* st = findStruct(c, glsl);
+    if (!st) return 0;
+
+    unsigned total = 0;
+    for (const Field& f : st->fields) {
+        std::string ft = f.type;
+        unsigned count = 1;
+
+        const size_t bracket = ft.find('[');
+        if (bracket != std::string::npos) {
+            count = unsigned(std::atoi(ft.c_str() + bracket + 1));
+            ft = ft.substr(0, bracket);
+        }
+        while (!ft.empty() && ft.back() == ' ') ft.pop_back();
+
+        const unsigned each = scalarSize(c, glslType(ft), depth + 1);
+        if (!each || !count) return 0;
+        total += each * count;
+    }
+    return total;
+}
+
+
+/*
+    Found from the AST rather than by matching tokens, so the spelling of the
+    declaration does not matter - StorageView<T>, const StorageView<T>, auto and
+    const auto all work - and the slot is evaluated exactly as uniformBuffer's
+    is, so a named constant resolves instead of falling through to 0.
+*/
+struct StorageScan {
+    const Collect*              c;
+    std::vector<StorageDecl>*   out;
+    std::vector<std::string>*   errors;
+    CXCursor                    stmt;       // the DeclStmt being looked inside
+    CXCursor                    var;        // its VarDecl
+};
+
+
+CXChildVisitResult findStorageCall(CXCursor k, CXCursor, CXClientData d) {
+    auto* s = static_cast<StorageScan*>(d);
+
+    if (clang_getCursorKind(k) != CXCursor_CallExpr
+        || str(clang_getCursorSpelling(k)) != "storageBuffer"
+    ) return CXChildVisit_Recurse;
+
+    // the element type is the template argument: storageBuffer < T > ( slot )
+    CXToken* tokens = nullptr;
+    unsigned count = 0;
+    clang_tokenize(s->c->tu, clang_getCursorExtent(k), &tokens, &count);
+
+    std::string elem;
+    int depth = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        const std::string t = str(clang_getTokenSpelling(s->c->tu, tokens[i]));
+        if (t == "<") { if (depth++ == 0) continue; }
+        else if (t == ">") { if (--depth == 0) break; }
+        if (depth > 0) elem += t;
+    }
+    clang_disposeTokens(s->c->tu, tokens, count);
+
+    if (elem.rfind("const", 0) == 0) elem = elem.substr(5);
+
+    long long slot = 0;
+    if (!evalSlotArg(k, slot)) {
+        if (s->errors)
+            s->errors->push_back(where(k) + ": storageBuffer<" + elem + ">() needs a "
+                "compile-time slot - an integer literal or a constexpr constant");
+        return CXChildVisit_Break;
+    }
+
+    const std::string glsl = glslType(elem);
+    const unsigned stride = scalarSize(*s->c, glsl);
+
+    if (!stride && s->errors)
+        s->errors->push_back(where(k) + ": storageBuffer<" + elem + ">: cannot work out its "
+            "size in GLSL - elements must be made of float, int, uint and their vectors, "
+            "matrices and structs");
+
+    s->out->push_back({
+        str(clang_getCursorSpelling(s->var)),
+        glsl,
+        unsigned(slot),
+        startKey(s->stmt),
+        stride
+    });
+    return CXChildVisit_Break;
+}
+
+
+CXChildVisitResult findStorageStmt(CXCursor k, CXCursor, CXClientData d) {
+    auto* s = static_cast<StorageScan*>(d);
+
+    if (clang_getCursorKind(k) != CXCursor_DeclStmt) return CXChildVisit_Recurse;
+
+    s->stmt = k;
+    clang_visitChildren(k, [](CXCursor v, CXCursor, CXClientData dd) {
+        auto* ss = static_cast<StorageScan*>(dd);
+        if (clang_getCursorKind(v) == CXCursor_VarDecl) {
+            ss->var = v;
+            clang_visitChildren(v, findStorageCall, ss);
+        }
+        return CXChildVisit_Continue;
+    }, s);
+
+    return CXChildVisit_Continue;
+}
+
+
+std::vector<StorageDecl> findStorageDecls(
+    const Collect& c,
+    CXCursor body,
+    std::vector<std::string>* errors = nullptr
+) {
     std::vector<StorageDecl> out;
     if (clang_Cursor_isNull(body)) return out;
 
-    CXToken* tokens = nullptr;
-    unsigned count = 0;
-    clang_tokenize(c.tu, clang_getCursorExtent(body), &tokens, &count);
-
-    auto tok = [&](unsigned i) {
-        return i < count ? str(clang_getTokenSpelling(c.tu, tokens[i])) : std::string();
-    };
-
-    for (unsigned i = 0; i + 10 < count; ++i) {
-        if (tok(i) != "StorageView" || tok(i + 1) != "<") continue;
-
-        // StorageView < T > name = storageBuffer < T > ( N )
-        unsigned j = i + 2;
-        std::string elem;
-        while (j < count && tok(j) != ">") { elem += tok(j); ++j; }
-        if (j >= count) break;
-
-        const std::string name = tok(j + 1);
-        if (tok(j + 2) != "=" || tok(j + 3) != "storageBuffer") continue;
-
-        unsigned k = j + 4;
-        while (k < count && tok(k) != "(") ++k;
-        if (k + 1 >= count) break;
-
-        out.push_back({ name, glslType(elem), unsigned(std::atoi(tok(k + 1).c_str())) });
-        i = k + 1;
-    }
-
-    clang_disposeTokens(c.tu, tokens, count);
+    StorageScan scan{ &c, &out, errors, clang_getNullCursor(), clang_getNullCursor() };
+    clang_visitChildren(body, findStorageStmt, &scan);
     return out;
 }
 
 
-std::vector<StorageDecl> findAllStorageDecls(const Collect& c) {
-    std::vector<StorageDecl> out = findStorageDecls(c, c.body);
+std::vector<StorageDecl> findAllStorageDecls(
+    const Collect& c,
+    std::vector<std::string>* errors = nullptr
+) {
+    std::vector<StorageDecl> out = findStorageDecls(c, c.body, errors);
 
     for (CXCursor h : c.helpers) {
         CXCursor body = clang_getNullCursor();
@@ -931,14 +1102,14 @@ std::vector<StorageDecl> findAllStorageDecls(const Collect& c) {
             return CXChildVisit_Continue;
         }, &body);
 
-        for (const auto& d : findStorageDecls(c, body)) out.push_back(d);
+        for (const auto& d : findStorageDecls(c, body, errors)) out.push_back(d);
     }
 
     return out;
 }
 
 
-std::string emitStorageBlocks(const std::vector<StorageDecl>& decls) {
+std::string emitStorageBlocks(const std::vector<StorageDecl>& decls, const unsigned base) {
     std::string out;
     std::vector<unsigned> seen;
 
@@ -949,8 +1120,11 @@ std::string emitStorageBlocks(const std::vector<StorageDecl>& decls) {
         seen.push_back(d.slot);
 
         const std::string n = std::to_string(d.slot);
-        out += "layout(scalar, set = 2, binding = " + n + ") readonly buffer Storage" + n
-             + " { " + d.elemType + " data[]; } s" + n + ";\n";
+        // the same 16-byte header VulkanRenderer writes ahead of the data
+        out += "layout(scalar, set = 0, binding = " + std::to_string(base + d.slot)
+             + ") readonly buffer Storage" + n
+             + " { uint byteSize; uint pad0; uint pad1; uint pad2; "
+             + d.elemType + " data[]; } s" + n + ";\n";
     }
 
     if (!decls.empty()) out += "\n";
@@ -1085,10 +1259,73 @@ std::string translateRange(
             after the variable, so the declaration itself has no GLSL form. Call
             sites already spell that name and need no rewriting.
         */
+        /*
+            A storage declaration moved to file scope, so the statement that
+            produced it is dropped. Matched by where the statement starts rather
+            than by its tokens, so any spelling of it - const, auto, the full
+            StorageView<T> - goes.
+        */
+        if (!storage.empty()) {
+            const std::string key = tokenKey(c.tu, tokens[i]);
+            bool isStorageDecl = false;
+            for (const auto& d : storage) if (d.declKey == key) isStorageDecl = true;
+
+            if (isStorageDecl) {
+                while (i < count && str(clang_getTokenSpelling(c.tu, tokens[i])) != ";") ++i;
+                continue;
+            }
+        }
+
+        if (kind == CXToken_Identifier && !c.enumValues.empty()) {
+            const std::string key = tokenKey(c.tu, tokens[i]);
+            std::string value;
+            for (const auto& [k, v] : c.enumValues) if (k == key) value = v;
+
+            if (!value.empty()) {
+                put(value, false);
+                prevSpelling = value;
+                continue;
+            }
+        }
+
+        /*
+            Any other `auto name = ...` gets its deduced type spelled out, which
+            the collection pass worked out from the AST.
+        */
+        if (kind == CXToken_Keyword && t == "auto" && i + 3 < count) {
+            unsigned nameAt = i + 1;
+            if (str(clang_getTokenSpelling(c.tu, tokens[nameAt])) == "&") ++nameAt;
+
+            const bool declares = nameAt + 2 < count
+                && str(clang_getTokenSpelling(c.tu, tokens[nameAt + 1])) == "="
+                && str(clang_getTokenSpelling(c.tu, tokens[nameAt + 2])) != "[";
+
+            if (declares) {
+                const std::string key = tokenKey(c.tu, tokens[nameAt]);
+                std::string deduced;
+                for (const auto& [k, ty] : c.autoTypes) if (k == key) deduced = ty;
+
+                if (!deduced.empty()) {
+                    put(deduced);
+                    prevSpelling = deduced;
+                    i = nameAt - 1;     // skips a trailing &, the name comes next
+                    continue;
+                }
+            }
+        }
+
         if (kind == CXToken_Keyword && t == "auto"
-            && i + 2 < count
+            && i + 3 < count
             && str(clang_getTokenSpelling(c.tu, tokens[i + 2])) == "="
+            && str(clang_getTokenSpelling(c.tu, tokens[i + 3])) == "["
         ) {
+            {
+                std::string trimmed = out;
+                while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+                if (trimmed.size() >= 5 && trimmed.compare(trimmed.size() - 5, 5, "const") == 0)
+                    out = trimmed.substr(0, trimmed.size() - 5);
+            }
+
             unsigned j = i;
             int d = 0;
             for (; j < count; ++j) {
@@ -1264,17 +1501,6 @@ std::string translateRange(
             }
         }
 
-        /*
-            The declaration moved to file scope, so the statement that produced
-            it is dropped - including a leading const, which has already been
-            seen by the time StorageView shows up.
-        */
-        if (t == "StorageView" || (t == "const" && i + 1 < count
-            && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "StorageView")
-        ) {
-            while (i < count && str(clang_getTokenSpelling(c.tu, tokens[i])) != ";") ++i;
-            continue;
-        }
 
         // and every use of the local name becomes the block it was lifted into
         if (kind == CXToken_Identifier && !storage.empty() && prevSpelling != ".") {
@@ -1284,12 +1510,13 @@ std::string translateRange(
             if (decl) {
                 const std::string block = "s" + std::to_string(decl->slot);
 
-                // .size() has no member equivalent; GLSL asks the array
+                // .size() reads the header rather than .length(), which
+                // MoltenVK reports as 0 through a push descriptor
                 if (i + 3 < count
                     && str(clang_getTokenSpelling(c.tu, tokens[i + 1])) == "."
                     && str(clang_getTokenSpelling(c.tu, tokens[i + 2])) == "size"
                 ) {
-                    put(block + ".data.length()");
+                    put("(" + block + ".byteSize / " + std::to_string(decl->stride) + "u)");
                     i += 4;                     // . size ( )
                     prevSpelling = ")";
                     continue;
@@ -1679,7 +1906,7 @@ std::string translateRange(
 
     An existing file is left alone - a project is free to extend it.
 */
-const char* kPrelude =
+const char* PRELUDE =
 R"GLSL(#extension GL_EXT_nonuniform_qualifier  : require
 
 // lets a uniform/push-constant block mirror a C++ struct field for field,
@@ -1725,13 +1952,22 @@ vec4 valoTextureLod0(uint tex, vec2 uv) {
 )GLSL";
 
 
-void writePreludeIfMissing(const std::string& outPath) {
+// rewritten whenever it differs, not just when missing, so a change to the
+// prelude reaches shaders translated before it
+void writePreludeIfChanged(const std::string& outPath) {
     namespace fs = std::filesystem;
 
     const fs::path dir = fs::path(outPath).parent_path();
     const fs::path prelude = (dir.empty() ? fs::path(".") : dir) / "valo.glsl";
 
-    if (fs::exists(prelude)) return;
+    if (std::FILE* in = std::fopen(prelude.string().c_str(), "rb")) {
+        std::string have;
+        char buf[4096];
+        size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0) have.append(buf, n);
+        std::fclose(in);
+        if (have == PRELUDE) return;
+    }
 
     std::FILE* f = std::fopen(prelude.string().c_str(), "wb");
     if (!f) {
@@ -1739,7 +1975,7 @@ void writePreludeIfMissing(const std::string& outPath) {
         return;
     }
 
-    std::fwrite(kPrelude, 1, std::strlen(kPrelude), f);
+    std::fwrite(PRELUDE, 1, std::strlen(PRELUDE), f);
     std::fclose(f);
     std::printf("  %-12s %s\n", "prelude", prelude.string().c_str());
 }
@@ -1753,7 +1989,7 @@ void writePreludeIfMissing(const std::string& outPath) {
 /*
     GLSL spells an array constant differently from C++:
 
-        const Light kLights[4] = Light[4]( Light(...), Light(...), ... );
+        const Light LIGHTS[4] = Light[4]( Light(...), Light(...), ... );
 
     so the braces become constructor calls rather than lists. The initialiser
     only holds literals, identifiers and nested braces, which is a small enough
@@ -2108,6 +2344,11 @@ std::string emit(const Collect& c, Stage stage) {
         const Struct* st = findStruct(c, name);
         if (!st) continue;
 
+        // whatever its fields use goes first - a struct borrowed from a library
+        // header (ModelMaterial, say) is otherwise only emitted when the entry
+        // point reaches it, and this one may not be the entry's at all
+        emitStructs(out, c, st, done);
+
         done.push_back(name);
         out += "struct " + name + " {\n";
         for (const auto& f : st->fields)
@@ -2128,7 +2369,7 @@ std::string emit(const Collect& c, Stage stage) {
     emitBlock(out, uniforms, c.paramNames[stage == Stage::Vertex ? 1 : 1]);
 
     const std::vector<StorageDecl> storage = findAllStorageDecls(c);
-    out += emitStorageBlocks(storage);
+    out += emitStorageBlocks(storage, c.storageBindingBase);
 
     /*
         in./out./uniform member access is rewritten by renaming the parameter
@@ -2225,6 +2466,234 @@ std::string emit(const Collect& c, Stage stage) {
 
 } // namespace
 
+
+
+/*
+    The deduced type of every `auto` declaration in a shader file, keyed by the
+    name's location so translateRange can spell it out. A type with no GLSL
+    spelling is refused here, where the message can name the line, instead of
+    surfacing later as a glslc error about a declaration that went missing.
+*/
+void collectAutoTypes(CXCursor root, Collect& c) {
+    clang_visitChildren(root, [](CXCursor k, CXCursor, CXClientData d) {
+        auto* cc = static_cast<Collect*>(d);
+        if (clang_getCursorKind(k) != CXCursor_VarDecl || !isShaderSource(k))
+            return CXChildVisit_Recurse;
+
+        // only declarations actually spelled with auto
+        CXToken* tokens = nullptr;
+        unsigned count = 0;
+        clang_tokenize(cc->tu, clang_getCursorExtent(k), &tokens, &count);
+
+        bool isAuto = false;
+        for (unsigned i = 0; i < count && i < 3; ++i) {
+            const std::string t = str(clang_getTokenSpelling(cc->tu, tokens[i]));
+            if (t == "auto") isAuto = true;
+            if (t == "=") break;
+        }
+        clang_disposeTokens(cc->tu, tokens, count);
+        if (!isAuto) return CXChildVisit_Recurse;
+
+        std::string ty = str(clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(k))));
+
+        // lambdas are hoisted, storage views lifted - neither needs a type
+        if (ty.find("lambda") != std::string::npos || ty.find("StorageView") != std::string::npos)
+            return CXChildVisit_Recurse;
+
+        if (ty.rfind("const ", 0) == 0) ty = ty.substr(6);
+        while (!ty.empty() && (ty.back() == '&' || ty.back() == ' ')) ty.pop_back();
+
+        const std::string glsl = glslType(ty);
+
+        if (glsl.empty() || glsl.find_first_of("<>:(") != std::string::npos) {
+            cc->errors.push_back(where(k) + ": `auto " + str(clang_getCursorSpelling(k))
+                + "` deduces " + ty + ", which has no GLSL spelling - write the type out");
+            return CXChildVisit_Recurse;
+        }
+
+        cc->autoTypes.push_back({ locationKey(clang_getCursorLocation(k)), glsl });
+        return CXChildVisit_Recurse;
+    }, &c);
+}
+
+
+/*
+    GLSL has no enums, so every use of an enum constant - AlphaMode::Mask, or a
+    shader's own enum - becomes its integer value. Unsigned when the enum's
+    underlying type is, so it compares against a uint field without a cast.
+*/
+void collectEnumValues(CXCursor root, Collect& c) {
+    clang_visitChildren(root, [](CXCursor k, CXCursor, CXClientData d) {
+        auto* cc = static_cast<Collect*>(d);
+        if (clang_getCursorKind(k) != CXCursor_DeclRefExpr || !isShaderSource(k))
+            return CXChildVisit_Recurse;
+
+        CXCursor ref = clang_getCursorReferenced(k);
+        if (clang_Cursor_isNull(ref) || clang_getCursorKind(ref) != CXCursor_EnumConstantDecl)
+            return CXChildVisit_Recurse;
+
+        // canonical: an enum based on uint32_t reports the typedef, not its kind
+        const CXType under = clang_getCanonicalType(
+            clang_getEnumDeclIntegerType(clang_getCursorSemanticParent(ref)));
+        const bool isUnsigned =
+            under.kind == CXType_UInt  || under.kind == CXType_UShort ||
+            under.kind == CXType_UChar || under.kind == CXType_ULong  ||
+            under.kind == CXType_ULongLong || under.kind == CXType_Char_U;
+
+        const std::string value = isUnsigned
+            ? std::to_string(clang_getEnumConstantDeclUnsignedValue(ref)) + "u"
+            : std::to_string(clang_getEnumConstantDeclValue(ref));
+
+        cc->enumValues.push_back({ locationKey(clang_getCursorLocation(k)), value });
+        return CXChildVisit_Recurse;
+    }, &c);
+}
+
+
+/*
+    A C++ bool is 1 byte and a bool inside a GLSL block is 4, so scalar layout
+    cannot line them up: the bool and every field after it are read from the
+    wrong offset on Vulkan, with nothing reporting it. Refused in every struct
+    the GPU reads as a block - the per-draw uniforms, uniform buffers and
+    storage elements - including structs nested inside them.
+*/
+void refuseBools(Collect& c, const std::string& type, const std::string& role,
+                 const std::string& path, int depth = 0) {
+    if (depth > 8) return;
+
+    const Struct* st = findStruct(c, type);
+    if (!st) return;
+
+    for (const Field& f : st->fields) {
+        std::string ft = f.type;
+        const size_t bracket = ft.find('[');
+        if (bracket != std::string::npos) ft = ft.substr(0, bracket);
+        while (!ft.empty() && ft.back() == ' ') ft.pop_back();
+
+        const std::string glsl = glslType(ft);
+        const std::string here = path + "." + f.name;
+
+        if (glsl == "bool") {
+            c.errors.push_back(role + " field " + here + " is bool - a C++ bool is 1 byte but "
+                "a GLSL block bool is 4, so it and everything after it are read from the "
+                "wrong offset on Vulkan. Use uint32_t (test it with != 0)");
+        } else {
+            refuseBools(c, glsl, role, here, depth + 1);
+        }
+    }
+}
+
+
+/*
+    The software backend interpolates every varying as a float, so an integer
+    field - a TextureID handed from vertex to fragment, say - arrives as the
+    bits of a blended float. sizeof cannot tell uint32_t from float, so the C++
+    side cannot refuse it; this can.
+*/
+void refuseNonFloatVaryings(Collect& c, const std::string& type, const std::string& path,
+                            int depth = 0) {
+    if (depth > 8) return;
+
+    const Struct* st = findStruct(c, type);
+    if (!st) return;
+
+    static const char* FLOAT_TYPES[] = {
+        "float", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4"
+    };
+
+    for (const Field& f : st->fields) {
+        std::string ft = f.type;
+        const size_t bracket = ft.find('[');
+        if (bracket != std::string::npos) ft = ft.substr(0, bracket);
+        while (!ft.empty() && ft.back() == ' ') ft.pop_back();
+
+        const std::string glsl = glslType(ft);
+        const std::string here = path + "." + f.name;
+
+        bool isFloat = false;
+        for (const char* k : FLOAT_TYPES) if (glsl == k) isFloat = true;
+
+        if (isFloat) continue;
+
+        if (findStruct(c, glsl)) {
+            refuseNonFloatVaryings(c, glsl, here, depth + 1);
+            continue;
+        }
+
+        c.errors.push_back("varyings field " + here + " is " + f.type + " - varyings are "
+            "interpolated as floats, so integers and bools arrive garbled. Pass it through "
+            "Uniforms instead, or as a float");
+    }
+}
+
+
+// a namespace-scope integer constant from anywhere in the translation unit
+bool findIntConstant(CXCursor root, const std::string& name, long long& value) {
+    struct Find { std::string name; long long* v; bool got; };
+    Find f{ name, &value, false };
+
+    clang_visitChildren(root, [](CXCursor k, CXCursor, CXClientData d) {
+        auto* ff = static_cast<Find*>(d);
+        if (ff->got) return CXChildVisit_Break;
+
+        const CXCursorKind kind = clang_getCursorKind(k);
+        if (kind == CXCursor_Namespace) return CXChildVisit_Recurse;
+        if (kind != CXCursor_VarDecl || str(clang_getCursorSpelling(k)) != ff->name)
+            return CXChildVisit_Continue;
+
+        CXEvalResult ev = clang_Cursor_Evaluate(k);
+        if (ev) {
+            if (clang_EvalResult_getKind(ev) == CXEval_Int) {
+                *ff->v = clang_EvalResult_getAsLongLong(ev);
+                ff->got = true;
+            }
+            clang_EvalResult_dispose(ev);
+        }
+        return CXChildVisit_Continue;
+    }, &f);
+
+    return f.got;
+}
+
+
+/*
+    Every project file the translation read, so the backend can tell when a
+    generated shader is stale - including headers a shader only borrows a
+    struct from, like GLTFVertex. System and ext/ headers never change under a
+    running project, so they are left out.
+*/
+std::vector<std::string> sourceDeps(CXTranslationUnit tu) {
+    struct Deps { CXTranslationUnit tu; std::vector<std::string> paths; std::string cwd; };
+    Deps deps;
+    deps.tu  = tu;
+    deps.cwd = std::filesystem::current_path().generic_string() + "/";
+
+    clang_getInclusions(tu, [](CXFile f, CXSourceLocation*, unsigned, CXClientData d) {
+        auto* dp = static_cast<Deps*>(d);
+
+        // a header found through a system include path never changes under a
+        // running project; anything else might, wherever it lives - a shader
+        // in another project's directory included
+        if (clang_Location_isInSystemHeader(clang_getLocationForOffset(dp->tu, f, 0))) return;
+
+        std::string p = str(clang_getFileName(f));
+        for (char& ch : p) if (ch == '\\') ch = '/';
+
+        // vendored libraries come in through -I, not -isystem, so the path is
+        // the only way to tell them apart
+        if (p.rfind("ext/", 0) == 0 || p.find("/ext/") != std::string::npos) return;
+
+        // inside the project: relative, which reads better and survives a move
+        if (p.rfind(dp->cwd, 0) == 0) p = p.substr(dp->cwd.size());
+
+        p = std::filesystem::path(p).lexically_normal().generic_string();
+
+        for (const std::string& have : dp->paths) if (have == p) return;
+        dp->paths.push_back(p);
+    }, &deps);
+
+    return deps.paths;
+}
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -2337,6 +2806,15 @@ int main(int argc, char** argv) {
             collected.tu         = tu;
             collected.allEntries = entries;
             clang_visitChildren(root, visitAll, &collected);
+            collectAutoTypes(root, collected);
+            collectEnumValues(root, collected);
+
+            long long uniformSlots = 0;
+            if (findIntConstant(root, "MAX_UNIFORM_SLOTS", uniformSlots))
+                collected.storageBindingBase = unsigned(uniformSlots);
+            else
+                collected.errors.push_back("MAX_UNIFORM_SLOTS not found - a shader must "
+                    "include <render/ShaderRegistry.hpp>");
 
             const size_t expected = stage == Stage::Vertex ? 3 : 2;
 
@@ -2360,7 +2838,46 @@ int main(int argc, char** argv) {
             std::printf("  %-12s %d statements\n", "body", collected.bodyStatements);
 
             if (rc == 0) {
-                const std::string glsl = emit(collected, stage);
+                const std::string uniformType = collected.paramTypes[1];
+                refuseBools(collected, uniformType, "uniforms", uniformType);
+
+                const std::string varyingType =
+                    collected.paramTypes[stage == Stage::Vertex ? 2 : 0];
+                refuseNonFloatVaryings(collected, varyingType, varyingType);
+
+                for (const auto& [ty, slot] : collected.uniformBlocks)
+                    refuseBools(collected, ty, "uniformBuffer<" + ty + ">", ty);
+
+                for (const StorageDecl& d : findAllStorageDecls(collected, &collected.errors))
+                    refuseBools(collected, d.elemType, "storageBuffer<" + d.elemType + ">", d.elemType);
+
+                // the same uniform struct can be reached from more than one place
+                std::vector<std::string> unique;
+                for (const std::string& e : collected.errors) {
+                    bool dup = false;
+                    for (const std::string& u : unique) if (u == e) dup = true;
+                    if (!dup) unique.push_back(e);
+                }
+
+                for (const std::string& e : unique) std::fprintf(stderr, "valoc: %s\n", e.c_str());
+
+                if (!unique.empty()) {
+                    std::fprintf(stderr, "valoc: %s: %zu error(s), refusing to translate\n",
+                        input.c_str(), unique.size());
+                    rc = 1;
+                }
+            }
+
+            if (rc == 0) {
+                std::string glsl = emit(collected, stage);
+
+                const std::string marker = "// generated by valoc - do not edit\n";
+                const size_t at = glsl.find(marker);
+                if (at != std::string::npos) {
+                    std::string deps;
+                    for (const std::string& d : sourceDeps(tu)) deps += "// valoc-dep: " + d + "\n";
+                    glsl.insert(at + marker.size(), deps);
+                }
 
                 if (output.empty()) {
                     std::printf("\n%s", glsl.c_str());
@@ -2368,7 +2885,7 @@ int main(int argc, char** argv) {
                     std::fwrite(glsl.data(), 1, glsl.size(), f);
                     std::fclose(f);
                     std::printf("  %-12s %s\n", "wrote", output.c_str());
-                    writePreludeIfMissing(output);
+                    writePreludeIfChanged(output);
                 } else {
                     std::fprintf(stderr, "valoc: cannot write %s\n", output.c_str());
                     rc = 1;

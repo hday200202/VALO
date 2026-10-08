@@ -225,10 +225,10 @@ private:
     bool                            m_needsRecreate         = false;
 
     uint32_t                        m_pushConstantSize      = 0;
+    std::vector<ProgramID>          m_oversizedUniforms;    // reported once each
 
     VkPipelineLayout                m_pipelineLayout        = VK_NULL_HANDLE;
     VkDescriptorSetLayout           m_uniformSetLayout      = VK_NULL_HANDLE;
-    VkDescriptorSetLayout           m_storageSetLayout      = VK_NULL_HANDLE;
     PFN_vkCmdPushDescriptorSetKHR   m_pushDescriptorSet     = nullptr;
 
     std::vector<std::pair<GPUBuffer, uint64_t>> 

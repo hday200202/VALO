@@ -155,11 +155,11 @@ public:
                 measured on DamagedHelmet, the worst case ended up pointing
                 0.73 the other way.
 
-                So only normals already within kSmoothAngle of this one are
+                So only normals already within SMOOTH_ANGLE of this one are
                 averaged in. A hard edge keeps its split and a curved surface
                 still welds.
             */
-            constexpr float kSmoothAngle = 0.5f;        // cos 60 degrees
+            constexpr float SMOOTH_ANGLE = 0.5f;        // cos 60 degrees
 
             m_smoothNormals.resize(m_cpuVerts.size());
             for (size_t i = 0; i < m_cpuVerts.size(); ++i) {
@@ -167,7 +167,7 @@ public:
 
                 Vec3f sum = {0.f, 0.f, 0.f};
                 for (const Vec3f& n : acc[key(m_cpuVerts[i].pos)])
-                    if (n.dot(own) > kSmoothAngle) sum += n;
+                    if (n.dot(own) > SMOOTH_ANGLE) sum += n;
 
                 m_smoothNormals[i] = sum.length() > 1e-6f ? sum.normalized() : own;
             }
@@ -176,11 +176,11 @@ public:
 
         for (const GLTFMaterial& src : gltf.materials) {
             m_materials.push_back(Material{
-                .baseColorTex           = loadTexture(src.baseColorTex),
-                .metallicRoughnessTex   = loadTexture(src.metallicRoughnessTex),
-                .normalTex              = loadTexture(src.normalTex),
-                .occlusionTex           = loadTexture(src.occlusionTex),
-                .emissiveTex            = loadTexture(src.emissiveTex),
+                .baseColorTex           = loadTexture(gltf, src.baseColorTex),
+                .metallicRoughnessTex   = loadTexture(gltf, src.metallicRoughnessTex),
+                .normalTex              = loadTexture(gltf, src.normalTex),
+                .occlusionTex           = loadTexture(gltf, src.occlusionTex),
+                .emissiveTex            = loadTexture(gltf, src.emissiveTex),
                 .baseColor              = src.baseColor,
                 .emissive               = src.emissive,
                 .metallic               = src.metallic,
@@ -356,7 +356,7 @@ private:
         cmd.blendmode  = blended ? BlendMode::Alpha : BlendMode::Opaque;
         cmd.depthWrite = !blended;
         cmd.setUniforms(u);
-        cmd.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
+        cmd.bindUniformBuffer(SCENE_SLOT, m_sceneBuffer);
         m_valo->submit(cmd);
     }
 
@@ -366,52 +366,24 @@ private:
         the tangent is the direction in which u increases, accumulated onto each
         vertex and orthonormalised against the normal at the end.
     */
+    // the parser already supplies tangents - the file's own, or computed from
+    // the UVs when it has none - so this only reorders into this shader's Vertex
     static std::vector<Vertex> buildTangents(const GLTF& gltf) {
-        const size_t n = gltf.vertices.size();
-        std::vector<Vertex> out(n);
-        std::vector<Vec3f> tan(n, Vec3f{0.f, 0.f, 0.f}), bitan(n, Vec3f{0.f, 0.f, 0.f});
-
-        for (size_t i = 0; i < n; ++i)
-            out[i] = Vertex{gltf.vertices[i].pos, gltf.vertices[i].normal,
-                            Vec4f{0.f, 0.f, 0.f, 1.f}, gltf.vertices[i].uv};
-
-        for (size_t i = 0; i + 2 < gltf.indices.size(); i += 3) {
-            const uint32_t i0 = gltf.indices[i], i1 = gltf.indices[i + 1], i2 = gltf.indices[i + 2];
-            if (i0 >= n || i1 >= n || i2 >= n) continue;
-
-            const Vec3f e1 = gltf.vertices[i1].pos - gltf.vertices[i0].pos;
-            const Vec3f e2 = gltf.vertices[i2].pos - gltf.vertices[i0].pos;
-            const Vec2f d1 = gltf.vertices[i1].uv  - gltf.vertices[i0].uv;
-            const Vec2f d2 = gltf.vertices[i2].uv  - gltf.vertices[i0].uv;
-
-            const float det = d1.x * d2.y - d2.x * d1.y;
-            if (std::abs(det) < 1e-12f) continue;        // degenerate UVs contribute nothing
-            const float r = 1.f / det;
-
-            const Vec3f t = (e1 * d2.y - e2 * d1.y) * r;
-            const Vec3f b = (e2 * d1.x - e1 * d2.x) * r;
-            for (const uint32_t idx : {i0, i1, i2}) { tan[idx] += t; bitan[idx] += b; }
-        }
-
-        for (size_t i = 0; i < n; ++i) {
-            const Vec3f nrm = out[i].normal.normalized();
-            Vec3f t = tan[i] - nrm * nrm.dot(tan[i]);
-
-            if (t.dot(t) < 1e-12f) {
-                // no usable UV gradient here, so any perpendicular will do
-                const Vec3f axis = std::abs(nrm.y) < 0.99f ? Vec3f{0.f, 1.f, 0.f} : Vec3f{1.f, 0.f, 0.f};
-                t = axis.cross(nrm);
-            }
-            t = t.normalized();
-
-            const float w = nrm.cross(t).dot(bitan[i]) < 0.f ? -1.f : 1.f;
-            out[i].tangent = Vec4f{t, w};
+        std::vector<Vertex> out(gltf.vertices.size());
+        for (size_t i = 0; i < out.size(); ++i) {
+            const GLTFVertex& v = gltf.vertices[i];
+            out[i] = Vertex{v.pos, v.normal, v.tangent, v.uv};
         }
         return out;
     }
 
-    TextureID loadTexture(const std::string& path) {
-        return path.empty() ? EMPTY_TEXTURE : m_valo->createTexture(path);
+    /*
+        Linear on purpose: scobject.frag decodes its colour maps with
+        srgbToLinear itself. A program that leaves the decode to the sampler
+        loads colour slots with srgb = true instead - loadModel() does.
+    */
+    TextureID loadTexture(const GLTF& gltf, const int image) {
+        return loadGLTFTexture(*m_valo, gltf, image, false);
     }
 
     const Material& materialFor(const int index) const {
@@ -501,7 +473,7 @@ public:
         model.loadGLTF(pathToGltf);
 
         if (model.isLoaded()) {
-            model.fitToGround(targetSize, kFloorY);
+            model.fitToGround(targetSize, FLOOR_Y);
             frameModels();
         }
         return model;
@@ -631,11 +603,11 @@ public:
         const Mat4f proj = Mat4f::perspective(m_camera.fov, m_window.getAspect(),
                                               m_camera.nearPlane, m_camera.farPlane);
         const Mat4f viewProj = proj * view;
-        const bool  aboveFloor = m_camera.pos.y > kFloorY + 0.02f;
+        const bool  aboveFloor = m_camera.pos.y > FLOOR_Y + 0.02f;
 
         // one upload for the whole frame; every command below binds it
         SceneUniforms scene{};
-        for (int i = 0; i < kLightCount; ++i) scene.lights[i] = m_lights[i];
+        for (int i = 0; i < LIGHT_COUNT; ++i) scene.lights[i] = m_lights[i];
         scene.camPos   = m_camera.pos;
         scene.exposure = m_exposure;
         m_valo.updateUniformBuffer(m_sceneBuffer, &scene, sizeof(scene));
@@ -647,7 +619,7 @@ public:
         // 2 - the model again, mirrored through the floor. Mirroring reverses
         //     the winding, so the cull flips with it.
         if (m_reflections && m_showFloor && aboveFloor) {
-            const Mat4f mirror = Mat4f::translation({0.f, 2.f * kFloorY, 0.f}) * Mat4f::scale({1.f, -1.f, 1.f});
+            const Mat4f mirror = Mat4f::translation({0.f, 2.f * FLOOR_Y, 0.f}) * Mat4f::scale({1.f, -1.f, 1.f});
             for (Model& m : m_models) {
                 m.draw(viewProj, mirror, m_camera.pos, -1.f, 0.78f, m_emissiveBoost, false, CullMode::Front);
                 m.draw(viewProj, mirror, m_camera.pos, -1.f, 0.78f, m_emissiveBoost, true,  CullMode::Front);
@@ -681,13 +653,13 @@ public:
         u.tanHalf  = std::tan(m_camera.fov * 0.5f);
         u.aspect   = m_window.getAspect();
         u.exposure = m_exposure;
-        u.floorY   = kFloorY;
+        u.floorY   = FLOOR_Y;
 
-        u.lightCount  = uint32_t(kLightCount);
+        u.lightCount  = uint32_t(LIGHT_COUNT);
         u.showFloor   = m_showFloor   ? 1u : 0u;
         u.reflections = m_reflections ? 1u : 0u;
 
-        for (int i = 0; i < kLightCount; ++i) {
+        for (int i = 0; i < LIGHT_COUNT; ++i) {
             u.lights[i].pos       = m_lights[i].pos;
             u.lights[i].colour    = m_lights[i].colour;
             u.lights[i].intensity = m_lights[i].intensity;
@@ -763,7 +735,7 @@ private:
 
         m_lights[0] = {{std::sin(a) * r * 0.85f, r * 0.75f, std::cos(a) * r * 0.85f},
                        {1.00f, 0.93f, 0.82f}, 46.f * r};
-        m_lights[1] = {{std::sin(a + kPi) * r * 0.9f, r * 0.42f, std::cos(a + kPi) * r * 0.9f},
+        m_lights[1] = {{std::sin(a + PI) * r * 0.9f, r * 0.42f, std::cos(a + PI) * r * 0.9f},
                        {0.42f, 0.62f, 1.00f}, 26.f * r};
         m_lights[2] = {{std::sin(a * 0.6f + 1.9f) * r * 0.7f, r * 0.13f, std::cos(a * 0.6f + 1.9f) * r * 0.7f},
                        {1.00f, 0.44f, 0.16f}, 15.f * r};
@@ -784,12 +756,12 @@ private:
         m_sky.depthTest  = false;
         m_sky.depthWrite = false;
         m_sky.cullmode   = CullMode::None;
-        m_sky.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
+        m_sky.bindUniformBuffer(SCENE_SLOT, m_sceneBuffer);
     }
 
     void buildFloor() {
         const float e = 130.f;   // comfortably beyond fadeEnd; the shader discards past it anyway
-        const FloorVertex quad[4] = {{{-e, kFloorY, -e}}, {{e, kFloorY, -e}}, {{e, kFloorY, e}}, {{-e, kFloorY, e}}};
+        const FloorVertex quad[4] = {{{-e, FLOOR_Y, -e}}, {{e, FLOOR_Y, -e}}, {{e, FLOOR_Y, e}}, {{-e, FLOOR_Y, e}}};
         const uint32_t    idx[6]  = {0, 2, 1, 0, 3, 2};
 
         m_floor.verts      = m_valo.createVertexBuffer(quad, 4, VtxLayout({VtxAttrib::Vec3f}));
@@ -798,7 +770,7 @@ private:
         m_floor.cullmode   = CullMode::None;
         m_floor.blendmode  = BlendMode::Alpha;
         m_floor.depthWrite = true;
-        m_floor.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
+        m_floor.bindUniformBuffer(SCENE_SLOT, m_sceneBuffer);
     }
 
     void buildOrb() {
@@ -807,9 +779,9 @@ private:
         std::vector<uint32_t>  idx;
 
         for (int i = 0; i <= stacks; ++i) {
-            const float phi = float(i) / stacks * kPi;
+            const float phi = float(i) / stacks * PI;
             for (int j = 0; j <= slices; ++j) {
-                const float theta = float(j) / slices * 2.f * kPi;
+                const float theta = float(j) / slices * 2.f * PI;
                 const Vec3f unit = {std::sin(phi) * std::cos(theta), std::cos(phi), std::sin(phi) * std::sin(theta)};
                 verts.push_back({unit, unit});
             }
@@ -827,7 +799,7 @@ private:
         m_orb.blendmode  = BlendMode::Additive;
         m_orb.depthWrite = false;
         m_orb.cullmode   = CullMode::None;
-        m_orb.bindUniformBuffer(kSceneSlot, m_sceneBuffer);
+        m_orb.bindUniformBuffer(SCENE_SLOT, m_sceneBuffer);
     }
 
     // -----------------------------------------------------------------------
@@ -848,7 +820,7 @@ private:
         u.viewProj     = viewProj;
         Vec3f lo, hi;
         if (!worldBounds(lo, hi)) { lo = {-1.f, 0.f, -1.f}; hi = {1.f, 1.f, 1.f}; }
-        u.shadowCentre = {(lo.x + hi.x) * 0.5f, kFloorY, (lo.z + hi.z) * 0.5f};
+        u.shadowCentre = {(lo.x + hi.x) * 0.5f, FLOOR_Y, (lo.z + hi.z) * 0.5f};
         u.shadowRadius = {std::max((hi.x - lo.x) * 0.62f, 0.2f),
                           std::max((hi.z - lo.z) * 0.62f, 0.2f)};
         u.fadeStart    = 18.f;
@@ -908,7 +880,7 @@ private:
 
     std::deque<Model> m_models;
     RenderCommand m_sky, m_floor, m_orb;
-    Light m_lights[kLightCount];
+    Light m_lights[LIGHT_COUNT];
     UniformBufferID m_sceneBuffer = EMPTY_BUFFER;
 
     Vec3f m_focus       = {0.f, 0.8f, 0.f};

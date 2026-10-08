@@ -21,7 +21,7 @@ namespace valo {
 // ========================================================================= */
 namespace detail {
     // 256 -> 256, exact
-    inline const std::array<float, 256> kSrgbToLinear = []{
+    inline const std::array<float, 256> SRGB_TO_LINEAR = []{
         std::array<float, 256> t{};
         for (int i = 0; i < 256; ++i) {
             const float c = float(i) / 255.f;
@@ -36,15 +36,15 @@ namespace detail {
         uniformly spaced linear axis, so it is not exact: at 12 bits the error
         is at most one code in the darkest handful of values and zero
         everywhere else. The +1 entry exists so linear == 1.0f, which indexes
-        exactly 1 << kEncodeBits, stays in bounds.
+        exactly 1 << ENCODE_BITS, stays in bounds.
     */
-    inline constexpr int kEncodeBits = 12;
-    inline constexpr size_t kEncodeSize = (size_t(1) << kEncodeBits) + 1;
+    inline constexpr int ENCODE_BITS = 12;
+    inline constexpr size_t ENCODE_SIZE = (size_t(1) << ENCODE_BITS) + 1;
 
-    inline const std::array<uint8_t, kEncodeSize> kLinearToSrgb = []{
-        std::array<uint8_t, kEncodeSize> t{};
-        for (size_t i = 0; i < kEncodeSize; ++i) {
-            const float c = float(i) / float(size_t(1) << kEncodeBits);
+    inline const std::array<uint8_t, ENCODE_SIZE> LINEAR_TO_SRGB = []{
+        std::array<uint8_t, ENCODE_SIZE> t{};
+        for (size_t i = 0; i < ENCODE_SIZE; ++i) {
+            const float c = float(i) / float(size_t(1) << ENCODE_BITS);
             const float e = (c <= 0.0031308f) ? (c * 12.92f)
                                               : (1.055f * std::pow(c, 1.f / 2.4f) - 0.055f);
             t[i] = uint8_t(std::lround(std::clamp(e, 0.f, 1.f) * 255.f));
@@ -53,11 +53,11 @@ namespace detail {
     }();
 }
 
-inline float srgbToLinear(const uint8_t encoded) { return detail::kSrgbToLinear[encoded]; }
+inline float srgbToLinear(const uint8_t encoded) { return detail::SRGB_TO_LINEAR[encoded]; }
 
 inline uint8_t linearToSrgb(const float linear) {
     const float c = std::clamp(linear, 0.f, 1.f);
-    return detail::kLinearToSrgb[size_t(c * float(size_t(1) << detail::kEncodeBits) + 0.5f)];
+    return detail::LINEAR_TO_SRGB[size_t(c * float(size_t(1) << detail::ENCODE_BITS) + 0.5f)];
 }
 
 // packed ABGR32 <-> linear Color, for targets whose bytes are sRGB-encoded

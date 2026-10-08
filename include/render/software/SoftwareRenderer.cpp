@@ -59,7 +59,7 @@ void SoftwareRenderer::draw(const RenderCommand& cmd, const RenderTargetID targe
 
     for (uint32_t i = 0; i < MAX_STORAGE_SLOTS; ++i) {
         const StorageBufferID id = cmd.storageBuffers[i];
-        assert((id == EMPTY_BUFFER || m_owner.validStorage(id)) && "draw(): stale storage buffer bound");
+        assert((id == EMPTY_BUFFER || m_owner->validStorage(id)) && "draw(): stale storage buffer bound");
 
         const bool live = m_owner->validStorage(id);
         m_resolvedStorage[i] = live ? m_storageBuffers[id].data.data() : nullptr;
@@ -294,6 +294,11 @@ TextureID SoftwareRenderer::createTexture(const uint32_t w, const uint32_t h, co
 
 TextureID SoftwareRenderer::createTextureFromFile(const std::string& path, const bool srgb, const bool mips) {
     auto texture = std::make_unique<RenderTarget>(RenderTarget::loadImageFromPath(path));
+
+    // a file that would not load comes back 0x0; report it the way Vulkan does
+    // instead of handing out an ID for a texture with no pixels
+    if (texture->width() == 0 || texture->height() == 0) return EMPTY_TEXTURE;
+
     texture->setSrgb(srgb);
     if (mips) texture->generateMips();
     return m_owner->pushTarget(std::move(texture));

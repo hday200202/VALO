@@ -424,12 +424,12 @@ static Vec3f render(const Vec3f& ro, const Vec3f& rd, const Vec3f& rdx, const Ve
 // focal length. File scope rather than a local, because a lambda that captures
 // it is hoisted to a free function when translated to GLSL and the capture does
 // not come with it.
-static constexpr float kFocal = 2.5f;
+static constexpr float FOCAL = 2.5f;
 
 inline void sdfFS(const Varyings& in, const Uniforms& u) {
     // p in [-aspect, aspect] x [-1, 1], like (2*fragCoord - res) / res.y
     auto rayDir = [&](Vec2f p) {
-        Vec3f d = normalize(Vec3f{p.x, p.y, kFocal});
+        Vec3f d = normalize(Vec3f{p.x, p.y, FOCAL});
         return u.cu * d.x + u.cv * d.y + u.cw * d.z;
     };
     Vec2f p = {in.ndc.x * u.aspect, in.ndc.y};

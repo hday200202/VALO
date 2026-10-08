@@ -12,17 +12,17 @@ using valo::Vec4f;
 using valo::Mat4f;
 using valo::Color;
 
-constexpr float kPi         = std::numbers::pi_v<float>;
-constexpr float kCameraDist = 4.2f;
-constexpr float kFovY       = 0.9f;
-constexpr float kMouseSpeed = 0.005f;
+constexpr float PI         = std::numbers::pi_v<float>;
+constexpr float CAMERA_DIST = 4.2f;
+constexpr float FOV_Y       = 0.9f;
+constexpr float MOUSE_SPEED = 0.005f;
 
-constexpr float kDefaultBump      = 0.60f;
-constexpr float kDefaultNoise     = 6.00f;
-constexpr float kDefaultVariation = 0.30f;
-constexpr float kDisplaceScale    = 0.16f;
+constexpr float DEFAULT_BUMP      = 0.60f;
+constexpr float DEFAULT_NOISE     = 6.00f;
+constexpr float DEFAULT_VARIATION = 0.30f;
+constexpr float DISPLACE_SCALE    = 0.16f;
 
-constexpr int kSphereStacks = 96, kSphereSlices = 128, kCubeSegments = 40;
+constexpr int SPHERE_STACKS = 96, SPHERE_SLICES = 128, CUBE_SEGMENTS = 40;
 
 static inline float saturate(float x) { return std::min(std::max(x, 0.f), 1.f); }
 static inline float clampf(float x, float lo, float hi) { return std::min(std::max(x, lo), hi); }
@@ -31,10 +31,10 @@ static inline float clampf(float x, float lo, float hi) { return std::min(std::m
 // materials: albedo is linear; for metals it is F0, not a diffuse colour
 // ---------------------------------------------------------------------------
 // no name field: a const char* has no GLSL type, and the label is the
-// example's business rather than the shader's - see kMaterialNames in pbr.cpp
+// example's business rather than the shader's - see MATERIAL_NAMES in pbr.cpp
 struct Material { Vec3f albedo; float metallic, roughness; };
 
-constexpr Material kMaterials[] = {
+constexpr Material MATERIALS[] = {
     { { 1.000f, 0.766f, 0.336f }, 1.0f, 0.22f },
     { { 0.910f, 0.778f, 0.423f }, 1.0f, 0.15f },
     { { 0.780f, 0.600f, 0.280f }, 1.0f, 0.62f },
@@ -98,13 +98,13 @@ constexpr Material kMaterials[] = {
     { { 0.900f, 0.910f, 0.950f }, 0.0f, 0.60f },
     { { 0.090f, 0.200f, 0.070f }, 0.0f, 0.93f },
 };
-constexpr int kMaterialCount = int(sizeof(kMaterials) / sizeof(kMaterials[0]));
+constexpr int MATERIAL_COUNT = int(sizeof(MATERIALS) / sizeof(MATERIALS[0]));
 
 // ---------------------------------------------------------------------------
 // lights (view space: camera at origin looking down -z, object at z = -4.2)
 // ---------------------------------------------------------------------------
 struct Light { Vec3f viewPos; Vec3f colour; float intensity; };
-constexpr Light kLights[4] = {
+constexpr Light LIGHTS[4] = {
     { { -3.5f,  3.5f, -0.7f }, { 1.00f, 0.96f, 0.90f }, 52.0f },  // key
     { {  4.0f,  0.5f, -1.7f }, { 0.55f, 0.68f, 1.00f }, 26.0f },  // cool fill
     { { -1.5f, -3.0f, -2.2f }, { 1.00f, 0.55f, 0.32f }, 16.0f },  // warm bounce
@@ -114,28 +114,28 @@ constexpr Light kLights[4] = {
 // ---------------------------------------------------------------------------
 // environment: sky gradient + a sun along the key light
 // ---------------------------------------------------------------------------
-constexpr Vec3f kSkyTop     = { 0.040f, 0.140f, 0.500f };  // saturated deep blue
-constexpr Vec3f kSkyHorizon = { 0.380f, 0.500f, 0.700f };  // lighter blue, less haze
-constexpr Vec3f kSkyGround  = { 0.160f, 0.105f, 0.060f };  // warmer, sandier earth
-constexpr float kSkyFalloff = 0.50f;
-constexpr Vec3f kSunColour  = { 1.000f, 0.920f, 0.780f };  // a touch warmer
-static const Vec3f kSunDir  = Vec3f{ -0.45f, 0.75f, 0.48f }.normalized();
+constexpr Vec3f SKY_TOP     = { 0.040f, 0.140f, 0.500f };  // saturated deep blue
+constexpr Vec3f SKY_HORIZON = { 0.380f, 0.500f, 0.700f };  // lighter blue, less haze
+constexpr Vec3f SKY_GROUND  = { 0.160f, 0.105f, 0.060f };  // warmer, sandier earth
+constexpr float SKY_FALLOFF = 0.50f;
+constexpr Vec3f SUN_COLOUR  = { 1.000f, 0.920f, 0.780f };  // a touch warmer
+static const Vec3f SUN_DIR  = Vec3f{ -0.45f, 0.75f, 0.48f }.normalized();
 
 static Vec3f skyColour(const Vec3f& d) {
     const float y = clampf(d.y, -1.f, 1.f);
-    return y >= 0.f ? lerp(kSkyHorizon, kSkyTop,    std::pow( y, kSkyFalloff))
-                    : lerp(kSkyHorizon, kSkyGround, std::pow(-y, kSkyFalloff));
+    return y >= 0.f ? lerp(SKY_HORIZON, SKY_TOP,    std::pow( y, SKY_FALLOFF))
+                    : lerp(SKY_HORIZON, SKY_GROUND, std::pow(-y, SKY_FALLOFF));
 }
 
 static Vec3f environmentColour(const Vec3f& d) {
-    const float toSun = saturate(d.normalized().dot(kSunDir));
+    const float toSun = saturate(d.normalized().dot(SUN_DIR));
     const float disc  = std::pow(toSun, 900.f) * 14.f;
     const float haze  = std::pow(toSun,  12.f) * 0.30f;
-    return skyColour(d) + kSunColour * (disc + haze);
+    return skyColour(d) + SUN_COLOUR * (disc + haze);
 }
 
-static const Vec3f kAmbientUp   = skyColour({0.f,  1.f, 0.f});
-static const Vec3f kAmbientDown = skyColour({0.f, -1.f, 0.f});
+static const Vec3f AMBIENT_UP   = skyColour({0.f,  1.f, 0.f});
+static const Vec3f AMBIENT_DOWN = skyColour({0.f, -1.f, 0.f});
 
 /* ===========================================================================
     Value noise and fbm
@@ -229,7 +229,7 @@ static inline float heightField(const Vec3f& objPos, float scale) { return fbm(o
 static float distributionGGX(float nDotH, float r) {
     const float a2 = r * r * r * r;
     const float d  = nDotH * nDotH * (a2 - 1.f) + 1.f;
-    return a2 / std::max(kPi * d * d, 1e-7f);
+    return a2 / std::max(PI * d * d, 1e-7f);
 }
 // Schlick-GGX geometry term, one direction at a time; the caller multiplies the
 // light and view directions together (Smith's method).
@@ -273,7 +273,7 @@ struct SceneUniforms {
     Vec3f lightPos[4];           // world space
 };
 
-constexpr uint32_t kSceneSlot = 0;
+constexpr uint32_t SCENE_SLOT = 0;
 
 struct Uniforms {
     Mat4f mvp;
@@ -289,7 +289,7 @@ inline void pbrVS(const Vertex& in, const Uniforms& u, Varyings& out) {
     Vec3f pos = in.pos;
     if (u.displace != 0 && u.detail != 0 && u.bump > 0.f) {
         const float h = heightField(in.pos, u.noiseScale) - 0.5f;
-        pos += in.normal * (h * u.bump * kDisplaceScale);
+        pos += in.normal * (h * u.bump * DISPLACE_SCALE);
     }
     // varyings carry the UNdisplaced object position: that's the domain the
     // height field is sampled in, so the bump normals agree with the geometry

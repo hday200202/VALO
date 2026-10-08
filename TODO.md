@@ -330,75 +330,77 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
       unchanged.
       Not done: `clear()` ignores the scissor — it is a `Renderer` call, not a
       `RenderCommand`, so a scissored clear needs its own entry point.
-- [ ] **glTF embedded images (`.glb`)** *(parser, not API - does not gate the
-      backend; `utils/` only)* — `GLTFParser::texPath()` returns `""`
-      unless `image->uri` is set, so every `.glb` loads fully untextured and
-      silently: verified on a 29-material car, 15/15 images live in
-      `buffer_view`, 0/29 materials got a texture. Same for `.gltf` files with
-      `data:` URIs, which currently build a nonsense path out of the base64.
-      `cgltf_buffer_view_data()` (cgltf.h:871) + `stbi_load_from_memory` is the
-      decode; the structural part is that `GLTFMaterial` stores `std::string`
-      paths, which can't name an embedded image. Suggest a
-      `std::vector<GLTFImage>` on `GLTF` (decoded pixels + w/h) with materials
-      holding `int` indices, so file-backed and embedded land in one place.
-      ~1 hour.
-- [ ] **glTF alpha modes** *(parser + example, not API)* — `GLTFMaterial` drops
-      `alpha_mode` and `alpha_cutoff`, which cgltf provides
-      (`cgltf.h:572-573`), so an engine cannot tell a cut-out leaf from a
-      transparent light shaft and has to pick one behaviour for the whole
-      scene. The three modes need different state:
+- [✅] **glTF embedded images (`.glb`)** - `GLTF::images` holds a file path or
+      the encoded PNG/JPEG bytes (from a `.glb` buffer view or a base64 `data:`
+      URI), and material slots are `int` indices into it. URIs are
+      percent-decoded. Verified by packing DamagedHelmet both ways: all three
+      forms load the same 5 textures on both backends. `loadGLTFTexture()` is
+      the public way to turn an index into a texture.
+- [✅] **glTF alpha modes** - the parser carries `alphaMode`, `alphaCutoff`
+      and `doubleSided`; `loadModel` sets `CullMode::None` for double-sided,
+      `BlendMode::Alpha` for BLEND, and orders blended draws after opaque ones.
+      MASK is the shader's job (`gltf.frag` discards below the cutoff).
 
-      | mode | blend | depth write | shader |
-      |---|---|---|---|
-      | OPAQUE | Opaque | on | no alpha test |
-      | MASK | Opaque | on | `discard` below cutoff, then force `a = 1` |
-      | BLEND | Alpha | off | alpha passes through |
+      **Deliberately not done: depth write off for BLEND.** That is only right
+      with a back-to-front sort, which VALO lacks, and exporters (Sketchfab
+      especially) stamp BLEND on surfaces that are really opaque. Turning it off
+      made the sea-keep island's rocks stop occluding the water - measured, not
+      guessed. Revisit with the per-command sort key in section 5.
 
-      BLEND draws must also come after every opaque draw, sorted back to front,
-      which is why their depth write is off.
-
-      Symptom without it: forcing alpha to 1 gives correct grass but solid
-      light shafts; leaving alpha blended gives correct shafts but a halo of
-      background colour around every grass blade, because edge texels with
-      alpha 0.5-1.0 composite the sky in. Mipmaps make the halo worse, since
-      averaging alpha down the chain produces more partial-alpha texels.
-
-      Needs: the two parser fields, both carried into the material uniform, and
-      `Model::draw` split into an opaque pass and a sorted blended pass.
-
-- [ ] **Tangents in `GLTFVertex`** *(parser, not API - does not gate the
-      backend; `utils/` only)* — it is `{pos, normal, uv}`, so nothing
-      using the shared vertex type can do normal mapping. `gltf.cpp` works
-      around it by declaring its own `Vertex` with a `Vec4f tangent` and
-      computing the basis at load. That belongs in the parser (MikkTSpace-ish
-      per-triangle accumulate) so every consumer gets it. ~2 hours.
-- [ ] **Storage buffers** — the one thing a shader cannot read today. It can
-      sample textures, read a depth texture and read a uniform buffer; there is
-      no way to hand it bulk data. That rules out anything a shader has to walk
-      rather than index by a known slot.
-
-      What it blocks, concretely: **a mesh raytracer**. `showcase` was asked for
-      as a raytraced scene - the real software-renderer stress test - and was
-      built as a rasteriser with an analytic ellipse for its floor shadow,
-      because a fragment shader has no way to reach the glTF triangles or a BVH
-      over them. Without storage buffers the only raytraced options are an SDF
-      scene (loses the mesh) or a software-only path (drops out of the
-      cross-backend set).
-
-      Shape: `createStorageBuffer` / `updateStorageBuffer` / `destroyStorageBuffer`
-      alongside the uniform-buffer trio, slot-bound the same way and for the
-      same reason. Software reads it straight out of a `std::vector`; Vulkan
-      needs a `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` binding, GLSL `buffer` blocks,
-      and valoc support for declaring and indexing one. Reads only to begin
-      with - writes mean synchronisation the frame loop does not have.
-
-      Also wanted by: skinning palettes, instance data larger than a push
-      constant, and anything that outgrows `MAX_UNIFORM_BYTES`.
+- [✅] **Tangents in `GLTFVertex`** - `{pos, normal, uv, tangent}`. The file's
+      own tangents when it ships them (mech, trees, raptor, bathroom do), else
+      computed from the UVs; missing normals are computed too, and non-indexed
+      primitives get sequential indices instead of being dropped. The two
+      copy-pasted generators in `gltf.cpp` and `ShowcaseEngine` are gone.
+- [✅] **Storage buffers** - landed 2026-10-05 (`storage.cpp`, and the BVH
+      raytracer in `showcase` is built on them). Three Vulkan bugs fixed
+      2026-10-08, none visible without validation on:
+      - uniforms and storage were two push-descriptor sets in one pipeline
+        layout (VUID-VkPipelineLayoutCreateInfo-pSetLayouts-00293). Storage now
+        lives in set 0 at binding `MAX_UNIFORM_SLOTS + slot`.
+      - `.size()` read 0 on MoltenVK, so `trace.frag` bailed on an empty node
+        list and **every traced shadow ray missed on Vulkan**. Each storage
+        buffer now carries a 16-byte size header that `.size()` reads; GLSL's
+        `.length()` is no longer used.
+      - `storageBuffer<T>(NAMED_CONSTANT)` silently bound slot 0.
 
 - [ ] **Texture formats** — at least R8 (font atlases, masks) and RGBA32F
       (HDR targets). `createTexture` gains a format; `texture()` unpacks per
       format. Vulkan has these for free; software needs them to exist so the
       API doesn't change. ~2 hours.
+
+## Usability audit (2026-10-08)
+
+Things that worked only if you already knew the trick. All fixed unless marked.
+
+- [✅] **glTF needed a hand-written loader** - `loadModel` / `submitModel` /
+      `destroyModel` in `utils/Model.hpp`, and `ModelMaterial` is laid out to
+      drop straight into a shader's Uniforms. `gltf.cpp` and `MinimalEngine`
+      use it; `ShowcaseEngine` and `stencil.cpp` stay on `parseGLTF` because
+      they need the CPU-side triangles.
+- [✅] **valoc translated these to GLSL that compiled and was wrong** - now each
+      is either handled or refused with the line: `bool` in any GPU-read
+      struct, integer varyings, `auto x = ...` (was deleted outright), enum
+      constants (came out as bare names), unresolvable buffer slots, one
+      uniform type bound to two slots.
+- [✅] **Editing a shader did nothing on Vulkan** once it had been translated.
+      valoc records its inputs as `// valoc-dep:` lines; a stale translation,
+      or one older than valoc itself, is redone. Hand-written GLSL (no valoc
+      marker) is never touched. Works for shaders outside the repo.
+- [✅] **Mismatched shader halves** - `createProgram(path, path)` refuses a
+      pair whose Uniforms or Varyings differ; every `static_assert` has a real
+      message.
+- [✅] **Oversized Uniforms truncated silently on Vulkan** - the draw is now
+      skipped with one message per program (Vulkan only guarantees 128 bytes).
+- [✅] **Uniforms vs uniform buffer vs storage buffer** - documented once,
+      above `setUniforms` in RenderCommand.hpp; the shader contract is at the
+      top of ShaderRegistry.hpp.
+- [✅] **Smaller fixes found on the way** - VALO did not compile in Debug
+      (`m_owner.validStorage` in an assert); `parseGLTF` leaked every load;
+      software handed out a 0x0 texture ID for a missing image file.
+- [✅] **`k`-prefixed constants** - all 51 renamed to SCREAMING_SNAKE_CASE
+      (`PI`, `SCENE_SLOT`, `ENCODE_BITS`, ...). `kD` in the PBR shaders stays:
+      it is the diffuse term k_d, a variable, not a prefixed constant.
 
 ## 2. Cleanup — housekeeping, never blocked the backend
 

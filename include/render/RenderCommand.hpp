@@ -85,6 +85,28 @@ struct RenderCommand {
 
     uint32_t            instanceCount   = 1;
 
+    /*
+        Three ways to get data into a shader, by how often it changes:
+
+        setUniforms(T)          Per draw. The struct is copied into this command
+                                at submit, so every draw keeps its own values;
+                                it is the shader's Uniforms parameter. Small -
+                                512 bytes, and on Vulkan it becomes push
+                                constants, which only guarantee 128.
+
+        bindUniformBuffer()     Per frame, shared by many draws: camera, lights,
+                                time. The shader reads uniformBuffer<T>(slot).
+                                It is read when the frame runs at endFrame, not
+                                at submit - updating it between two submits
+                                changes both draws.
+
+        bindStorageBuffer()     Bulk and read-only: arrays of any length. The
+                                shader reads storageBuffer<T>(slot)[i] and
+                                .size(). Same timing as a uniform buffer.
+
+        Slots are compile-time constants in the shader, and flags in any of
+        these structs are uint32_t, never bool.
+    */
     static constexpr size_t MAX_UNIFORM_BYTES = 512;
     uint8_t uniforms[MAX_UNIFORM_BYTES];
     size_t uniformSize = 0;
@@ -93,8 +115,12 @@ struct RenderCommand {
     std::array<StorageBufferID, MAX_STORAGE_SLOTS> storageBuffers = emptyStorageSlots();
 
     template <typename T> void setUniforms(const T& t) {
-        static_assert(std::is_trivially_copyable_v<T>, "...");
-        static_assert(sizeof(T) <= MAX_UNIFORM_BYTES, "...");
+        static_assert(std::is_trivially_copyable_v<T>,
+            "setUniforms() copies the struct into the command, so it must be trivially copyable - "
+            "no std::vector, std::string or anything else that owns memory");
+        static_assert(sizeof(T) <= MAX_UNIFORM_BYTES,
+            "Uniforms are limited to RenderCommand::MAX_UNIFORM_BYTES (512). Move frame-wide data "
+            "into a uniform buffer, or bulk data into a storage buffer");
 
         std::memcpy(uniforms, &t, sizeof(T));
         uniformSize = sizeof(T);

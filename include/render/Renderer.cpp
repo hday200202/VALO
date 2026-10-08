@@ -213,6 +213,32 @@ void Renderer::destroyTexture(const TextureID texture) {
 // ========================================================================= */
 
 ProgramID Renderer::createProgram(const std::string& vsPath, const std::string& fsPath) {
+    /*
+        The two halves are found by path, so nothing at compile time ties them
+        together. A pair that disagrees on Uniforms or Varyings reads garbage on
+        both backends, so it is refused here, before either backend sees it.
+        Pure GLSL files have no registry entry and skip the check.
+    */
+    const ShaderEntry* vs = findShader(vsPath);
+    const ShaderEntry* fs = findShader(fsPath);
+
+    if (vs && fs && vs->vsThunk && fs->fsThunk) {
+        if (vs->uniformsTag != fs->uniformsTag) {
+            std::fprintf(stderr,
+                "createProgram(): %s and %s take different Uniforms types (%zu and %zu bytes) - "
+                "both halves must take the same struct\n",
+                vsPath.c_str(), fsPath.c_str(), vs->uniformsSize, fs->uniformsSize);
+            return DEFAULT_PROGRAM;
+        }
+        if (vs->varyingsTag != fs->varyingsTag) {
+            std::fprintf(stderr,
+                "createProgram(): %s writes different Varyings than %s reads (%zu and %zu bytes) - "
+                "both halves must use the same struct\n",
+                vsPath.c_str(), fsPath.c_str(), vs->varyingsSize, fs->varyingsSize);
+            return DEFAULT_PROGRAM;
+        }
+    }
+
     return m_backendFuncs.createProgramFromFiles(*this, vsPath, fsPath);
 }
 

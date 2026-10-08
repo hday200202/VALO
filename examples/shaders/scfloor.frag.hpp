@@ -5,7 +5,7 @@
 namespace sc {
 
 inline void floorFS(const FloorVaryings& in, const FloorUniforms& u) {
-    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(SCENE_SLOT);
 
     const Vec3f p = in.worldPos;
     const Vec3f toCam = scene.camPos - p;
@@ -40,7 +40,7 @@ inline void floorFS(const FloorVaryings& in, const FloorUniforms& u) {
     const float occl = 1.f - 0.88f * (1.f - smoothstepf(0.30f, 1.20f, std::sqrt(ex * ex + ez * ez)));
 
     Vec3f radiance = {0.f, 0.f, 0.f};
-    for (int i = 0; i < kLightCount; ++i) {
+    for (int i = 0; i < LIGHT_COUNT; ++i) {
         const Light& light = scene.lights[i];
         if (light.intensity <= 0.f) continue;
 
@@ -61,7 +61,7 @@ inline void floorFS(const FloorVaryings& in, const FloorUniforms& u) {
         const float d     = distributionGGX(nDotH, roughness * roughness);
         const float g     = geometrySmith(nDotV, nDotL, roughness);
         const Vec3f spec  = f * (d * g / std::max(4.f * nDotV * nDotL, 1e-5f));
-        const Vec3f diff  = albedo * ((1.f / kPi) * occl);
+        const Vec3f diff  = albedo * ((1.f / PI) * occl);
 
         radiance += mul(diff + spec, light.colour * (light.intensity / dist2)) * nDotL;
     }

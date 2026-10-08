@@ -6,16 +6,19 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
     const valo::Sampler samp;   // repeat + linear
 
     /* --- material inputs: constant, multiplied by the map when there is one -- */
-    Vec4f base = u.baseColor;
-    if (u.baseTex != kNoTex) {
-        const Color t = texture(u.baseTex, in.uv, samp);
-        base = base * Vec4f(srgbToLinear(t.xyz), t.w);
+    Vec4f base = u.material.baseColor;
+    if (u.material.baseColorTex != valo::EMPTY_TEXTURE) {
+        base = base * texture(u.material.baseColorTex, in.uv, samp);
     }
 
-    float metallic  = u.metallic;
-    float roughness = u.roughness;
-    if (u.mrTex != kNoTex) {
-        const Color t = texture(u.mrTex, in.uv, samp);
+    // MASK is glTF's cutout: below the cutoff the surface is simply not there
+    if (u.material.alphaMode == uint32_t(valo::AlphaMode::Mask) && base.w < u.material.alphaCutoff)
+        discard;
+
+    float metallic  = u.material.metallic;
+    float roughness = u.material.roughness;
+    if (u.material.metallicRoughnessTex != valo::EMPTY_TEXTURE) {
+        const Color t = texture(u.material.metallicRoughnessTex, in.uv, samp);
         roughness *= t.y;       // glTF packs roughness in green
         metallic  *= t.z;       // and metallic in blue
     }
@@ -25,13 +28,13 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
     roughness = std::clamp(roughness, 0.035f, 1.f);
 
     float ao = 1.f;
-    if (u.aoTex != kNoTex) {
-        ao = texture(u.aoTex, in.uv, samp).x;
+    if (u.material.occlusionTex != valo::EMPTY_TEXTURE) {
+        ao = texture(u.material.occlusionTex, in.uv, samp).x;
     }
 
-    Vec3f emissive = u.emissive;
-    if (u.emissiveTex != kNoTex) {
-        emissive = emissive * srgbToLinear(texture(u.emissiveTex, in.uv, samp).xyz);
+    Vec3f emissive = u.material.emissive;
+    if (u.material.emissiveTex != valo::EMPTY_TEXTURE) {
+        emissive = emissive * texture(u.material.emissiveTex, in.uv, samp).xyz;
     }
 
     /* --- normal: build a TBN frame, or fall back to the vertex normal --------
@@ -44,12 +47,12 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
     */
     Vec3f n = in.normal.normalized();
 
-    if (u.useNormalMap && u.normalTex != kNoTex) {
+    if (u.useNormalMap != 0 && u.material.normalTex != valo::EMPTY_TEXTURE) {
         Vec3f t = in.tangent.xyz;
         t = (t - n * n.dot(t)).normalized();                // Gram-Schmidt
         const Vec3f b = n.cross(t) * in.tangent.w;          // w flips mirrored UVs
 
-        const Color s  = texture(u.normalTex, in.uv, samp);
+        const Color s  = texture(u.material.normalTex, in.uv, samp);
         const Vec3f tn = Vec3f{s.x, s.y, s.z} * 2.f - Vec3f{1.f, 1.f, 1.f};   // 0..1 -> -1..1
 
         n = (t * tn.x + b * tn.y + n * tn.z).normalized();
@@ -66,7 +69,7 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
 
     Vec3f radiance = {0.f, 0.f, 0.f};
 
-    for (const Light& light : kLights) {
+    for (const Light& light : LIGHTS) {
         const Vec3f toLight = light.pos - in.worldPos;
         const float dist    = toLight.length();
         const Vec3f l       = toLight * (1.f / dist);
@@ -83,7 +86,7 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
         const Vec3f specular = f * (d * g / std::max(4.f * nDotL * nDotV, 1e-5f));
 
         // whatever is not reflected (1 - f) and not metal can scatter diffusely
-        const Vec3f diffuse  = albedo * ((1.f / kPi) * (1.f - f.x) * (1.f - metallic));
+        const Vec3f diffuse  = albedo * ((1.f / PI) * (1.f - f.x) * (1.f - metallic));
 
         // inverse square falloff, then Lambert's cosine term
         const Vec3f incoming = light.colour * (light.intensity / (dist * dist));
@@ -96,7 +99,7 @@ inline void gltfFS(const Varyings& in, const Uniforms& u) {
         available, the diffuse half becomes a hemisphere lerp and the specular
         half a single lookup along the reflection vector, dimmed by roughness.
     */
-    const Vec3f irradiance  = lerp(kAmbientDown, kAmbientUp, n.y * 0.5f + 0.5f);
+    const Vec3f irradiance  = lerp(AMBIENT_DOWN, AMBIENT_UP, n.y * 0.5f + 0.5f);
     const Vec3f ambDiffuse  = albedo * irradiance * ((1.f - metallic) * 0.25f);
 
     const Vec3f refl        = (n * (2.f * n.dot(v)) - v).normalized();

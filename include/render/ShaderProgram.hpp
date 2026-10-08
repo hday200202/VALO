@@ -42,8 +42,13 @@ Color fsThunk(RawFn fn, const float* varyings, const void* uniforms) {
 
 template <typename V, typename U, typename Vy>
 Program makeProgram(void (*vs)(const V&, const U&, Vy&), void (*fs)(const Vy&, const U&)) {
-    static_assert(std::is_trivially_copyable_v<Vy> && sizeof(Vy) % sizeof(float) == 0, "...");
-    static_assert(sizeof(Vy) / sizeof(float) <= MAX_VARYINGS, "...");
+    static_assert(std::is_trivially_copyable_v<Vy>,
+        "Varyings must be trivially copyable - plain fields only, no std::vector or other owning types");
+    static_assert(sizeof(Vy) % sizeof(float) == 0,
+        "Varyings must be made only of floats (float, Vec2f, Vec3f, Vec4f, Mat3f, Mat4f) - "
+        "every field is interpolated as floats between the vertices");
+    static_assert(sizeof(Vy) / sizeof(float) <= MAX_VARYINGS,
+        "Varyings are limited to MAX_VARYINGS (32) floats - a Mat4f alone is 16");
 
     Program p;
     p.vsThunk = &vsThunk<V, U, Vy>; p.vsFn = reinterpret_cast<RawFn>(vs);

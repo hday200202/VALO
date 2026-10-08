@@ -10,9 +10,9 @@ namespace sc {
 
 using namespace valo;
 
-constexpr float kPi         = 3.14159265358979f;
-constexpr int   kLightCount = 4;
-constexpr float kFloorY     = 0.f;      // the model sits on y = 0, so does the mirror
+constexpr float PI         = 3.14159265358979f;
+constexpr int   LIGHT_COUNT = 4;
+constexpr float FLOOR_Y     = 0.f;      // the model sits on y = 0, so does the mirror
 
 // ---------------------------------------------------------------------------
 // scalar helpers
@@ -48,11 +48,11 @@ static inline Vec3f srgbToLinear(const Vec3f& c) {
 }
 
 struct GammaLUT {
-    static constexpr int kSize = 512;
-    float v[kSize + 1];
-    GammaLUT() { for (int i = 0; i <= kSize; ++i) v[i] = std::pow(float(i) / kSize, 1.f / 2.2f); }
+    static constexpr int SIZE = 512;
+    float v[SIZE + 1];
+    GammaLUT() { for (int i = 0; i <= SIZE; ++i) v[i] = std::pow(float(i) / SIZE, 1.f / 2.2f); }
 };
-static const GammaLUT kGamma;
+static const GammaLUT GAMMA;
 
 /*
     The table is a CPU optimisation: std::pow six times a fragment is far too
@@ -66,10 +66,10 @@ VALO_GLSL(linearToSrgb,
     "}")
 
 static inline float linearToSrgb(const float c) {
-    const float x = saturate(c) * GammaLUT::kSize;
-    const int   i = std::min(int(x), GammaLUT::kSize - 1);   // c == 1 lands on the last pair, not past it
+    const float x = saturate(c) * GammaLUT::SIZE;
+    const int   i = std::min(int(x), GammaLUT::SIZE - 1);   // c == 1 lands on the last pair, not past it
     const float f = x - float(i);
-    return kGamma.v[i] + (kGamma.v[i + 1] - kGamma.v[i]) * f;
+    return GAMMA.v[i] + (GAMMA.v[i + 1] - GAMMA.v[i]) * f;
 }
 
 // Narkowicz's ACES fit - filmic shoulder, keeps the bright sun and orbs from
@@ -92,25 +92,25 @@ static inline Vec3f tonemap(const Vec3f& hdr, const float exposure) {
 // environment - one closed-form sky, used as the background, the diffuse
 // irradiance and the specular reflection, so all three always agree
 // ---------------------------------------------------------------------------
-constexpr Vec3f kZenith   = {0.008f, 0.022f, 0.075f};
-constexpr Vec3f kHorizon  = {0.075f, 0.070f, 0.105f};
-constexpr Vec3f kNadir    = {0.006f, 0.006f, 0.009f};
-constexpr Vec3f kSunTint  = {1.000f, 0.880f, 0.680f};
-constexpr Vec3f kHaze     = {0.400f, 0.230f, 0.180f};
-static const  Vec3f kSunDir = Vec3f{-0.42f, 0.22f, 0.62f}.normalized();
+constexpr Vec3f ZENITH   = {0.008f, 0.022f, 0.075f};
+constexpr Vec3f HORIZON  = {0.075f, 0.070f, 0.105f};
+constexpr Vec3f NADIR    = {0.006f, 0.006f, 0.009f};
+constexpr Vec3f SUN_TINT  = {1.000f, 0.880f, 0.680f};
+constexpr Vec3f HAZE     = {0.400f, 0.230f, 0.180f};
+static const  Vec3f SUN_DIR = Vec3f{-0.42f, 0.22f, 0.62f}.normalized();
 
 // the ramp wants y^0.45 and the gamma table already holds y^(1/2.2) = y^0.4545,
 // which is the same curve to the eye and one lookup instead of a pow
 static inline Vec3f skyGradient(const Vec3f& d) {
     const float y = clampf(d.y, -1.f, 1.f);
-    if (y >= 0.f) return lerp(kHorizon, kZenith, linearToSrgb(y));
-    return lerp(kHorizon, kNadir, linearToSrgb(-y));
+    if (y >= 0.f) return lerp(HORIZON, ZENITH, linearToSrgb(y));
+    return lerp(HORIZON, NADIR, linearToSrgb(-y));
 }
 
 // dir must already be unit length - every caller has one, and re-normalising
 // here costs a sqrt on well over a million fragments a frame
 static inline Vec3f environment(const Vec3f& d) {
-    const float toSun = saturate(d.dot(kSunDir));
+    const float toSun = saturate(d.dot(SUN_DIR));
 
     /*
         A hard-edged disc for the sun, a tight glow around it, and a warm haze
@@ -124,7 +124,7 @@ static inline Vec3f environment(const Vec3f& d) {
     const float glow = pow32(toSun) * 0.55f + pow5(toSun) * 0.045f;
     const float band = pow16(saturate(1.f - std::abs(d.y)));
 
-    return skyGradient(d) + kSunTint * (disc + glow) + kHaze * (band * toSun * 0.42f);
+    return skyGradient(d) + SUN_TINT * (disc + glow) + HAZE * (band * toSun * 0.42f);
 }
 
 /*
@@ -132,17 +132,17 @@ static inline Vec3f environment(const Vec3f& d) {
     cubemap here, so rough surfaces instead fade from the sharp reflection
     toward the flat hemisphere average - same end points, no storage.
 */
-static const Vec3f kIrradianceUp   = skyGradient({0.f,  1.f, 0.f}) * 0.85f + kSunTint * 0.05f;
-static const Vec3f kIrradianceDown = skyGradient({0.f, -1.f, 0.f});
+static const Vec3f IRRADIANCE_UP   = skyGradient({0.f,  1.f, 0.f}) * 0.85f + SUN_TINT * 0.05f;
+static const Vec3f IRRADIANCE_DOWN = skyGradient({0.f, -1.f, 0.f});
 
 static inline Vec3f environmentBlurred(const Vec3f& dir, const float roughness) {
     const Vec3f sharp = environment(dir);
-    const Vec3f flat  = lerp(kIrradianceDown, kIrradianceUp, saturate(dir.y * 0.5f + 0.5f));
+    const Vec3f flat  = lerp(IRRADIANCE_DOWN, IRRADIANCE_UP, saturate(dir.y * 0.5f + 0.5f));
     return lerp(sharp, flat, saturate(roughness * roughness));
 }
 
 static inline Vec3f irradiance(const Vec3f& n) {
-    return lerp(kIrradianceDown, kIrradianceUp, saturate(n.y * 0.5f + 0.5f));
+    return lerp(IRRADIANCE_DOWN, IRRADIANCE_UP, saturate(n.y * 0.5f + 0.5f));
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ static inline Vec3f irradiance(const Vec3f& n) {
 static inline float distributionGGX(const float nDotH, const float a) {
     const float a2 = a * a;
     const float d  = nDotH * nDotH * (a2 - 1.f) + 1.f;
-    return a2 / std::max(kPi * d * d, 1e-7f);
+    return a2 / std::max(PI * d * d, 1e-7f);
 }
 static inline float geometrySmith(const float nDotV, const float nDotL, const float r) {
     const float k = (r + 1.f) * (r + 1.f) * 0.125f;
@@ -193,19 +193,19 @@ struct Light {
     Per-frame constants: the light rig plus the camera position and exposure.
     Nothing here varies between draws, so instead of memcpy'ing it into every
     RenderCommand it is uploaded once a frame and bound to a slot, which every
-    shader below reads with uniformBuffer<SceneUniforms>(kSceneSlot).
+    shader below reads with uniformBuffer<SceneUniforms>(SCENE_SLOT).
 
     Note the read happens when the queue executes, at endFrame - so a uniform
     buffer can only hold values that are the same for the whole frame. Anything
     that changes per draw (mvp, material, handedness) stays in setUniforms.
 */
 struct SceneUniforms {
-    Light lights[kLightCount];
+    Light lights[LIGHT_COUNT];
     Vec3f camPos;
     float exposure;
 };
 
-inline constexpr uint32_t kSceneSlot = 0;
+inline constexpr uint32_t SCENE_SLOT = 0;
 
 // ---------------------------------------------------------------------------
 // camera - yaw/pitch are the authority, forward is always derived from them

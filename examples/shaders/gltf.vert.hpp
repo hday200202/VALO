@@ -14,31 +14,20 @@ using valo::Mat4f;
 using valo::Color;
 using valo::TextureID;
 
-constexpr float kPi   = std::numbers::pi_v<float>;
-constexpr float kFovY = 0.9f;
+constexpr float PI   = std::numbers::pi_v<float>;
+constexpr float FOV_Y = 0.9f;
 
-// glTF materials leave slots empty all the time, so every texture field needs a
-// "nothing here" value. Sampling it would be an out-of-bounds read, so every use
-// is guarded.
-constexpr TextureID kNoTex = UINT32_MAX;
 
 static inline float saturate(float x) {
     return std::min(std::max(x, 0.f), 1.f);
 }
 
 /*
-    glTF authors base color and emissive in sRGB, because that is what image
-    editors produce. Lighting maths is only correct in linear space, so those
-    two get decoded on read. Normal, metallic-roughness and occlusion maps are
-    DATA, not colour - they are already linear and must not be touched.
-
-    (VALO can now do this in the sampler via createTexture(path, srgb=true),
-    which is both faster and more correct than pow() per pixel. This file still
-    does it by hand so the shader shows the whole pipeline in one place.)
+    No sRGB decoding in here: base colour and emissive are authored in sRGB, but
+    loadModel() creates those two textures with srgb = true, so the sampler
+    hands back linear values already. The data maps (normal, metallic-roughness,
+    occlusion) are loaded linear, as they must be.
 */
-static inline Vec3f srgbToLinear(const Vec3f& c) {
-    return { std::pow(c.x, 2.2f), std::pow(c.y, 2.2f), std::pow(c.z, 2.2f) };
-}
 
 
 /* ===========================================================================
@@ -53,19 +42,19 @@ struct Light {
     float intensity;
 };
 
-static const Light kLights[4] = {
+static const Light LIGHTS[4] = {
     { { -3.5f,  3.5f,  3.5f }, { 1.00f, 0.96f, 0.90f }, 52.0f },   // key
     { {  4.0f,  0.5f,  2.5f }, { 0.55f, 0.68f, 1.00f }, 26.0f },   // cool fill
     { { -1.5f, -3.0f,  2.0f }, { 1.00f, 0.55f, 0.32f }, 16.0f },   // warm bounce
     { {  1.0f,  1.5f, -4.0f }, { 0.85f, 0.88f, 1.00f }, 34.0f },   // rim
 };
 
-constexpr Vec3f kSkyTop     = { 0.012f, 0.035f, 0.120f };
-constexpr Vec3f kSkyHorizon = { 0.115f, 0.125f, 0.145f };
-constexpr Vec3f kSkyGround  = { 0.020f, 0.020f, 0.023f };
-constexpr Vec3f kSunColour  = { 1.000f, 0.945f, 0.855f };
+constexpr Vec3f SKY_TOP     = { 0.012f, 0.035f, 0.120f };
+constexpr Vec3f SKY_HORIZON = { 0.115f, 0.125f, 0.145f };
+constexpr Vec3f SKY_GROUND  = { 0.020f, 0.020f, 0.023f };
+constexpr Vec3f SUN_COLOUR  = { 1.000f, 0.945f, 0.855f };
 
-static const Vec3f kSunDir = Vec3f{ -0.52f, 0.62f, 0.59f }.normalized();
+static const Vec3f SUN_DIR = Vec3f{ -0.52f, 0.62f, 0.59f }.normalized();
 
 /*
     A two-sided gradient: horizon -> top going up, horizon -> ground going down.
@@ -76,8 +65,8 @@ static Vec3f skyColour(const Vec3f& dir) {
     const float y = std::clamp(dir.y, -1.f, 1.f);
 
     return y >= 0.f
-        ? lerp(kSkyHorizon, kSkyTop,    std::pow( y, 0.5f))
-        : lerp(kSkyHorizon, kSkyGround, std::pow(-y, 0.5f));
+        ? lerp(SKY_HORIZON, SKY_TOP,    std::pow( y, 0.5f))
+        : lerp(SKY_HORIZON, SKY_GROUND, std::pow(-y, 0.5f));
 }
 
 /*
@@ -86,18 +75,18 @@ static Vec3f skyColour(const Vec3f& dir) {
     Cheap, and it reads as a sun from any angle.
 */
 static Vec3f environmentColour(const Vec3f& dir) {
-    const float toSun = saturate(dir.normalized().dot(kSunDir));
+    const float toSun = saturate(dir.normalized().dot(SUN_DIR));
     const float disc  = std::pow(toSun, 900.f) * 14.0f;
     const float glow  = std::pow(toSun,  12.f) *  0.30f;
 
-    return skyColour(dir) + kSunColour * (disc + glow);
+    return skyColour(dir) + SUN_COLOUR * (disc + glow);
 }
 
 // The ambient term is a hemisphere: sky colour straight up, ground colour
 // straight down, blended by the normal. Both ends are constant, so they are
 // evaluated once here instead of per pixel.
-static const Vec3f kAmbientUp   = skyColour({ 0.f,  1.f, 0.f });
-static const Vec3f kAmbientDown = skyColour({ 0.f, -1.f, 0.f });
+static const Vec3f AMBIENT_UP   = skyColour({ 0.f,  1.f, 0.f });
+static const Vec3f AMBIENT_DOWN = skyColour({ 0.f, -1.f, 0.f });
 
 
 /* ===========================================================================
@@ -115,7 +104,7 @@ static float distributionGGX(float nDotH, float r) {
     const float a2    = r * r * r * r;
     const float denom = nDotH * nDotH * (a2 - 1.f) + 1.f;
 
-    return a2 / std::max(kPi * denom * denom, 1e-7f);
+    return a2 / std::max(PI * denom * denom, 1e-7f);
 }
 
 // Schlick-GGX geometry term, one direction at a time; the caller multiplies the
@@ -163,32 +152,14 @@ static Vec3f toneMap(const Vec3f& c) {
 /* ===========================================================================
     Surface shader
 =========================================================================== */
-struct Vertex {
-    Vec3f pos;
-    Vec3f normal;
-    Vec2f uv;
-    Vec4f tangent;      // xyz = tangent, w = bitangent handedness (+1 / -1)
-};
+
 
 struct Uniforms {
-    Mat4f mvp;
-    Mat4f model;
-    Vec3f camPos;
-
-    // material constants; glTF multiplies these by the textures below
-    Vec4f baseColor;
-    float metallic;
-    float roughness;
-    Vec3f emissive;
-
-    // kNoTex when the material does not have that slot
-    TextureID baseTex;
-    TextureID mrTex;            // G = roughness, B = metallic, packed by glTF
-    TextureID normalTex;
-    TextureID aoTex;
-    TextureID emissiveTex;
-
-    uint32_t useNormalMap;
+    Mat4f               mvp;
+    Mat4f               model;
+    Vec3f               camPos;
+    valo::ModelMaterial material;       // straight from loadModel()
+    uint32_t            useNormalMap;
 };
 
 struct Varyings {
@@ -198,7 +169,7 @@ struct Varyings {
     Vec4f tangent;
 };
 
-inline void gltfVS(const Vertex& in, const Uniforms& u, Varyings& out) {
+inline void gltfVS(const valo::GLTFVertex& in, const Uniforms& u, Varyings& out) {
     // Positions transform with w = 1 so they pick up the translation; normals
     // and tangents are directions, so they go through with w = 0 instead.
     out.worldPos = (u.model * Vec4f(in.pos,    1.f)).xyz;

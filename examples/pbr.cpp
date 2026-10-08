@@ -116,11 +116,11 @@ static Mesh buildSphere(float radius, int stacks, int slices) {
 
     for (int i = 0; i <= stacks; ++i) {
         const float v   = float(i) / stacks;
-        const float phi = v * kPi;                  // 0 at +y, pi at -y
+        const float phi = v * PI;                  // 0 at +y, pi at -y
 
         for (int j = 0; j <= slices; ++j) {
             const float u     = float(j) / slices;
-            const float theta = u * 2.f * kPi;
+            const float theta = u * 2.f * PI;
 
             const Vec3f unit = {
                 std::sin(phi) * std::cos(theta),
@@ -150,8 +150,8 @@ static Mesh buildSphere(float radius, int stacks, int slices) {
 
 // ---------------------------------------------------------------------------
 // The shader's Material has no name field - a const char* has no GLSL
-// type - so the labels live here, parallel to kMaterials.
-static const char* kMaterialNames[] = {
+// type - so the labels live here, parallel to MATERIALS.
+static const char* MATERIAL_NAMES[] = {
     "Gold", "Polished brass", "Weathered brass", "Bronze",
     "Copper", "Silver", "Platinum", "Aluminium",
     "Chrome", "Nickel", "Titanium", "Anodised titanium",
@@ -187,8 +187,8 @@ int main(int argc, char** argv) {
     if (!valo.init(window, cfg)) return 1;
 
     valo::VtxLayout layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f});
-    const Mesh cube   = buildCube(2.f, kCubeSegments);
-    const Mesh sphere = buildSphere(1.25f, kSphereStacks, kSphereSlices);
+    const Mesh cube   = buildCube(2.f, CUBE_SEGMENTS);
+    const Mesh sphere = buildSphere(1.25f, SPHERE_STACKS, SPHERE_SLICES);
     const valo::VertexBufferID cubeVb = valo.createVertexBuffer(cube.verts.data(), cube.verts.size(), layout);
     const valo::IndexBufferID  cubeIb = valo.createIndexBuffer(cube.idx.data(), cube.idx.size());
     const valo::VertexBufferID sphVb  = valo.createVertexBuffer(sphere.verts.data(), sphere.verts.size(), layout);
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
 
     valo::RenderCommand obj;
     obj.program = valo.createProgram("examples/shaders/pbr.vert.hpp", "examples/shaders/pbr.frag.hpp");
-    obj.bindUniformBuffer(kSceneSlot, sceneBuffer);
+    obj.bindUniformBuffer(SCENE_SLOT, sceneBuffer);
 
     SkyVertex quad[4] = {{{-1.f, -1.f}}, {{1.f, -1.f}}, {{1.f, 1.f}}, {{-1.f, 1.f}}};
     uint32_t quadIdx[6] = {0, 1, 2, 0, 2, 3};
@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
     sky.cullmode   = valo::CullMode::None;
 
     // fixed camera; the object rotates
-    const Vec3f camPos = {0.f, 0.f, kCameraDist};
+    const Vec3f camPos = {0.f, 0.f, CAMERA_DIST};
     const Mat4f view = Mat4f::lookAt(camPos, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
     const Mat4f viewInv = view.inverse();
 
@@ -223,9 +223,9 @@ int main(int argc, char** argv) {
     bool  detail    = true;
     bool  displace  = false;
 
-    float bump       = kDefaultBump;
-    float noiseScale = kDefaultNoise;
-    float variation  = kDefaultVariation;
+    float bump       = DEFAULT_BUMP;
+    float noiseScale = DEFAULT_NOISE;
+    float variation  = DEFAULT_VARIATION;
 
     using clk = std::chrono::steady_clock;
     auto     last      = clk::now();
@@ -247,8 +247,8 @@ int main(int argc, char** argv) {
             // pre-multiplied, so each drag rotates about the SCREEN axes rather
             // than the object's own - which is what dragging a thing feels like
             const Vec2f d = window.mouseDelta();
-            orientation = Mat4f::rotationX(d.y * kMouseSpeed)
-                        * Mat4f::rotationY(d.x * kMouseSpeed)
+            orientation = Mat4f::rotationX(d.y * MOUSE_SPEED)
+                        * Mat4f::rotationY(d.x * MOUSE_SPEED)
                         * orientation;
         }
 
@@ -259,11 +259,11 @@ int main(int argc, char** argv) {
         if (window.wasKeyPressed(valo::Key::V)) valo.setVsync(!valo.getVsync());
 
         // wheel or brackets step through the material table; adding
-        // kMaterialCount before the modulo keeps -1 from going negative
+        // MATERIAL_COUNT before the modulo keeps -1 from going negative
         int step = int(window.scrollDelta() > 0.f) - int(window.scrollDelta() < 0.f);
         if (window.wasKeyPressed(valo::Key::RightBracket)) step =  1;
         if (window.wasKeyPressed(valo::Key::LeftBracket))  step = -1;
-        materialIndex = (materialIndex + kMaterialCount + step) % kMaterialCount;
+        materialIndex = (materialIndex + MATERIAL_COUNT + step) % MATERIAL_COUNT;
 
         /* --- input: held keys, scaled by dt so they tune at the same rate
                whatever the frame rate --- */
@@ -282,9 +282,9 @@ int main(int argc, char** argv) {
             orientation = Mat4f();
             detail      = true;
             displace    = false;
-            bump        = kDefaultBump;
-            noiseScale  = kDefaultNoise;
-            variation   = kDefaultVariation;
+            bump        = DEFAULT_BUMP;
+            noiseScale  = DEFAULT_NOISE;
+            variation   = DEFAULT_VARIATION;
         }
 
         /* --- title --- */
@@ -295,9 +295,9 @@ int main(int argc, char** argv) {
             fpsStart  = now;
         }
 
-        const Material& mat = kMaterials[materialIndex];
+        const Material& mat = MATERIALS[materialIndex];
         window.setTitle(
-            std::string("VALO - PBR   ") + kMaterialNames[materialIndex] +
+            std::string("VALO - PBR   ") + MATERIAL_NAMES[materialIndex] +
             "   bump "  + std::to_string(bump).substr(0, 4) +
             "  scale "  + std::to_string(noiseScale).substr(0, 4) +
             "  var "    + std::to_string(variation).substr(0, 4) +
@@ -308,14 +308,14 @@ int main(int argc, char** argv) {
 
         /* --- camera and per-frame uniforms --- */
         const float aspect = window.getAspect();
-        const Mat4f proj   = Mat4f::perspective(kFovY, aspect, 0.1f, 100.f);
+        const Mat4f proj   = Mat4f::perspective(FOV_Y, aspect, 0.1f, 100.f);
 
         // the lights are authored in view space so the rig stays put as the
         // object turns; viewInv puts them back into the world space the shader
         // does its distance maths in
         scene.camPos = camPos;
         for (int i = 0; i < 4; ++i) {
-            scene.lightPos[i] = (viewInv * Vec4f(kLights[i].viewPos, 1.f)).xyz;
+            scene.lightPos[i] = (viewInv * Vec4f(LIGHTS[i].viewPos, 1.f)).xyz;
         }
         valo.updateUniformBuffer(sceneBuffer, &scene, sizeof(scene));
 
@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
         obj.indices = useSphere ? sphIb : cubeIb;
         obj.setUniforms(u);
 
-        sky.setUniforms(SkyUniforms{aspect, std::tan(kFovY * 0.5f)});
+        sky.setUniforms(SkyUniforms{aspect, std::tan(FOV_Y * 0.5f)});
 
         valo.beginFrame();
         valo.submit(sky);       // first: depth test off, so it never occludes

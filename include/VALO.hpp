@@ -212,3 +212,7 @@ private:
 };
 
 }
+
+// after the class: Model.hpp needs a complete VALO, and is part of the API
+// rather than an optional extra, so one #include <VALO.hpp> brings it in
+#include "utils/Model.hpp"

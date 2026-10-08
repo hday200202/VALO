@@ -7,27 +7,14 @@ namespace me {
 
 using namespace valo;
 
-struct Material {
-    TextureID baseColorTex          = EMPTY_TEXTURE;
-    TextureID emissiveTex           = EMPTY_TEXTURE;
-    TextureID metallicRoughnessTex  = EMPTY_TEXTURE;
-    TextureID normalTex             = EMPTY_TEXTURE;
-    TextureID occlusionTex          = EMPTY_TEXTURE;
-
-    Vec4f     baseColor = {1.f, 1.f, 1.f, 1.f};
-    Vec3f     emissive  = {0.f, 0.f, 0.f};
-    float     metallic  = 1.f;
-};
-
 /*
-    Uniforms are memcpy'd into a fixed-size buffer inside RenderCommand, so this
-    has to stay a POD - no vectors, no pointers to anything that can move. The
-    draw loop walks the nodes and primitives and hands the shader one already
-    resolved matrix and one material.
+    ModelMaterial is what loadModel() hands back for each glTF material, with
+    its textures already loaded - it is laid out to drop straight into Uniforms.
+    Uniforms are memcpy'd into the command, so this stays plain data.
 */
 struct Uniforms {
-    Mat4f    mvp;
-    Material material;
+    Mat4f         mvp;
+    ModelMaterial material;
 };
 
 struct Varyings { Vec2f uv; };

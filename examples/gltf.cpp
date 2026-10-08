@@ -28,7 +28,6 @@
 #include <chrono>
 #include <string>
 #include <vector>
-#include <map>
 #include <algorithm>
 
 #include "shaders/gltf.vert.hpp"
@@ -46,181 +45,6 @@ using valo::Vec4f;
 using valo::Mat4f;
 using valo::Color;
 using valo::TextureID;
-
-
-/* ===========================================================================
-    Loading: glTF -> one vertex buffer + one draw per primitive per node
-=========================================================================== */
-struct DrawItem {
-    valo::RenderCommand cmd;
-    Mat4f    world;         // node's world transform, baked at load
-    Uniforms uniforms;      // everything material-side, filled once
-};
-
-struct Model {
-    std::string name;
-    valo::VertexBufferID vb;
-    valo::IndexBufferID  ib;
-    std::vector<DrawItem> items;
-    Vec3f center;           // of the world-space bounds, for framing
-    float extent;
-};
-
-/*
-    Tangents from UV derivatives (Lengyel's method).
-
-    A normal map needs to know which way is "u" on the surface. glTF only ships
-    that when the exporter felt like it - DamagedHelmet does not - so it is
-    derived: for each triangle, solve for the direction in which u increases,
-    accumulate it onto all three vertices, then normalise at the end. Summing
-    per-vertex is what makes the result continuous across shared edges.
-*/
-static void computeTangents(std::vector<Vertex>& verts, const std::vector<uint32_t>& idx) {
-    std::vector<Vec3f> tan(verts.size(), {0.f, 0.f, 0.f});
-    std::vector<Vec3f> bit(verts.size(), {0.f, 0.f, 0.f});
-
-    for (size_t i = 0; i + 2 < idx.size(); i += 3) {
-        const Vertex& a = verts[idx[i]];
-        const Vertex& b = verts[idx[i + 1]];
-        const Vertex& c = verts[idx[i + 2]];
-
-        const Vec3f e1 = b.pos - a.pos;
-        const Vec3f e2 = c.pos - a.pos;
-        const Vec2f d1 = b.uv  - a.uv;
-        const Vec2f d2 = c.uv  - a.uv;
-
-        // the 2x2 UV matrix is singular on degenerate or unmapped triangles
-        const float det = d1.x * d2.y - d2.x * d1.y;
-        if (std::fabs(det) < 1e-12f) continue;
-
-        const float r = 1.f / det;
-        const Vec3f t  = (e1 * d2.y - e2 * d1.y) * r;
-        const Vec3f bt = (e2 * d1.x - e1 * d2.x) * r;
-
-        for (int k = 0; k < 3; ++k) {
-            tan[idx[i + k]] += t;
-            bit[idx[i + k]] += bt;
-        }
-    }
-
-    for (size_t i = 0; i < verts.size(); ++i) {
-        const Vec3f n = verts[i].normal;
-
-        // remove any component along the normal, so t lies in the surface
-        Vec3f t = tan[i] - n * n.dot(tan[i]);
-
-        // a vertex no triangle contributed to (or a fully degenerate one) needs
-        // some valid frame rather than a zero vector
-        if (t.length() < 1e-8f) {
-            t = std::fabs(n.x) < 0.9f ? Vec3f{1.f, 0.f, 0.f} : Vec3f{0.f, 1.f, 0.f};
-            t = t - n * n.dot(t);
-        }
-        t = t.normalized();
-
-        // handedness: does the bitangent we derived agree with n x t, or is the
-        // UV island mirrored? The shader multiplies by this to match.
-        const float w = n.cross(t).dot(bit[i]) < 0.f ? -1.f : 1.f;
-
-        verts[i].tangent = { t, w };
-    }
-}
-
-static Model loadModel(
-    valo::VALO& valo,
-    const std::string& path,
-    const std::string& name,
-    std::map<std::string, TextureID>& texCache
-) {
-    Model model;
-    model.name = name;
-
-    valo::GLTF g = valo::parseGLTF(path);
-    if (g.vertices.empty()) return model;
-
-    // the parser hands back pos/normal/uv; this example's vertex adds a tangent
-    std::vector<Vertex> verts(g.vertices.size());
-    for (size_t i = 0; i < verts.size(); ++i) {
-        verts[i] = { g.vertices[i].pos, g.vertices[i].normal, g.vertices[i].uv, {1.f, 0.f, 0.f, 1.f} };
-    }
-    computeTangents(verts, g.indices);
-
-    const valo::VtxLayout layout({
-        valo::VtxAttrib::Vec3f,     // pos
-        valo::VtxAttrib::Vec3f,     // normal
-        valo::VtxAttrib::Vec2f,     // uv
-        valo::VtxAttrib::Vec4f,     // tangent
-    });
-
-    // one buffer for the whole file; primitives become index ranges into it
-    model.vb = valo.createVertexBuffer(verts.data(), verts.size(), layout);
-    model.ib = valo.createIndexBuffer(g.indices.data(), g.indices.size());
-
-    // materials share images constantly, and the cache is keyed on path so the
-    // same file is decoded once even across the two models
-    auto tex = [&](const std::string& p) -> TextureID {
-        if (p.empty()) return kNoTex;
-
-        const auto it = texCache.find(p);
-        if (it != texCache.end()) return it->second;
-
-        return texCache[p] = valo.createTexture(p);
-    };
-
-    Vec3f lo = { 1e9f,  1e9f,  1e9f};
-    Vec3f hi = {-1e9f, -1e9f, -1e9f};
-
-    for (const valo::GLTFNode& node : g.nodes) {
-        for (const valo::GLTFPrimitive& prim : g.meshes[node.mesh].primitives) {
-            DrawItem item;
-            item.world = node.world;
-
-            item.cmd.verts      = model.vb;
-            item.cmd.indices    = model.ib;
-            item.cmd.firstIndex = prim.firstIndex;
-            item.cmd.indexCount = prim.indexCount;
-
-            Uniforms& u = item.uniforms;
-
-            if (prim.material >= 0) {
-                const valo::GLTFMaterial& m = g.materials[prim.material];
-
-                u.baseColor = m.baseColor;
-                u.metallic  = m.metallic;
-                u.roughness = m.roughness;
-                u.emissive  = m.emissive;
-
-                u.baseTex     = tex(m.baseColorTex);
-                u.mrTex       = tex(m.metallicRoughnessTex);
-                u.normalTex   = tex(m.normalTex);
-                u.aoTex       = tex(m.occlusionTex);
-                u.emissiveTex = tex(m.emissiveTex);
-            } else {
-                // glTF allows a primitive with no material at all
-                u.baseColor = {0.8f, 0.8f, 0.8f, 1.f};
-                u.metallic  = 0.f;
-                u.roughness = 0.6f;
-                u.emissive  = {0.f, 0.f, 0.f};
-
-                u.baseTex = u.mrTex = u.normalTex = u.aoTex = u.emissiveTex = kNoTex;
-            }
-
-            model.items.push_back(item);
-
-            // bounds in world space, so the framing below works whatever units
-            // and placement the file happened to use
-            for (uint32_t k = prim.firstIndex; k < prim.firstIndex + prim.indexCount; ++k) {
-                const Vec3f p = (node.world * Vec4f(verts[g.indices[k]].pos, 1.f)).xyz;
-                lo = min(lo, p);
-                hi = max(hi, p);
-            }
-        }
-    }
-
-    model.center = (lo + hi) * 0.5f;
-    model.extent = std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
-
-    return model;
-}
 
 
 /* ===========================================================================
@@ -246,12 +70,14 @@ int main(int argc, char** argv) {
     if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
 
-    std::map<std::string, TextureID> texCache;
-    Model models[2] = {
-        loadModel(valo, "examples/gltf/mech/scene.gltf", "mech", texCache),
-        loadModel(valo, "examples/gltf/Box/Box.gltf",                     "Box",           texCache),
+    // buffers, textures (sRGB where glTF says so), tangents, bounds, and one
+    // ready-made draw per primitive - all of it in loadModel
+    const valo::Model models[2] = {
+        valo::loadModel(valo, "examples/gltf/mech/scene.gltf"),
+        valo::loadModel(valo, "examples/gltf/Box/Box.gltf"),
     };
-    if (models[0].items.empty() && models[1].items.empty()) return 1;
+    const char* modelNames[2] = { "mech", "Box" };
+    if (!models[0].loaded() && !models[1].loaded()) return 1;
 
     const valo::ProgramID prog = valo.createProgram("examples/shaders/gltf.vert.hpp", "examples/shaders/gltf.frag.hpp");
 
@@ -289,9 +115,9 @@ int main(int argc, char** argv) {
         glow needs to follow the window, and the passes sample in normalised uv
         so any window size works without recreating them.
     */
-    constexpr uint32_t kBloomW = 480, kBloomH = 270;
-    const valo::RenderTargetID bloomA = valo.createTarget(kBloomW, kBloomH);
-    const valo::RenderTargetID bloomB = valo.createTarget(kBloomW, kBloomH);
+    constexpr uint32_t BLOOM_W = 480, BLOOM_H = 270;
+    const valo::RenderTargetID bloomA = valo.createTarget(BLOOM_W, BLOOM_H);
+    const valo::RenderTargetID bloomB = valo.createTarget(BLOOM_W, BLOOM_H);
 
     const valo::LayerID sceneLayer  = valo.addLayer(sceneTarget);
     const valo::LayerID threshLayer = valo.addLayer(bloomA);
@@ -320,7 +146,7 @@ int main(int argc, char** argv) {
     bool  bloom        = true;
     float threshold    = 0.32f;
     float intensity    = 1.0f;
-    // one blur-buffer texel; see the note on kBloomW for why this stays at 1
+    // one blur-buffer texel; see the note on BLOOM_W for why this stays at 1
     const float radius = 1.f;
     bool  useNormalMap = true;
     float zoom         = 1.f;
@@ -378,10 +204,10 @@ int main(int argc, char** argv) {
             fpsStart  = now;
         }
 
-        const Model& model = models[which];
+        const valo::Model& model = models[which];
         window.setTitle(
-            "VALO - glTF   " + model.name +
-            "   " + std::to_string(model.items.size()) + " draw(s)" +
+            std::string("VALO - glTF   ") + modelNames[which] +
+            "   " + std::to_string(model.draws.size()) + " draw(s)" +
             (useNormalMap ? "" : "   [no normal map]") +
             (bloom ? "   bloom thresh " + std::to_string(int(threshold * 1000.f) / 10.f).substr(0, 4) : "   [no bloom]") +
             "   " + std::to_string(fps) + " fps"
@@ -394,36 +220,33 @@ int main(int argc, char** argv) {
             on scale, so without this one model fills the screen and the next is
             a speck.
         */
-        const float fit    = 2.f / std::max(model.extent, 1e-6f);
+        const Vec3f size   = model.boundsMax - model.boundsMin;
+        const float fit    = 2.f / std::max({size.x, size.y, size.z, 1e-6f});
         const Vec3f camPos = { 0.f, 0.f, 4.2f * zoom };
 
         const Mat4f view = Mat4f::lookAt(camPos, {0.f, 0.f, 0.f}, {0.f, 1.f, 0.f});
         const float aspect = window.getAspect();
-        const Mat4f proj = Mat4f::perspective(kFovY, aspect, 0.1f, 100.f);
+        const Mat4f proj = Mat4f::perspective(FOV_Y, aspect, 0.1f, 100.f);
 
         // read right to left: centre it, scale it, then apply the mouse rotation
         const Mat4f base = orientation
                          * Mat4f::scale({fit, fit, fit})
-                         * Mat4f::translation(-model.center);
+                         * Mat4f::translation(-model.center());
 
         /* --- draw --- */
         valo.beginFrame();
 
-        sky.setUniforms(SkyUniforms{aspect, std::tan(kFovY * 0.5f)});
+        sky.setUniforms(SkyUniforms{aspect, std::tan(FOV_Y * 0.5f)});
         valo.submit(sky, sceneLayer);
 
-        for (const DrawItem& item : model.items) {
-            Uniforms u = item.uniforms;              // material, filled at load
-            u.model        = base * item.world;      // node placement, then framing
-            u.mvp          = proj * view * u.model;
-            u.camPos       = camPos;
-            u.useNormalMap = useNormalMap;
-
-            valo::RenderCommand cmd = item.cmd;
-            cmd.program = prog;
-            cmd.setUniforms(u);
-            valo.submit(cmd, sceneLayer);
-        }
+        // one call per model: the draws carry geometry and material state, the
+        // lambda supplies what changes per frame
+        valo::submitModel(valo, model, prog,
+            [&](const valo::ModelDraw& d, const valo::ModelMaterial& m) {
+                const Mat4f world = base * d.world;     // node placement, then framing
+                return Uniforms{ proj * view * world, world, camPos, m, useNormalMap ? 1u : 0u };
+            },
+            sceneLayer);
 
         /* --- bloom passes ---
 
@@ -432,7 +255,7 @@ int main(int argc, char** argv) {
         */
         const valo::Vec2u fb = window.getSize();
         const float fw = float(fb.x), fh = float(fb.y);
-        const float bw = float(kBloomW), bh = float(kBloomH);
+        const float bw = float(BLOOM_W), bh = float(BLOOM_H);
 
         const Mat4f postProj  = Mat4f::orthographic(0.f, fw, fh, 0.f, -1.f, 1.f);
         const Mat4f bloomProj = Mat4f::orthographic(0.f, bw, bh, 0.f, -1.f, 1.f);

@@ -40,7 +40,7 @@ inline void objectFS(const Varyings& in, const Uniforms& u) {
         }
     }
 
-    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(SCENE_SLOT);
 
     const Vec3f v = (scene.camPos - in.worldPos).normalized();
     if (n.dot(v) < 0.f) n = n * -1.f;                                // back faces of blended glass
@@ -48,11 +48,11 @@ inline void objectFS(const Varyings& in, const Uniforms& u) {
 
     const float ao = (m.occlusionTex != EMPTY_TEXTURE) ? texture(m.occlusionTex, in.uv).x : 1.f;
     const Vec3f f0 = lerp(Vec3f{0.04f, 0.04f, 0.04f}, albedo, metallic);
-    const Vec3f kD = albedo * ((1.f - metallic) / kPi);
+    const Vec3f kD = albedo * ((1.f - metallic) / PI);
 
     // --- punctual lights ---
     Vec3f radiance = {0.f, 0.f, 0.f};
-    for (int i = 0; i < kLightCount; ++i) {
+    for (int i = 0; i < LIGHT_COUNT; ++i) {
         const Light& light = scene.lights[i];
         if (light.intensity <= 0.f) continue;
 

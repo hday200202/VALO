@@ -59,11 +59,11 @@ int main(int argc, char** argv) {
     StorageVertex quad[4] = {{{-1,-1}}, {{1,-1}}, {{1,1}}, {{-1,1}}};
     uint32_t      idx[6]  = {0, 1, 2, 0, 2, 3};
 
-    constexpr uint32_t kCount = 1000;
+    constexpr uint32_t COUNT = 1000;
     float scale = 0.001f;
 
-    std::vector<float> numbers(kCount);
-    for (uint32_t i = 0; i < kCount; ++i) numbers[i] = float(i) * scale;
+    std::vector<float> numbers(COUNT);
+    for (uint32_t i = 0; i < COUNT; ++i) numbers[i] = float(i) * scale;
 
     // deliberately not a multiple of 16, so size() has to divide rather than
     // assume a round element count
@@ -107,11 +107,11 @@ int main(int argc, char** argv) {
 
         if (updating) {
             scale = scale > 0.004f ? 0.001f : scale + 0.0005f;
-            for (uint32_t i = 0; i < kCount; ++i) numbers[i] = float(i) * scale;
+            for (uint32_t i = 0; i < COUNT; ++i) numbers[i] = float(i) * scale;
             valo.updateStorageBuffer(numberBuffer, numbers.data(), numbers.size() * sizeof(float));
         }
 
-        cmd.setUniforms(StorageUniforms{ kCount, scale });
+        cmd.setUniforms(StorageUniforms{ COUNT, scale });
 
         valo.beginFrame();
         valo.submit(cmd);

@@ -41,7 +41,7 @@ using valo::Vec2f;
 using valo::Vec4f;
 using valo::Mat4f;
 
-constexpr uint32_t kTargetSize = 512;
+constexpr uint32_t TARGET_SIZE = 512;
 
 int main(int argc, char** argv) {
     bool useVulkan = false, showTarget = false, track = false, update = false;
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
     // no size => sized to the window and flagged window-tracking
     const valo::RenderTargetID target = track
         ? valo.createTarget()
-        : valo.createTarget(kTargetSize, kTargetSize);
+        : valo.createTarget(TARGET_SIZE, TARGET_SIZE);
     if (target == valo::EMPTY_TEXTURE) { std::fprintf(stderr, "createTarget failed\n"); return 1; }
 
     // drawn before the base layer so the target is complete by the time it is sampled
@@ -73,18 +73,18 @@ int main(int argc, char** argv) {
     valo.setLayerOrder({offscreen, valo::VALO::BASE_LAYER});
 
     // --update mode: a CPU-owned texture rewritten through the update calls
-    constexpr uint32_t kTexSize = 256;
-    std::vector<uint32_t> pixels(kTexSize * kTexSize);
+    constexpr uint32_t TEX_SIZE = 256;
+    std::vector<uint32_t> pixels(TEX_SIZE * TEX_SIZE);
     auto fillChecker = [&](uint32_t tint) {
-        for (uint32_t py = 0; py < kTexSize; ++py)
-            for (uint32_t px = 0; px < kTexSize; ++px)
-                pixels[py * kTexSize + px] =
+        for (uint32_t py = 0; py < TEX_SIZE; ++py)
+            for (uint32_t px = 0; px < TEX_SIZE; ++px)
+                pixels[py * TEX_SIZE + px] =
                     ((px / 32 + py / 32) & 1) ? 0xFF202020u : tint;
     };
     fillChecker(0xFF3080C0u);
 
     const valo::TextureID cpuTex = update
-        ? valo.createTexture(kTexSize, kTexSize, pixels.data(), false, false)
+        ? valo.createTexture(TEX_SIZE, TEX_SIZE, pixels.data(), false, false)
         : valo::EMPTY_TEXTURE;
 
     Vertex quad[4] = {{{0, 0}}, {{1, 0}}, {{1, 1}}, {{0, 1}}};
@@ -118,8 +118,8 @@ int main(int argc, char** argv) {
         const Mat4f projB = Mat4f::orthographic(0.f, float(sz.x), float(sz.y), 0.f, -1.f, 1.f);
 
         // a tracking target is window-sized, so its projection follows the window
-        const float tw = track ? float(sz.x) : float(kTargetSize);
-        const float th = track ? float(sz.y) : float(kTargetSize);
+        const float tw = track ? float(sz.x) : float(TARGET_SIZE);
+        const float th = track ? float(sz.y) : float(TARGET_SIZE);
         const Mat4f projT = Mat4f::orthographic(0.f, tw, th, 0.f, -1.f, 1.f);
 
         if (update) {
@@ -129,11 +129,11 @@ int main(int argc, char** argv) {
                 valo.updateTexture(cpuTex, pixels.data());
             }
 
-            constexpr uint32_t kBlock = 48;
-            std::vector<uint32_t> block(kBlock * kBlock, 0xFF00D0FFu);
-            const uint32_t bx = uint32_t((std::sin(t) * 0.5f + 0.5f) * float(kTexSize - kBlock));
-            const uint32_t by = uint32_t((std::cos(t) * 0.5f + 0.5f) * float(kTexSize - kBlock));
-            valo.updateTexture(cpuTex, bx, by, kBlock, kBlock, block.data());
+            constexpr uint32_t BLOCK = 48;
+            std::vector<uint32_t> block(BLOCK * BLOCK, 0xFF00D0FFu);
+            const uint32_t bx = uint32_t((std::sin(t) * 0.5f + 0.5f) * float(TEX_SIZE - BLOCK));
+            const uint32_t by = uint32_t((std::cos(t) * 0.5f + 0.5f) * float(TEX_SIZE - BLOCK));
+            valo.updateTexture(cpuTex, bx, by, BLOCK, BLOCK, block.data());
         }
 
         valo.beginFrame();

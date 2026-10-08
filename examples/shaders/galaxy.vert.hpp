@@ -10,7 +10,7 @@ struct Star      { float radius; float angle; float height; float seed; };
 struct GUniforms { valo::Mat4f viewProj; valo::Mat4f model; float time; };
 struct GVaryings { valo::Vec3f color; float glow; };
 
-static constexpr float kGalaxyRadius = 3.5f;
+static constexpr float GALAXY_RADIUS = 3.5f;
 
 inline void galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
     using namespace valo;
@@ -19,13 +19,13 @@ inline void galaxyVS(const Star& in, const GUniforms& u, GVaryings& out) {
     // inner stars orbit faster (roughly Keplerian) -> arms wind up over time
     const float a = in.angle + u.time * 0.9f / std::sqrt(r + 0.25f);
     // thin disk, puffier toward the core
-    const float y = in.height * (0.35f - 0.25f * (r / kGalaxyRadius));
+    const float y = in.height * (0.35f - 0.25f * (r / GALAXY_RADIUS));
 
     Vec3f pos  = {r * std::cos(a), y, r * std::sin(a)};
     Vec4f clip = u.viewProj * u.model * Vec4f(pos, 1.f);
 
     // color by radius: white-yellow core -> orange -> blue-violet rim
-    const float f = r / kGalaxyRadius;
+    const float f = r / GALAXY_RADIUS;
     Vec3f core = {1.0f, 0.95f, 0.8f};
     Vec3f mid  = {1.0f, 0.55f, 0.25f};
     Vec3f rim  = {0.35f, 0.45f, 1.0f};

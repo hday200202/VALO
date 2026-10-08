@@ -64,62 +64,32 @@ public:
     Model() = default;
 
     /*
-        The whole glTF file shares one vertex/index buffer, so each primitive is
-        just a [firstIndex, indexCount) range into it with its own material.
-        One RenderCommand per primitive is what lets each get its own textures.
+        loadModel() did the work: one vertex/index buffer for the file, the
+        textures, and one draw per primitive per node with its material's cull
+        and blend state already set. All that is left per frame is the matrix.
     */
     void draw(const Mat4f& viewProj, bool wireframe = false) {
-        if (!m_valo || !m_loaded) return;
+        if (!m_valo || !m_model.loaded()) return;
 
-        for (const auto& node : m_nodes) {
-            if (node.mesh < 0 || size_t(node.mesh) >= m_meshes.size()) continue;
-
-            const Mat4f mvp = viewProj * m_transform * node.world;
-
-            for (const auto& prim : m_meshes[node.mesh].primitives) {
-                RenderCommand cmd;
-                cmd.verts       = m_vertices;
-                cmd.indices     = m_indices;
-                cmd.program     = m_program;
-                cmd.firstIndex  = prim.firstIndex;
-                cmd.indexCount  = prim.indexCount;
-                cmd.fillmode    = wireframe ? FillMode::Wireframe : FillMode::Solid;
-                cmd.blendmode   = BlendMode::Alpha;
-                cmd.setUniforms(Uniforms{mvp, materialFor(prim.material)});
-                m_valo->submit(cmd);
-            }
+        for (const ModelDraw& d : m_model.draws) {
+            RenderCommand cmd = d.cmd;
+            cmd.program  = m_program;
+            cmd.fillmode = wireframe ? FillMode::Wireframe : FillMode::Solid;
+            cmd.setUniforms(Uniforms{
+                viewProj * m_transform * d.world,
+                m_model.materials[d.material]
+            });
+            m_valo->submit(cmd);
         }
     }
 
     bool loadGLTF(const std::string& path) {
         if (!m_valo) return false;
 
-        GLTF gltf = parseGLTF(path);
-        if (gltf.vertices.empty() || gltf.indices.empty()) return false;
+        m_model = loadModel(*m_valo, path);
+        if (!m_model.loaded()) return false;
 
-        m_vertices = m_valo->createVertexBuffer(
-            gltf.vertices.data(),
-            gltf.vertices.size(),
-            GLTFVertex::layout()
-        );
-
-        m_indices = m_valo->createIndexBuffer(
-            gltf.indices.data(),
-            gltf.indices.size()
-        );
-
-        m_nodes  = gltf.nodes;
-        m_meshes = gltf.meshes;
-
-        // setProgram() before loading wins, otherwise fall back to the built-ins
-        /*
-            The two backends implement different halves of the same shader
-            spec, so which createProgram to call is a property of the backend,
-            not of the model. me::vs/me::fs are the C++ half; the .vert/.frag
-            pair is the GLSL half.
-        */
-        // one call, both backends: the software path resolves these to the
-        // registered callbacks, the Vulkan path translates them
+        // setProgram() before loading wins; one call covers both backends
         if (m_program == DEFAULT_PROGRAM) {
             m_program = m_valo->createProgram(
                 "examples/shaders/minimal.vert.hpp",
@@ -127,23 +97,7 @@ public:
             );
         }
 
-        m_materials.clear();
-        for (auto& m : gltf.materials) {
-            Material mat {
-                .baseColorTex           = loadTexture(m.baseColorTex, true),
-                .emissiveTex            = loadTexture(m.emissiveTex, true),
-                .metallicRoughnessTex   = loadTexture(m.metallicRoughnessTex),
-                .normalTex              = loadTexture(m.normalTex),
-                .occlusionTex           = loadTexture(m.occlusionTex),
-
-                .baseColor  = m.baseColor,
-                .emissive   = m.emissive,
-                .metallic   = m.metallic
-            };
-            m_materials.push_back(mat);
-        }
-
-        return m_loaded = true;
+        return true;
     }
 
     void setVALO(VALO* valo) { m_valo = valo; }
@@ -160,37 +114,16 @@ public:
     void setPosition(const Vec3f& position)     { m_transform = Mat4f::translation(position); }
     const Mat4f& getTransform() const           { return m_transform; }
 
-    bool isLoaded() const { return m_loaded; }
-    const std::vector<Material>& getMaterials() const { return m_materials; }
+    bool isLoaded() const { return m_model.loaded(); }
+    const std::vector<ModelMaterial>& getMaterials() const { return m_model.materials; }
 
 private:
-    TextureID loadTexture(const std::string& path, const bool srgb = false) {
-        if (path.empty()) return EMPTY_TEXTURE;
-        const TextureID id = m_valo->createTexture(path, srgb);
-        m_textures.push_back(id);
-        return id;
-    }
+    valo::Model     m_model;
+    ProgramID       m_program   = DEFAULT_PROGRAM;
+    Mat4f           m_transform;    // identity until moved
 
-    const Material& materialFor(const int index) const {
-        if (index < 0 || size_t(index) >= m_materials.size()) return m_fallback;
-        return m_materials[index];
-    }
-
-    VertexBufferID                  m_vertices  = EMPTY_BUFFER;
-    IndexBufferID                   m_indices   = EMPTY_BUFFER;
-    ProgramID                       m_program   = DEFAULT_PROGRAM;
-
-    std::vector<TextureID>          m_textures;
-    std::vector<Material>           m_materials;
-    std::vector<GLTFNode>           m_nodes;
-    std::vector<GLTFMesh>           m_meshes;
-
-    Material                        m_fallback;     // primitives with material == -1
-    Mat4f                           m_transform;    // identity until moved
-
-    VALO*                           m_valo = nullptr;
-    Backend                         m_backend = Backend::Software;
-    bool                            m_loaded = false;
+    VALO*           m_valo      = nullptr;
+    Backend         m_backend   = Backend::Software;
 };
 
 

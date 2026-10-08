@@ -8,7 +8,7 @@ inline void skyFS(const SkyVaryings& in, const SkyUniforms& u) {
     const Vec3f dir = (u.right   * (in.ndc.x * u.tanHalfFov * u.aspect)
                      + u.up      * (in.ndc.y * u.tanHalfFov)
                      + u.forward).normalized();
-    valo_FragColor = {tonemap(environment(dir), uniformBuffer<SceneUniforms>(kSceneSlot).exposure), 1.f};
+    valo_FragColor = {tonemap(environment(dir), uniformBuffer<SceneUniforms>(SCENE_SLOT).exposure), 1.f};
 }
 
 // ---------------------------------------------------------------------------

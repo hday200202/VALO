@@ -46,7 +46,7 @@ using valo::Vec4f;
 using valo::Mat4f;
 using valo::Color;
 
-constexpr float kFovY = 0.9f;
+constexpr float FOV_Y = 0.9f;
 
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     valo::VtxLayout layout({valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec3f, valo::VtxAttrib::Vec2f, valo::VtxAttrib::Vec3f});
     const valo::VertexBufferID vb = valo.createVertexBuffer(verts.data(), verts.size(), layout);
     const valo::IndexBufferID  ib = valo.createIndexBuffer(g.indices.data(), g.indices.size());
-    const valo::TextureID base = valo.createTexture(g.materials[0].baseColorTex);
+    const valo::TextureID base = valo::loadGLTFTexture(valo, g, g.materials[0].baseColorTex, false);
     const Mat4f nodeWorld = g.nodes[0].world;
 
     // pass 1: the helmet, stamping stencil = 1
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
                         + "   width " + std::to_string(outlineWidth).substr(0, 5) + "   " + std::to_string(fps) + " fps");
 
         const float aspect = window.getAspect();
-        const Mat4f proj  = Mat4f::perspective(kFovY, aspect, 0.1f, 100.f);
+        const Mat4f proj  = Mat4f::perspective(FOV_Y, aspect, 0.1f, 100.f);
         const Mat4f model = orientation * Mat4f::scale({fit, fit, fit}) * Mat4f::translation(-center) * nodeWorld;
         const Uniforms u{proj * view * model, model, base, outlineWidth / fit};
 

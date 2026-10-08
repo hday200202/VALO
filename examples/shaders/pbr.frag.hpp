@@ -30,7 +30,7 @@ inline void pbrFS(const Varyings& in, const Uniforms& u) {
     }
 
     // --- Cook-Torrance over four lights ---
-    const SceneUniforms& scene = valo::uniformBuffer<SceneUniforms>(kSceneSlot);
+    const SceneUniforms& scene = valo::uniformBuffer<SceneUniforms>(SCENE_SLOT);
 
     const Vec3f v = (scene.camPos - in.worldPos).normalized();
     const float nDotV = std::max(n.dot(v), 1e-4f);
@@ -53,13 +53,13 @@ inline void pbrFS(const Varyings& in, const Uniforms& u) {
         const float g = geometrySchlick(nDotL, roughness) * geometrySchlick(nDotV, roughness);
         const Vec3f f = fresnelSchlick(vDotH, f0);
         const Vec3f specular = f * (d * g / std::max(4.f * nDotL * nDotV, 1e-5f));
-        const Vec3f diffuse  = u.albedo * ((1.f / kPi) * (1.f - f.x) * (1.f - metallic));
-        const Vec3f incoming = kLights[i].colour * (kLights[i].intensity / (dist * dist));
+        const Vec3f diffuse  = u.albedo * ((1.f / PI) * (1.f - f.x) * (1.f - metallic));
+        const Vec3f incoming = LIGHTS[i].colour * (LIGHTS[i].intensity / (dist * dist));
         radiance += (diffuse + specular) * incoming * nDotL;
     }
 
     // --- environment: weak diffuse ambient, real specular reflection ---
-    const Vec3f irradiance     = lerp(kAmbientDown, kAmbientUp, n.y * 0.5f + 0.5f);
+    const Vec3f irradiance     = lerp(AMBIENT_DOWN, AMBIENT_UP, n.y * 0.5f + 0.5f);
     const Vec3f ambientDiffuse = u.albedo * irradiance * ((1.f - metallic) * 0.15f);
     const Vec3f refl           = (n * (2.f * n.dot(v)) - v).normalized();
     const Vec3f ambientSpec    = environmentColour(refl) * fresnelSchlickRoughness(nDotV, f0, roughness) * (1.f - roughness * 0.7f);

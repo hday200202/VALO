@@ -5,7 +5,7 @@
 namespace sc {
 
 inline void orbFS(const OrbVaryings& in, const OrbUniforms& u) {
-    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(kSceneSlot);
+    const SceneUniforms& scene = uniformBuffer<SceneUniforms>(SCENE_SLOT);
 
     const Vec3f v = (scene.camPos - in.worldPos).normalized();
     const float facing = saturate(in.normal.normalized().dot(v));
