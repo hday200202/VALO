@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -1899,89 +1900,6 @@ std::string translateRange(
 
 
 /*
-    Every generated shader includes valo.glsl, so valoc carries a copy and drops
-    one beside the output when the directory has none. Embedded rather than
-    copied from a known path, so the tool works from any working directory and a
-    generated shader is never missing its prelude.
-
-    An existing file is left alone - a project is free to extend it.
-*/
-const char* PRELUDE =
-R"GLSL(#extension GL_EXT_nonuniform_qualifier  : require
-
-// lets a uniform/push-constant block mirror a C++ struct field for field,
-// instead of hand-flattening around std140's padding rules
-#extension GL_EXT_scalar_block_layout   : require
-
-// matches valo::EMPTY_TEXTURE
-const uint VALO_EMPTY_TEXTURE  = 0xFFFFFFFFu;
-
-// index = (wrapU * 3 + wrapV) * 2 + filter, matching valo::samplerIndex.
-// Only the symmetric pairs get names; a shader wanting different wraps per
-// axis gets the raw index.
-const uint VALO_REPEAT_NEAREST = 0u;
-const uint VALO_REPEAT_LINEAR  = 1u;
-const uint VALO_CLAMP_NEAREST  = 8u;
-const uint VALO_CLAMP_LINEAR   = 9u;
-const uint VALO_MIRROR_NEAREST = 16u;
-const uint VALO_MIRROR_LINEAR  = 17u;
-
-layout(set = 1, binding = 0) uniform texture2D uTextures[];
-layout(set = 1, binding = 1) uniform sampler   uSamplers[];
-
-vec4 valoTexture(uint tex, vec2 uv, uint samp) {
-    return texture(sampler2D(uTextures[nonuniformEXT(tex)], uSamplers[samp]), uv);
-}
-
-// matches texture(id, uv) in C++, where the Sampler argument defaults
-vec4 valoTexture(uint tex, vec2 uv) {
-    return valoTexture(tex, uv, VALO_REPEAT_LINEAR);
-}
-// Mip 0, explicitly. The software backend derives a LOD only when the uv it is
-// given is an interpolated varying; for any computed uv - a ray-traced hit, say
-// - it samples level 0. Hardware derivatives of a computed uv jump at every
-// triangle edge and would pick the smallest mip there, so valoc emits this
-// instead of valoTexture whenever the uv is not a varying.
-vec4 valoTextureLod0(uint tex, vec2 uv, uint samp) {
-    return textureLod(sampler2D(uTextures[nonuniformEXT(tex)], uSamplers[samp]), uv, 0.0);
-}
-
-vec4 valoTextureLod0(uint tex, vec2 uv) {
-    return valoTextureLod0(tex, uv, VALO_REPEAT_LINEAR);
-}
-)GLSL";
-
-
-// rewritten whenever it differs, not just when missing, so a change to the
-// prelude reaches shaders translated before it
-void writePreludeIfChanged(const std::string& outPath) {
-    namespace fs = std::filesystem;
-
-    const fs::path dir = fs::path(outPath).parent_path();
-    const fs::path prelude = (dir.empty() ? fs::path(".") : dir) / "valo.glsl";
-
-    if (std::FILE* in = std::fopen(prelude.string().c_str(), "rb")) {
-        std::string have;
-        char buf[4096];
-        size_t n = 0;
-        while ((n = std::fread(buf, 1, sizeof(buf), in)) > 0) have.append(buf, n);
-        std::fclose(in);
-        if (have == PRELUDE) return;
-    }
-
-    std::FILE* f = std::fopen(prelude.string().c_str(), "wb");
-    if (!f) {
-        std::fprintf(stderr, "valoc: cannot write %s\n", prelude.string().c_str());
-        return;
-    }
-
-    std::fwrite(PRELUDE, 1, std::strlen(PRELUDE), f);
-    std::fclose(f);
-    std::printf("  %-12s %s\n", "prelude", prelude.string().c_str());
-}
-
-
-/*
     Free functions and constants, emitted ahead of main() in the order they were
     written - which is also a valid declaration order, because C++ required it.
 */
@@ -2662,11 +2580,14 @@ bool findIntConstant(CXCursor root, const std::string& name, long long& value) {
     struct from, like GLTFVertex. System and ext/ headers never change under a
     running project, so they are left out.
 */
-std::vector<std::string> sourceDeps(CXTranslationUnit tu) {
-    struct Deps { CXTranslationUnit tu; std::vector<std::string> paths; std::string cwd; };
+std::vector<std::string> sourceDeps(CXTranslationUnit tu, const std::string& output) {
+    namespace fs = std::filesystem;
+
+    struct Deps { CXTranslationUnit tu; std::vector<std::string> paths; std::string cwd; fs::path base; };
     Deps deps;
-    deps.tu  = tu;
-    deps.cwd = std::filesystem::current_path().generic_string() + "/";
+    deps.tu   = tu;
+    deps.cwd  = fs::current_path().generic_string() + "/";
+    deps.base = output.empty() ? fs::path() : fs::absolute(output).parent_path();
 
     clang_getInclusions(tu, [](CXFile f, CXSourceLocation*, unsigned, CXClientData d) {
         auto* dp = static_cast<Deps*>(d);
@@ -2683,10 +2604,12 @@ std::vector<std::string> sourceDeps(CXTranslationUnit tu) {
         // the only way to tell them apart
         if (p.rfind("ext/", 0) == 0 || p.find("/ext/") != std::string::npos) return;
 
-        // inside the project: relative, which reads better and survives a move
-        if (p.rfind(dp->cwd, 0) == 0) p = p.substr(dp->cwd.size());
-
-        p = std::filesystem::path(p).lexically_normal().generic_string();
+        if (!dp->base.empty()) {
+            p = fs::absolute(p).lexically_normal().lexically_relative(dp->base).generic_string();
+        } else {
+            if (p.rfind(dp->cwd, 0) == 0) p = p.substr(dp->cwd.size());
+            p = fs::path(p).lexically_normal().generic_string();
+        }
 
         for (const std::string& have : dp->paths) if (have == p) return;
         dp->paths.push_back(p);
@@ -2695,21 +2618,70 @@ std::vector<std::string> sourceDeps(CXTranslationUnit tu) {
     return deps.paths;
 }
 
+/*
+    The same rules the Vulkan backend applies before translating at runtime:
+    missing is stale, hand-written (no marker) never is, and generated is stale
+    when valoc or anything it was translated from is newer than it.
+*/
+bool isStale(const std::string& glslPath, const std::string& self) {
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(glslPath)) return true;
+
+    std::ifstream in(glslPath);
+    std::string line;
+    bool generated = false;
+    std::vector<std::string> deps;
+
+    for (int n = 0; n < 256 && std::getline(in, line); ++n) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        if (line.rfind("// generated by valoc", 0) == 0)  generated = true;
+        else if (line.rfind("// valoc-dep: ", 0) == 0)    deps.push_back(line.substr(14));
+        else if (generated && !line.empty() && line.rfind("//", 0) != 0) break;
+    }
+
+    if (!generated)   return false;
+    if (deps.empty()) return true;
+
+    std::error_code ec;
+    const auto built = fs::last_write_time(glslPath, ec);
+    if (ec) return true;
+
+    for (const std::string& exe : {self, self + ".exe"}) {
+        const auto t = fs::last_write_time(exe, ec);
+        if (!ec) { if (t > built) return true; break; }
+    }
+
+    const fs::path dir = fs::path(glslPath).parent_path();
+    for (const std::string& d : deps) {
+        const auto t = fs::last_write_time(dir / d, ec);
+        if (ec || t > built) return true;
+    }
+
+    return false;
+}
+
+
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: valoc <shader.hpp> [-o out.glsl] [-I dir]...\n");
+        std::fprintf(stderr, "usage: valoc <shader.hpp> [-o out.glsl] [-I dir]... [--if-stale]\n");
         return 2;
     }
 
     const std::string input = argv[1];
     std::string output;
     std::vector<std::string> includes;
+    bool ifStale = false;
 
     for (int i = 2; i < argc; ++i) {
         if (!std::strcmp(argv[i], "-o") && i + 1 < argc)      output = argv[++i];
         else if (!std::strcmp(argv[i], "-I") && i + 1 < argc) includes.push_back(argv[++i]);
         else if (!std::strncmp(argv[i], "-I", 2))             includes.push_back(argv[i] + 2);
+        else if (!std::strcmp(argv[i], "--if-stale"))         ifStale = true;
     }
+
+    if (ifStale && !output.empty() && !isStale(output, argv[0])) return 0;
 
     const Stage stage = stageOf(input);
     if (stage == Stage::Unknown) {
@@ -2875,7 +2847,7 @@ int main(int argc, char** argv) {
                 const size_t at = glsl.find(marker);
                 if (at != std::string::npos) {
                     std::string deps;
-                    for (const std::string& d : sourceDeps(tu)) deps += "// valoc-dep: " + d + "\n";
+                    for (const std::string& d : sourceDeps(tu, output)) deps += "// valoc-dep: " + d + "\n";
                     glsl.insert(at + marker.size(), deps);
                 }
 
@@ -2885,7 +2857,6 @@ int main(int argc, char** argv) {
                     std::fwrite(glsl.data(), 1, glsl.size(), f);
                     std::fclose(f);
                     std::printf("  %-12s %s\n", "wrote", output.c_str());
-                    writePreludeIfChanged(output);
                 } else {
                     std::fprintf(stderr, "valoc: cannot write %s\n", output.c_str());
                     rc = 1;

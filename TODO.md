@@ -369,6 +369,38 @@ them now means the API doesn't move later. Maybe a day of Harrison-hours.
       format. Vulkan has these for free; software needs them to exist so the
       API doesn't change. ~2 hours.
 
+- [✅] **Window: the input a UI needs** (2026-10-08, UILO item 3). Additive;
+      the bitset queries are unchanged and `wasKeyPressed` still ignores
+      repeats. `events()` is an ordered per-frame list of key, text, button,
+      move, wheel, focus and close events, each with a nanosecond timestamp,
+      modifiers and the mouse position in pixels at that event. Keys carry
+      `repeat` and `symbol`, the layout's character from
+      `SDL_GetKeyFromScancode`, so Ctrl+Z binds by letter on any layout.
+      Modifiers are tracked in event order from each key event: the live
+      `SDL_GetModState()` is already past the whole batch when `pollEvents`
+      reads it. Wheels report `precise` when the delta is not whole notches;
+      SDL 3.2 has no `integer_x`, which arrives in 3.4.
+
+      Also: `startTextInput` / `stopTextInput` / `isTextInputActive`, the
+      clipboard, `setCursor(CursorShape)` with cached system cursors,
+      `setResizeCallback` (an event watch, so it runs inside the OS's modal
+      resize loop, and sets `resized()` so VALO picks up the new size there),
+      `nativeHandle`, `getDisplayScale`, `getRefreshRate`, and static
+      `getSystemTheme` / `basePath` / `prefPath`.
+
+      *Verified* with `input.cpp`, which prints every event, on both backends.
+      Input was posted as window messages, because `SendInput` is dropped in
+      this environment. Checked: é, ü and 日本 arrive as text; held Backspace
+      gives five `repeat` downs; Ctrl+Z gives `symbol 'z'` on QWERTY, and
+      physical W gives `'z'` under AZERTY; Ctrl+wheel carries the modifier;
+      horizontal and 0.25-notch wheels; copy and paste both round-trip through
+      the OS clipboard with non-ASCII text; `GetCursorInfo` reports
+      hand / I-beam / size-WE / cross over the four regions. Keyboard
+      `SC_SIZE` enters the real modal sizing loop, and the callback redrew
+      124 (Vulkan) to 188 (software) times while the window grew 960 → 1081.
+      Not covered: a real IME composition, and Shift+wheel, because SDL's
+      stuck-key check releases a posted Shift at once.
+
 ## Usability audit (2026-10-08)
 
 Things that worked only if you already knew the trick. All fixed unless marked.
@@ -715,6 +747,126 @@ Step-by-step bring-up notes: `VULKAN_SETUP.md`. Phase plan: `PLAN.md`.
       still unwritten**, so nothing yet checks the two backends pixel against
       pixel - this is closed by eye, not by test.
 
+- [✅] **Per-frame updates without a queue drain** (2026-10-08, UILO item 1).
+      Creation still goes through the one-shot. The first `update*` on a buffer
+      turns it into `framesInFlight` persistently mapped host-visible copies;
+      an update `memcpy`s into the current slot's copy and keeps a CPU copy, so
+      a slot that missed the last update is caught up when `draw` binds it.
+      Texture updates stage into a per-slot ring and record into a per-slot
+      upload command buffer that `show` submits ahead of the frame in the same
+      `vkQueueSubmit2`. The fence wait moved out of `beginFrameIfNeeded` into
+      an idempotent `waitForSlot`, which every update calls first. Zero-byte
+      buffers are valid and empty.
+
+      "Read at `endFrame`" from §3 still holds: the last update before
+      `endFrame` is what every draw of that frame binds.
+
+      *Verified:* `dyntest` (scratchpad) updates a vertex, index, uniform and
+      storage buffer, a texture sub-rect, and every 10th frame a full mipped
+      texture, for 1000 frames at `framesInFlight = 2`. Validation and
+      synchronization validation are clean, and the same check fires
+      `SYNC-HAZARD-WRITE-AFTER-READ` when the upload barrier is broken on
+      purpose. An `api_dump` count over 200 frames shows no `vkQueueWaitIdle`
+      after frame 1, `vkDeviceWaitIdle` only at shutdown, and no
+      `vkCreateBuffer` after frame 5. `validation = true` now turns on
+      synchronization validation too, and the callback prints the message ID.
+
+      `clipstack --vulkan --frames 2000` (vsync off, 1280x960):
+
+      |                  | before   | after    |
+      |------------------|----------|----------|
+      | no updates       | 0.47 ms  | 0.46 ms  |
+      | `--update`       | 0.56 ms  | 0.47 ms  |
+
+      Also fixed on the way: `updateStorageBuffer` / `releaseStorageBuffer` in
+      the Vulkan dispatch table called the software backend.
+
+- [✅] **Shaders without the repo or a toolchain** (2026-10-08, UILO item 2).
+      `valo_embed_shaders(<target> SHADERS a.vert.hpp a.frag.hpp)`
+      (`cmake/ValoEmbedShaders.cmake`) compiles each shader with the vendored
+      `glslc` at build time and turns the SPIR-V into a generated `.cpp` that
+      calls `registerSpirv` (`render/SpirvRegistry.hpp`). `loadSpirv` checks
+      that registry first, matched by suffix the way `findShader` is; the two
+      now share `render/ShaderPath.hpp`. valoc runs first only if it was built,
+      and `--if-stale` gives it the backend's staleness rules.
+
+      The runtime fallback stays, but builds its paths from `VALO_SOURCE_DIR`
+      and `VALO_GLSLC_PATH`, baked in at configure time, instead of the working
+      directory. `valo.glsl` moved to `include/render/vulkan/`, and valoc no
+      longer writes a copy beside each shader. `valoc-dep:` paths are now
+      relative to the GLSL file, so the staleness check works from anywhere; a
+      shader translated before that reads its deps as missing and retranslates
+      once.
+
+      *Verified:* `clipstack` embeds `roundrect`. Copied with its three MinGW
+      runtime DLLs into an empty directory, run with only the Windows system
+      directories on `PATH` and with `bin/valoc.exe` and the SDK's `glslc.exe`
+      renamed, `--vulkan` renders correctly and prints no `translating` /
+      `compiling` lines.
+
+      `*.vert` / `*.frag` are gitignored, so an embedded shader's GLSL needs an
+      exception (`roundrect`'s has one) for a build without valoc to work.
+
+- [✅] **Usable as a subproject, and on MSVC** (2026-10-08, UILO item 4).
+      Every path is `CMAKE_CURRENT_SOURCE_DIR`. `VALO_BUILD_EXAMPLES` and the
+      new `VALO_BUILD_VALOC` default to `PROJECT_IS_TOP_LEVEL`, and so do the
+      `lib/` output directories and the `Release` default. SDL3 is only looked
+      up when the parent has no `SDL3::SDL3-static`. MSVC gets `/utf-8`
+      (public: the headers are UTF-8) and an import library generated from the
+      vendored `vulkan-1.dll` with the toolchain's own `dumpbin` / `lib`,
+      because the SDK payload has no `.lib`. The runtime library is left to
+      the parent.
+
+      MSVC also found three things GCC let through: `Vec3` / `Vec4` gave
+      default member initializers to fields of an anonymous struct in a union
+      (C2926), now zeroed in the constructors; `Timestamp` used
+      `file_clock::to_sys`, which MSVC lacks, so it uses `clock_cast` there; and
+      seven implicit narrowings. `Window::create` also ignored its
+      `respectOSScale` argument.
+
+      *Verified:* a scratch project outside the tree does
+      `add_subdirectory(VALO)`, links `VALO::VALO`, embeds `hello` with
+      `valo_embed_shaders`, and builds warning-free with MinGW (VALO's
+      prebuilt SDL) and with MSVC 14.51 (its own SDL3 built from source).
+      Examples and valoc are off, nothing is written into VALO's `lib/`, and
+      both builds run on both backends without translating anything.
+
+- [✅] **Blend writes the same alpha on both backends** (2026-10-08, UILO item
+      5). Standard "over": Alpha writes `srcA + dstA·(1 − srcA)`, Additive
+      leaves `dstA`. Software used to force 1; Vulkan wrote the source alpha
+      (`ONE, ZERO`) and now uses `ONE, ONE_MINUS_SRC_ALPHA` / `ZERO, ONE`. The
+      software present texture is `SDL_BLENDMODE_NONE`, so a backbuffer alpha
+      below 1 can never show through. Every example clears to alpha 1, so
+      nothing on screen changes.
+
+      *Verified:* `alphatest` (scratchpad) clears a target to alpha 0.5, draws
+      an Alpha and an Additive quad at 0.5 into it, and shows the target's
+      alpha as grey. Software and Vulkan both read 0.75 (191) for Alpha and
+      0.5 (127 / 128) for Additive and untouched. Before the change, software
+      read 1.0 everywhere and Vulkan read 0.5 everywhere.
+
+      **Still different:** Additive *colour*. Software adds `src·srcA`; Vulkan
+      adds `src` (`srcColor = ONE`). `galaxy.frag` writes alpha 0.35, so
+      `particles` is about three times brighter on Vulkan. Left alone because
+      matching it changes what an example looks like.
+
+- [✅] **Stencil reference is dynamic state** (2026-10-08, UILO item 6).
+      `stencilRef` is out of `packPipelineState`, and
+      `VK_DYNAMIC_STATE_STENCIL_REFERENCE` is set from the command in `draw`
+      whenever `usesStencil(cmd)`, so a deeper clip reuses the pipeline it
+      already has.
+
+      *Verified:* `clipstack --vulkan --depth N` wraps the scene in extra
+      whole-window clips. Counted with `api_dump` over 60 frames:
+
+      |            | before | after |
+      |------------|--------|-------|
+      | depth 3    | 10     | 5     |
+      | depth 20   | 45     | 5     |
+
+      Validation is clean at depth 20, and `stencil --vulkan` still matches
+      software.
+
 ### Known gaps, deliberately left
 
 - ~~**Every `valid*` predicate is false on Vulkan**~~ - **fixed.** The bounds
@@ -899,7 +1051,13 @@ shader registry and the Vulkan backend translates with `valoc`.
 - `stencil.cpp` — helmet with a stencil outline (Replace + NotEqual extruded
   shell along smoothed normals) and an SDF circle clip (discard + Incr).
 - `clipstack.cpp` — UI-style: pixel-space ortho, rounded-rect panels, a
-  scrolling list with three nested `pushClip`s. `C` toggles clipping.
+  scrolling list with three nested `pushClip`s. `C` toggles clipping. Its
+  shaders are embedded (`valo_embed_shaders`), so `--vulkan` needs no shader
+  files or tools at runtime. `--update` rewrites its buffers every frame;
+  `--frames N` times N frames with vsync off.
+- `input.cpp` — every `Window` event printed as it arrives, cursor shapes over
+  four regions, clipboard on Ctrl+C / Ctrl+V, Tab toggles text input, redraws
+  from the resize callback.
 - `showcase.cpp` + `engines/ShowcaseEngine.hpp` — the big one: glTF models on a glossy
   mirrored floor under a procedural sky, four orbiting lights with visible
   emissive orbs, ACES tonemapping. Lights/camera/exposure in a `SceneUniforms`

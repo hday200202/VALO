@@ -20,6 +20,9 @@ bool SoftwareRenderer::recreateTexture(const uint32_t w, const uint32_t h) {
         return false;
     }
 
+    // a target's alpha is data now, not coverage, so it must never show through on present
+    SDL_SetTextureBlendMode(m_sdlTexture, SDL_BLENDMODE_NONE);
+
     m_texW = w; m_texH = h;
     return true;
 }
@@ -143,7 +146,7 @@ bool SoftwareRenderer::init() {
 
     int w, h;
     SDL_GetWindowSizeInPixels(m_owner->m_cfg.sdlWindow, &w, &h);
-    m_targets.push_back(std::make_unique<RenderTarget>(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale));
+    m_targets.push_back(std::make_unique<RenderTarget>(uint32_t(w * m_owner->m_cfg.renderScale), uint32_t(h * m_owner->m_cfg.renderScale)));
     m_targets.back()->setSrgb(m_owner->m_cfg.srgbBackbuffer);
 
     if (!m_sdlRenderer) {
@@ -151,7 +154,7 @@ bool SoftwareRenderer::init() {
         return false;
     }
 
-    if (!recreateTexture(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale)) return false;
+    if (!recreateTexture(uint32_t(w * m_owner->m_cfg.renderScale), uint32_t(h * m_owner->m_cfg.renderScale))) return false;
 
     SDL_SetRenderVSync(m_sdlRenderer, m_owner->m_cfg.vsync);
 
@@ -324,9 +327,9 @@ void SoftwareRenderer::updateTextureRect(
 void SoftwareRenderer::resize(const uint32_t w, const uint32_t h) {
     for (auto& tgt : m_targets)
         if (tgt && tgt->tracksWindow()) // destroyed slots are null
-            tgt->resize(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale);
+            tgt->resize(uint32_t(w * m_owner->m_cfg.renderScale), uint32_t(h * m_owner->m_cfg.renderScale));
 
-    recreateTexture(w * m_owner->m_cfg.renderScale, h * m_owner->m_cfg.renderScale);
+    recreateTexture(uint32_t(w * m_owner->m_cfg.renderScale), uint32_t(h * m_owner->m_cfg.renderScale));
 }
 
 void SoftwareRenderer::setVsync(const bool vsync) { 

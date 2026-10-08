@@ -15,3 +15,8 @@ foreach(src IN LISTS VALO_EXAMPLE_SOURCES)
         BUILD_RPATH "${VALO_LIB_DIR}"
     )
 endforeach()
+
+# compiled in, so clipstack --vulkan needs no shader files, glslc or valoc at runtime
+if(VALO_HAS_VULKAN)
+    valo_embed_shaders(clipstack SHADERS shaders/roundrect.vert.hpp shaders/roundrect.frag.hpp)
+endif()

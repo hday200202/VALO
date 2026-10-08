@@ -1,5 +1,6 @@
 #include "VulkanRenderer.hpp"
 #include "../Renderer.hpp"
+#include "../SpirvRegistry.hpp"
 
 #ifdef VALO_HAS_VULKAN
 
@@ -38,8 +39,8 @@ bool VulkanRenderer::beginFrameIfNeeded() {
 
     if (!applyRenderScale()) return false;
 
+    if (!waitForSlot()) return false;
     const VkFence fence = m_frames.inFlight(frame);
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     VkResult r = vkAcquireNextImageKHR(
         device, m_swapchain.handle(), UINT64_MAX,
@@ -270,7 +271,9 @@ bool VulkanRenderer::uploadBuffer(
     const VkBufferUsageFlags usage,
     GPUBuffer& out
 ) {
-    if (bytes == 0) return false;
+    out.size = bytes;
+    if (bytes == 0) return true;
+
     const VmaAllocator alloc = m_ctx.allocator();
 
     const VkBufferCreateInfo stagingCi{
@@ -353,128 +356,38 @@ bool VulkanRenderer::uploadImage(GPUTexture& tex, const uint32_t* data) {
         return false;
 
     std::memcpy(stagingInfo.pMappedData, data, size_t(bytes));
-
-    const VkCommandBuffer cmd = m_ctx.beginOneShot();
-    if (!cmd) { vmaDestroyBuffer(alloc, staging, stagingAlloc); }
-
-    transitionImage(cmd, tex.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, tex.mipLevels);
-
-    const VkBufferImageCopy region{
-        .imageSubresource   = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-        .imageExtent        = { tex.width, tex.height, 1 }
-    };
-    vkCmdCopyBufferToImage(cmd, staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    int32_t mw = int32_t(tex.width), mh = int32_t(tex.height);
-
-    for (uint32_t i = 1; i < tex.mipLevels; ++i) {
-        transitionImage(cmd, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i - 1, 1);
-
-        const int32_t nw = mw > 1 ? mw / 2 : 1;
-        const int32_t nh = mh > 1 ? mh / 2 : 1;
-
-        const VkImageBlit blit{
-            .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 },
-            .srcOffsets     = { {0, 0, 0}, {mw, mh, 1} },
-            .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i,     0, 1 },
-            .dstOffsets     = { {0, 0, 0}, {nw, nh, 1} }
-        };
-
-        vkCmdBlitImage(
-            cmd,
-            tex.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &blit, VK_FILTER_LINEAR
-        );
-
-        transitionImage(
-            cmd, tex.image,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 
-            i - 1, 1
-        );
-
-        mw = nw;
-        mh = nh;
-    }
-
-    transitionImage(
-        cmd, tex.image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        tex.mipLevels - 1, 1
-    );
-
-    const bool ok = m_ctx.endOneShot(cmd);
-    vmaDestroyBuffer(alloc, staging, stagingAlloc);
-    if (ok) tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return ok;
-}
-
-
-/*
-    Partial upload into an existing image. uploadImage can transition from
-    UNDEFINED because it overwrites everything; a sub-rect has to keep what is
-    already there, so it transitions from the layout the image is actually in -
-    which is what tex.layout is for.
-*/
-bool VulkanRenderer::uploadImageRect(
-    GPUTexture& tex,
-    const uint32_t x, const uint32_t y,
-    const uint32_t w, const uint32_t h,
-    const uint32_t* data
-) {
-    if (!w || !h || !data) return false;
-
-    if (x + w > tex.width || y + h > tex.height) {
-        std::fprintf(
-            stderr, "[vulkan] updateTextureRect: %ux%u at (%u,%u) does not fit a %ux%u texture\n",
-            w, h, x, y, tex.width, tex.height
-        );
-        return false;
-    }
-
-    const VmaAllocator alloc = m_ctx.allocator();
-    const VkDeviceSize bytes = VkDeviceSize(w) * h * 4;
-
-    const VkBufferCreateInfo sci{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size  = bytes,
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-    };
-
-    const VmaAllocationCreateInfo sai{
-        .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-               | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-        .usage = VMA_MEMORY_USAGE_AUTO
-    };
-
-    VkBuffer staging = VK_NULL_HANDLE;
-    VmaAllocation stagingAlloc = VK_NULL_HANDLE;
-    VmaAllocationInfo stagingInfo{};
-
-    if (vmaCreateBuffer(alloc, &sci, &sai, &staging, &stagingAlloc, &stagingInfo) != VK_SUCCESS)
-        return false;
-
-    std::memcpy(stagingInfo.pMappedData, data, size_t(bytes));
+    vmaFlushAllocation(alloc, stagingAlloc, 0, bytes);
 
     const VkCommandBuffer cmd = m_ctx.beginOneShot();
     if (!cmd) { vmaDestroyBuffer(alloc, staging, stagingAlloc); return false; }
 
-    transitionImage(
-        cmd, tex.image,
-        tex.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        0, tex.mipLevels
-    );
+    recordImageUpload(cmd, tex, staging, 0, 0, 0, tex.width, tex.height, VK_IMAGE_LAYOUT_UNDEFINED);
+
+    const bool ok = m_ctx.endOneShot(cmd);
+    vmaDestroyBuffer(alloc, staging, stagingAlloc);
+    if (!ok) tex.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    return ok;
+}
+
+
+void VulkanRenderer::recordImageUpload(
+    const VkCommandBuffer cmd,
+    GPUTexture& tex,
+    const VkBuffer src, const VkDeviceSize offset,
+    const uint32_t x, const uint32_t y,
+    const uint32_t w, const uint32_t h,
+    const VkImageLayout from
+) {
+    transitionImage(cmd, tex.image, from, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, tex.mipLevels);
 
     const VkBufferImageCopy region{
+        .bufferOffset       = offset,
         .imageSubresource   = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
         .imageOffset        = { int32_t(x), int32_t(y), 0 },
         .imageExtent        = { w, h, 1 }
     };
-    vkCmdCopyBufferToImage(cmd, staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, src, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    // mip 0 changed, so the rest of the chain is stale and gets rebuilt
     int32_t mw = int32_t(tex.width), mh = int32_t(tex.height);
 
     for (uint32_t i = 1; i < tex.mipLevels; ++i) {
@@ -515,10 +428,7 @@ bool VulkanRenderer::uploadImageRect(
         tex.mipLevels - 1, 1
     );
 
-    const bool ok = m_ctx.endOneShot(cmd);
-    vmaDestroyBuffer(alloc, staging, stagingAlloc);
-    if (ok) tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return ok;
+    tex.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
 
@@ -690,6 +600,7 @@ bool VulkanRenderer::recreateSwapchain() {
     // renderFinished is one semaphore per swapchain image, so a driver that
     // varies the count needs VulkanFrames rebuilt rather than an error
     if (m_swapchain.imageCount() != oldImageCount) {
+        flushUploads();
         m_frames.shutdown();
 
         if (!m_frames.init(m_ctx, m_owner->m_cfg.framesInFlight, m_swapchain.imageCount())) {
@@ -698,6 +609,7 @@ bool VulkanRenderer::recreateSwapchain() {
         }
 
         m_frameIndex = 0;
+        m_slotReady  = false;
     }
 
     m_swapLayouts.assign(m_swapchain.imageCount(), VK_IMAGE_LAYOUT_UNDEFINED);
@@ -719,32 +631,294 @@ void VulkanRenderer::retireBuffer(GPUBuffer& buf) {
 
 
 void VulkanRenderer::drainRetiredBuffers(const bool force) {
-    const VmaAllocator alloc = m_ctx.allocator();
-
     size_t keep = 0;
     for (size_t i = 0; i < m_retiredBuffers.size(); ++i) {
         auto& [buf, frame] = m_retiredBuffers[i];
 
         if (force || m_owner->m_frame - frame >= m_owner->m_cfg.framesInFlight) {
-            vmaDestroyBuffer(alloc, buf.buffer, buf.allocation);
-        } else m_retiredBuffers[keep++] = m_retiredBuffers[i];
+            destroyBufferNow(buf);
+        } else {
+            if (keep != i) m_retiredBuffers[keep] = std::move(m_retiredBuffers[i]);
+            ++keep;
+        }
     }
 
     m_retiredBuffers.resize(keep);
 }
 
 
+void VulkanRenderer::destroyBufferNow(GPUBuffer& buf) {
+    const VmaAllocator alloc = m_ctx.allocator();
+
+    if (buf.buffer) vmaDestroyBuffer(alloc, buf.buffer, buf.allocation);
+    for (BufferSlot& slot : buf.slots)
+        if (slot.buffer) vmaDestroyBuffer(alloc, slot.buffer, slot.allocation);
+
+    buf = GPUBuffer{};
+}
+
+
+
+/* ---- per-frame updates -------------------------------------------------- */
+
+// idempotent per slot: the fence is only reset once beginFrameIfNeeded has acquired
+bool VulkanRenderer::waitForSlot() {
+    if (m_slotReady) return true;
+
+    const VkFence fence = m_frames.inFlight(m_frameIndex);
+    if (vkWaitForFences(m_ctx.device(), 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) return false;
+
+    m_slotReady = true;
+    return true;
+}
+
+
+bool VulkanRenderer::allocSlotBuffer(BufferSlot& slot, const VkDeviceSize bytes, const VkBufferUsageFlags usage) {
+    const VkBufferCreateInfo ci{
+        .sType          = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size           = bytes,
+        .usage          = usage,
+        .sharingMode    = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    const VmaAllocationCreateInfo ai{
+        .flags  = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        .usage  = VMA_MEMORY_USAGE_AUTO
+    };
+
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(m_ctx.allocator(), &ci, &ai, &slot.buffer, &slot.allocation, &info) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] dynamic buffer allocation failed\n");
+        slot = BufferSlot{};
+        return false;
+    }
+
+    slot.mapped   = info.pMappedData;
+    slot.capacity = bytes;
+    return true;
+}
+
+
+// a copy recorded earlier this frame may still read it, so it goes through the retire queue
+void VulkanRenderer::retireSlotBuffer(BufferSlot& slot) {
+    if (!slot.buffer) return;
+
+    GPUBuffer old;
+    old.buffer     = slot.buffer;
+    old.allocation = slot.allocation;
+    retireBuffer(old);
+
+    slot = BufferSlot{};
+}
+
+
+bool VulkanRenderer::writeSlot(GPUBuffer& buf, BufferSlot& slot) {
+    const VkDeviceSize bytes = buf.latest.size();
+
+    if (bytes > slot.capacity) {
+        const VkDeviceSize grown = std::max(bytes, slot.capacity * 2);
+        retireSlotBuffer(slot);
+        if (!allocSlotBuffer(slot, grown, buf.usage)) return false;
+    }
+
+    if (bytes) {
+        std::memcpy(slot.mapped, buf.latest.data(), size_t(bytes));
+        vmaFlushAllocation(m_ctx.allocator(), slot.allocation, 0, bytes);
+    }
+
+    slot.size    = bytes;
+    slot.version = buf.version;
+    return true;
+}
+
+
+bool VulkanRenderer::updateDynamic(
+    GPUBuffer& buf,
+    const void* header, const size_t headerBytes,
+    const void* data, const size_t bytes
+) {
+    if (!waitForSlot()) return false;
+
+    if (buf.slots.empty()) {
+        GPUBuffer old;
+        old.buffer     = buf.buffer;
+        old.allocation = buf.allocation;
+        retireBuffer(old);
+
+        buf.buffer     = VK_NULL_HANDLE;
+        buf.allocation = VK_NULL_HANDLE;
+        buf.slots.resize(m_frames.framesInFlight());
+    }
+
+    buf.latest.resize(headerBytes + bytes);
+    if (headerBytes)   std::memcpy(buf.latest.data(), header, headerBytes);
+    if (bytes && data) std::memcpy(buf.latest.data() + headerBytes, data, bytes);
+
+    buf.size = buf.latest.size();
+    ++buf.version;
+
+    return writeSlot(buf, buf.slots[m_frameIndex]);
+}
+
+
+// a slot that missed the last update is caught up from the CPU copy before it is bound
+bool VulkanRenderer::currentBuffer(GPUBuffer& buf, VkBuffer& out, VkDeviceSize& bytes) {
+    if (!buf.live) return false;
+
+    if (buf.slots.empty()) {
+        out   = buf.buffer;
+        bytes = buf.size;
+        return true;
+    }
+
+    BufferSlot& slot = buf.slots[m_frameIndex];
+    if (slot.version != buf.version && !writeSlot(buf, slot)) return false;
+
+    out   = slot.buffer;
+    bytes = slot.size;
+    return true;
+}
+
+
+bool VulkanRenderer::createUploadSlots() {
+    const VkCommandPoolCreateInfo pi{
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags              = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex   = m_ctx.graphicsFamily()
+    };
+
+    if (vkCreateCommandPool(m_ctx.device(), &pi, nullptr, &m_uploadPool) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vulkan] upload command pool creation failed\n");
+        return false;
+    }
+
+    m_uploads.resize(m_frames.framesInFlight());
+
+    for (UploadSlot& u : m_uploads) {
+        const VkCommandBufferAllocateInfo ai{
+            .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool        = m_uploadPool,
+            .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1
+        };
+
+        if (vkAllocateCommandBuffers(m_ctx.device(), &ai, &u.cmd) != VK_SUCCESS) return false;
+    }
+
+    return true;
+}
+
+
+void VulkanRenderer::destroyUploadSlots() {
+    const VmaAllocator alloc = m_ctx.allocator();
+
+    for (UploadSlot& u : m_uploads)
+        if (u.staging.buffer) vmaDestroyBuffer(alloc, u.staging.buffer, u.staging.allocation);
+    m_uploads.clear();
+
+    if (m_uploadPool) {
+        vkDestroyCommandPool(m_ctx.device(), m_uploadPool, nullptr);
+        m_uploadPool = VK_NULL_HANDLE;
+    }
+}
+
+
+// for uploads recorded against a slot that will not be shown again
+void VulkanRenderer::flushUploads() {
+    for (UploadSlot& u : m_uploads) {
+        if (!u.open) continue;
+
+        vkEndCommandBuffer(u.cmd);
+        u.open = false;
+
+        const VkCommandBufferSubmitInfo cmdInfo{
+            .sType          = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer  = u.cmd
+        };
+
+        const VkSubmitInfo2 submit{
+            .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos    = &cmdInfo
+        };
+
+        vkQueueSubmit2(m_ctx.graphicsQueue(), 1, &submit, VK_NULL_HANDLE);
+    }
+
+    vkQueueWaitIdle(m_ctx.graphicsQueue());
+}
+
+
+VkCommandBuffer VulkanRenderer::uploadCommands() {
+    if (!waitForSlot()) return VK_NULL_HANDLE;
+
+    UploadSlot& u = m_uploads[m_frameIndex];
+    if (u.open) return u.cmd;
+
+    vkResetCommandBuffer(u.cmd, 0);
+
+    const VkCommandBufferBeginInfo bi{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+    if (vkBeginCommandBuffer(u.cmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+
+    u.open = true;
+    u.used = 0;
+    return u.cmd;
+}
+
+
+bool VulkanRenderer::stageUpload(const void* data, const VkDeviceSize bytes, VkBuffer& src, VkDeviceSize& offset) {
+    UploadSlot& u = m_uploads[m_frameIndex];
+
+    if (u.used + bytes > u.staging.capacity) {
+        const VkDeviceSize grown = std::max(u.used + bytes, u.staging.capacity * 2);
+        retireSlotBuffer(u.staging);
+        if (!allocSlotBuffer(u.staging, grown, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return false;
+        u.used = 0;
+    }
+
+    std::memcpy(static_cast<uint8_t*>(u.staging.mapped) + u.used, data, size_t(bytes));
+    vmaFlushAllocation(m_ctx.allocator(), u.staging.allocation, u.used, bytes);
+
+    src    = u.staging.buffer;
+    offset = u.used;
+    u.used = (u.used + bytes + 15) & ~VkDeviceSize(15);
+    return true;
+}
+
+
 namespace {
 
-// std::system goes through cmd.exe on Windows, which reads a leading bin/ as a
-// command plus a /switch
+#ifndef VALO_SOURCE_DIR
+#define VALO_SOURCE_DIR "."
+#endif
+
+#ifndef VALO_GLSLC_PATH
+#define VALO_GLSLC_PATH "glslc"
+#endif
+
+const std::string SOURCE_DIR = VALO_SOURCE_DIR;
+
 #ifdef _WIN32
-const char* const VALOC_PATH   = "bin\\valoc.exe";
+const std::string VALOC_PATH  = SOURCE_DIR + "/bin/valoc.exe";
 const char* const NULL_OUTPUT = " > NUL";
 #else
-const char* const VALOC_PATH   = "./bin/valoc";
+const std::string VALOC_PATH  = SOURCE_DIR + "/bin/valoc";
 const char* const NULL_OUTPUT = " > /dev/null";
 #endif
+
+// cmd.exe strips the first and last quote of a line that starts with one, so
+// the whole line gets a pair of its own and the quoted executable survives
+std::string shellLine(const std::string& line) {
+#ifdef _WIN32
+    return "\"" + line + "\"";
+#else
+    return line;
+#endif
+}
 
 /*
     Whether the GLSL beside a C++ shader has to be (re)translated.
@@ -784,8 +958,9 @@ bool needsTranslation(const std::string& glslPath) {
     const auto translator = fs::last_write_time(VALOC_PATH, ec);
     if (!ec && translator > built) return true;
 
+    const fs::path dir = fs::path(glslPath).parent_path();
     for (const std::string& d : deps) {
-        const auto t = fs::last_write_time(d, ec);
+        const auto t = fs::last_write_time(dir / d, ec);
         if (ec || t > built) return true;       // moved, deleted, or edited
     }
 
@@ -798,6 +973,9 @@ bool needsTranslation(const std::string& glslPath) {
 std::vector<uint32_t> VulkanRenderer::loadSpirv(const std::string& path) {
     namespace fs = std::filesystem;
 
+    if (const SpirvEntry* embedded = findSpirv(path))
+        return std::vector<uint32_t>(embedded->words, embedded->words + embedded->count);
+
     std::string source = path;
 
     /*
@@ -809,14 +987,16 @@ std::vector<uint32_t> VulkanRenderer::loadSpirv(const std::string& path) {
         source = path.substr(0, path.size() - 4);
 
         if (needsTranslation(source)) {
-            // the executable is deliberately unquoted: cmd.exe strips the first
-            // and last quote of a command line that starts with one, which
-            // swallows the gap between argv[0] and argv[1]. stdout is valoc's
-            // struct summary; its errors arrive on stderr.
-            const std::string cmd =
-                std::string(VALOC_PATH) + " \"" + path + "\" -o \"" + source + "\""
-                " -I include -I examples -I ext/stb -I ext/tinyobjloader"
-                " -I ext/cgltf -I ext/SDL3-install/include" + NULL_OUTPUT;
+            // stdout is valoc's struct summary; its errors arrive on stderr
+            const std::string cmd = shellLine(
+                "\"" + VALOC_PATH + "\" \"" + path + "\" -o \"" + source + "\""
+                " -I \"" + SOURCE_DIR + "/include\""
+                " -I \"" + SOURCE_DIR + "/examples\""
+                " -I \"" + SOURCE_DIR + "/ext/stb\""
+                " -I \"" + SOURCE_DIR + "/ext/tinyobjloader\""
+                " -I \"" + SOURCE_DIR + "/ext/cgltf\""
+                " -I \"" + SOURCE_DIR + "/ext/SDL3-install/include\"" + NULL_OUTPUT
+            );
 
             std::fprintf(stderr, "[vulkan] translating %s\n", path.c_str());
             if (std::system(cmd.c_str()) != 0) {
@@ -840,7 +1020,11 @@ std::vector<uint32_t> VulkanRenderer::loadSpirv(const std::string& path) {
             !fs::exists(spvPath) || fs::last_write_time(spvPath) < fs::last_write_time(source);
 
         if (stale) {
-            const std::string cmd = "glslc -I examples/shaders \"" + source + "\" -o \"" + spvPath + "\" 2>&1";
+            const std::string cmd = shellLine(
+                "\"" + std::string(VALO_GLSLC_PATH) + "\""
+                " -I \"" + SOURCE_DIR + "/include/render/vulkan\""
+                " \"" + source + "\" -o \"" + spvPath + "\" 2>&1"
+            );
 
             std::fprintf(stderr, "[vulkan] compiling %s\n", source.c_str());
             if (std::system(cmd.c_str()) != 0) {
@@ -980,18 +1164,15 @@ VkPipeline VulkanRenderer::createPipeline(
         .compareOp      = vkStencilCompareOf(cmd.stencilTest),
         .compareMask    = 0xFF,
         .writeMask      = 0xFF,
-        .reference      = cmd.stencilRef
+        .reference      = 0
     };
-
-    const bool usesStencil = cmd.stencilTest != StencilTest::Always
-                          || cmd.stencilOp   != StencilOp::Keep;
 
     const VkPipelineDepthStencilStateCreateInfo depthStencil{
         .sType              = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable    = cmd.depthTest ? VK_TRUE : VK_FALSE,
         .depthWriteEnable   = cmd.depthWrite ? VK_TRUE : VK_FALSE,
         .depthCompareOp     = vkCompareOf(cmd.depthCompare),
-        .stencilTestEnable  = usesStencil ? VK_TRUE : VK_FALSE,
+        .stencilTestEnable  = usesStencil(cmd) ? VK_TRUE : VK_FALSE,
         .front              = stencilState,
         .back               = stencilState
     };
@@ -1003,8 +1184,10 @@ VkPipeline VulkanRenderer::createPipeline(
         .dstColorBlendFactor        = cmd.blendmode == BlendMode::Additive ? VK_BLEND_FACTOR_ONE
                                                                            : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp               = VK_BLEND_OP_ADD,
-        .srcAlphaBlendFactor        = VK_BLEND_FACTOR_ONE,
-        .dstAlphaBlendFactor        = VK_BLEND_FACTOR_ZERO,
+        .srcAlphaBlendFactor        = cmd.blendmode == BlendMode::Additive ? VK_BLEND_FACTOR_ZERO
+                                                                           : VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor        = cmd.blendmode == BlendMode::Additive ? VK_BLEND_FACTOR_ONE
+                                                                           : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .alphaBlendOp               = VK_BLEND_OP_ADD,
 
         .colorWriteMask             = cmd.colorWrite ? (
@@ -1019,11 +1202,13 @@ VkPipeline VulkanRenderer::createPipeline(
         .pAttachments       = &blendAttachment
     };
 
-    const VkDynamicState    dynamics[]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    const VkDynamicState    dynamics[]{
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE
+    };
 
     const VkPipelineDynamicStateCreateInfo dynamic{
         .sType              = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount  = 2,
+        .dynamicStateCount  = 3,
         .pDynamicStates     = dynamics
     };
 
@@ -1488,15 +1673,11 @@ void VulkanRenderer::shutdown() {
 
     m_bindlessSet = VK_NULL_HANDLE;
 
-    const VmaAllocator alloc = m_ctx.allocator();
-    for (auto& b : m_vertexBuffers)
-        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
-    for (auto& b : m_indexBuffers)
-        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
-    for (auto& b : m_uniformBuffers)
-        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
-    for (auto& b : m_storageBuffers)
-        if (b.buffer) vmaDestroyBuffer(alloc, b.buffer, b.allocation);
+    for (auto& b : m_vertexBuffers)  destroyBufferNow(b);
+    for (auto& b : m_indexBuffers)   destroyBufferNow(b);
+    for (auto& b : m_uniformBuffers) destroyBufferNow(b);
+    for (auto& b : m_storageBuffers) destroyBufferNow(b);
+    destroyUploadSlots();
     for (auto& p : m_programs) {
         if (p.vs) vkDestroyShaderModule(m_ctx.device(), p.vs, nullptr);
         if (p.fs) vkDestroyShaderModule(m_ctx.device(), p.fs, nullptr);
@@ -1639,6 +1820,7 @@ bool VulkanRenderer::init() {
     m_depthFormat = pickDepthFormat();
     if (m_depthFormat == VK_FORMAT_UNDEFINED) return false;
 
+    if (!createUploadSlots()) return false;
     return createDepthBuffers();
 }
 
@@ -1657,10 +1839,13 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
 
     static const VtxLayout noVerts;
 
-    const bool hasVerts = 
+    VkBuffer     vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceSize vertexBytes  = 0;
+
+    const bool hasVerts =
         cmd.verts != EMPTY_BUFFER &&
         cmd.verts < m_vertexBuffers.size() &&
-        m_vertexBuffers[cmd.verts].buffer;
+        currentBuffer(m_vertexBuffers[cmd.verts], vertexBuffer, vertexBytes);
 
     const VtxLayout& layout = 
         hasVerts ? m_vertexBuffers[cmd.verts].layout : noVerts;
@@ -1670,6 +1855,8 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
 
     const VkCommandBuffer buf = m_frames.commandBuffer(m_frameIndex);
     vkCmdBindPipeline(buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    if (usesStencil(cmd)) vkCmdSetStencilReference(buf, VK_STENCIL_FACE_FRONT_AND_BACK, cmd.stencilRef);
 
     if (cmd.uniformSize) {
         /*
@@ -1713,12 +1900,15 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     for (uint32_t slot = 0; slot < MAX_UNIFORM_SLOTS; ++slot) {
         const UniformBufferID id = cmd.uniformBuffers[slot];
         if (id == EMPTY_BUFFER || id >= m_uniformBuffers.size()) continue;
-        if (!m_uniformBuffers[id].buffer) continue;
+
+        VkBuffer     ub      = VK_NULL_HANDLE;
+        VkDeviceSize ubBytes = 0;
+        if (!currentBuffer(m_uniformBuffers[id], ub, ubBytes) || !ub || !ubBytes) continue;
 
         infos[writeCount] = {
-            .buffer = m_uniformBuffers[id].buffer,
+            .buffer = ub,
             .offset = 0,
-            .range  = VK_WHOLE_SIZE
+            .range  = ubBytes
         };
 
         writes[writeCount] = {
@@ -1734,12 +1924,15 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     for (uint32_t slot = 0; slot < MAX_STORAGE_SLOTS; ++slot) {
         const StorageBufferID id = cmd.storageBuffers[slot];
         if (id == EMPTY_BUFFER || id >= m_storageBuffers.size()) continue;
-        if (!m_storageBuffers[id].buffer) continue;
+
+        VkBuffer     sb      = VK_NULL_HANDLE;
+        VkDeviceSize sbBytes = 0;
+        if (!currentBuffer(m_storageBuffers[id], sb, sbBytes) || !sb || !sbBytes) continue;
 
         infos[writeCount] = {
-            .buffer = m_storageBuffers[id].buffer,
+            .buffer = sb,
             .offset = 0,
-            .range  = VK_WHOLE_SIZE
+            .range  = sbBytes
         };
 
         writes[writeCount] = {
@@ -1794,27 +1987,31 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     vkCmdSetScissor(buf, 0, 1, &scissor);
 
     if (hasVerts) {
+        if (!vertexBuffer) return;
+
         const VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(buf, 0, 1, &m_vertexBuffers[cmd.verts].buffer, &offset);
+        vkCmdBindVertexBuffers(buf, 0, 1, &vertexBuffer, &offset);
     }
 
-    const bool hasIndices = 
+    VkBuffer     indexBuffer = VK_NULL_HANDLE;
+    VkDeviceSize indexBytes  = 0;
+
+    const bool hasIndices =
         cmd.indices != EMPTY_BUFFER &&
         cmd.indices < m_indexBuffers.size() &&
-        m_indexBuffers[cmd.indices].buffer;
+        currentBuffer(m_indexBuffers[cmd.indices], indexBuffer, indexBytes);
 
     if (hasIndices) {
-        const GPUBuffer& ib = m_indexBuffers[cmd.indices];
-        const uint32_t total = uint32_t(ib.size / sizeof(uint32_t));
+        const uint32_t total = uint32_t(indexBytes / sizeof(uint32_t));
 
-        const uint32_t count = 
+        const uint32_t count =
             cmd.indexCount == ALL_INDICES ?
             (cmd.firstIndex < total ? total - cmd.firstIndex : 0) :
             cmd.indexCount;
 
-        if (!count) return;
+        if (!count || !indexBuffer) return;
 
-        vkCmdBindIndexBuffer(buf, ib.buffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindIndexBuffer(buf, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(buf, count, cmd.instanceCount, cmd.firstIndex, 0, 0);
         return;
     }
@@ -1822,7 +2019,7 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     const uint32_t count =
         cmd.indexCount != ALL_INDICES ?
         cmd.indexCount : hasVerts ?
-        uint32_t(m_vertexBuffers[cmd.verts].size / layout.stride()) :
+        uint32_t(vertexBytes / layout.stride()) :
         0;
 
     if (count) vkCmdDraw(buf, count, cmd.instanceCount, cmd.firstIndex, 0);
@@ -2010,17 +2207,31 @@ void VulkanRenderer::show(const RenderTargetID target) {
         .stageMask              = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT
     };
 
-    const VkCommandBufferSubmitInfo cmdInfo{
-        .sType                  = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-        .commandBuffer          = cmd
+    VkCommandBufferSubmitInfo cmdInfos[2]{};
+    uint32_t cmdCount = 0;
+
+    UploadSlot& upload = m_uploads[frame];
+    if (upload.open) {
+        vkEndCommandBuffer(upload.cmd);
+        upload.open = false;
+
+        cmdInfos[cmdCount++] = {
+            .sType          = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer  = upload.cmd
+        };
+    }
+
+    cmdInfos[cmdCount++] = {
+        .sType          = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer  = cmd
     };
 
     const VkSubmitInfo2 submit{
         .sType                      = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .waitSemaphoreInfoCount     = 1,
         .pWaitSemaphoreInfos        = &waitSem,
-        .commandBufferInfoCount     = 1,
-        .pCommandBufferInfos        = &cmdInfo,
+        .commandBufferInfoCount     = cmdCount,
+        .pCommandBufferInfos        = cmdInfos,
         .signalSemaphoreInfoCount   = 1,
         .pSignalSemaphoreInfos      = &signalSem
     };
@@ -2052,6 +2263,7 @@ void VulkanRenderer::show(const RenderTargetID target) {
     }
 
     m_frameIndex = (frame + 1) % m_frames.framesInFlight();
+    m_slotReady  = false;
     ++m_owner->m_frame;
 }
 
@@ -2116,10 +2328,12 @@ RenderTargetID VulkanRenderer::createTarget(const uint32_t w, const uint32_t h, 
 VertexBufferID VulkanRenderer::createVertexBuffer(const void* data, const size_t count, const VtxLayout& layout) {
     GPUBuffer buffer;
     buffer.layout = layout;
+    buffer.usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 
-    if (!uploadBuffer(data, count * layout.stride(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, buffer))
+    if (!uploadBuffer(data, count * layout.stride(), buffer.usage, buffer))
         return EMPTY_BUFFER;
 
+    buffer.live = true;
     return m_owner->allocSlot(m_vertexBuffers, m_owner->m_freeVertexBuffers, std::move(buffer));
 }
 
@@ -2136,16 +2350,10 @@ void VulkanRenderer::updateVertexBuffer(
     }
 
     GPUBuffer& vb = m_vertexBuffers[vertices];
-    const VtxLayout layout = newLayout.stride() == 0 ? vb.layout : newLayout;
+    if (!vb.live) return;
+    if (newLayout.stride() != 0) vb.layout = newLayout;
 
-    GPUBuffer fresh;
-    fresh.layout = layout;
-
-    if (!uploadBuffer(data, count * layout.stride(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, fresh))
-        return;
-
-    retireBuffer(vb);
-    vb = fresh;
+    updateDynamic(vb, nullptr, 0, data, count * vb.layout.stride());
 }
 
 
@@ -2155,10 +2363,12 @@ void VulkanRenderer::updateVertexBuffer(
 
 IndexBufferID VulkanRenderer::createIndexBuffer(const uint32_t* data, const size_t count) {
     GPUBuffer buffer;
+    buffer.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 
-    if (!uploadBuffer(data, count * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, buffer))
+    if (!uploadBuffer(data, count * sizeof(uint32_t), buffer.usage, buffer))
         return EMPTY_BUFFER;
 
+    buffer.live = true;
     return m_owner->allocSlot(m_indexBuffers, m_owner->m_freeIndexBuffers, std::move(buffer));
 }
 
@@ -2169,12 +2379,10 @@ void VulkanRenderer::updateIndexBuffer(const IndexBufferID indices, const uint32
         return;
     }
 
-    GPUBuffer fresh;
-    if (!uploadBuffer(data, count * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, fresh))
-        return;
+    GPUBuffer& ib = m_indexBuffers[indices];
+    if (!ib.live) return;
 
-    retireBuffer(m_indexBuffers[indices]);
-    m_indexBuffers[indices] = fresh;
+    updateDynamic(ib, nullptr, 0, data, count * sizeof(uint32_t));
 }
 
 
@@ -2184,9 +2392,12 @@ void VulkanRenderer::updateIndexBuffer(const IndexBufferID indices, const uint32
 
 UniformBufferID VulkanRenderer::createUniformBuffer(const void* data, const size_t bytes) {
     GPUBuffer buffer;
-    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, buffer))
+    buffer.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+
+    if (!uploadBuffer(data, bytes, buffer.usage, buffer))
         return EMPTY_BUFFER;
 
+    buffer.live = true;
     return m_owner->allocSlot(m_uniformBuffers, m_owner->m_freeUniformBuffers, std::move(buffer));
 }
 
@@ -2197,11 +2408,10 @@ void VulkanRenderer::updateUniformBuffer(const UniformBufferID buffer, const voi
         return;
     }
 
-    GPUBuffer fresh;
-    if (!uploadBuffer(data, bytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, fresh)) return;
+    GPUBuffer& ub = m_uniformBuffers[buffer];
+    if (!ub.live) return;
 
-    retireBuffer(m_uniformBuffers[buffer]);
-    m_uniformBuffers[buffer] = fresh;
+    updateDynamic(ub, nullptr, 0, data, bytes);
 }
 
 
@@ -2232,9 +2442,12 @@ StorageBufferID VulkanRenderer::createStorageBuffer(const void* data, const size
     const std::vector<uint8_t> staged = withStorageHeader(data, bytes);
 
     GPUBuffer buffer;
-    if (!uploadBuffer(staged.data(), staged.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, buffer))
+    buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    if (!uploadBuffer(staged.data(), staged.size(), buffer.usage, buffer))
         return EMPTY_BUFFER;
 
+    buffer.live = true;
     return m_owner->allocSlot(m_storageBuffers, m_owner->m_freeStorageBuffers, std::move(buffer));
 }
 
@@ -2245,13 +2458,14 @@ void VulkanRenderer::updateStorageBuffer(const StorageBufferID buffer, const voi
         return;
     }
 
-    const std::vector<uint8_t> staged = withStorageHeader(data, bytes);
+    GPUBuffer& sb = m_storageBuffers[buffer];
+    if (!sb.live) return;
 
-    GPUBuffer fresh;
-    if (!uploadBuffer(staged.data(), staged.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, fresh)) return;
+    uint8_t header[STORAGE_HEADER_BYTES] = {};
+    const uint32_t size = uint32_t(bytes);
+    std::memcpy(header, &size, sizeof(size));
 
-    retireBuffer(m_storageBuffers[buffer]);
-    m_storageBuffers[buffer] = fresh;
+    updateDynamic(sb, header, STORAGE_HEADER_BYTES, data, bytes);
 }
 
 
@@ -2323,8 +2537,14 @@ void VulkanRenderer::updateTexture(const TextureID texture, const uint32_t* data
     GPUTexture& tex = m_textures[texture];
     if (!tex.image) return;
 
-    // a full replace, so uploadImage transitioning from UNDEFINED is correct
-    uploadImage(tex, data);
+    const VkCommandBuffer cmd = uploadCommands();
+    if (!cmd) return;
+
+    VkBuffer     src    = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    if (!stageUpload(data, VkDeviceSize(tex.width) * tex.height * 4, src, offset)) return;
+
+    recordImageUpload(cmd, tex, src, offset, 0, 0, tex.width, tex.height, VK_IMAGE_LAYOUT_UNDEFINED);
 }
 
 
@@ -2337,9 +2557,24 @@ void VulkanRenderer::updateTextureRect(
     if (texture >= m_textures.size() || !data) return;
 
     GPUTexture& tex = m_textures[texture];
-    if (!tex.image) return;
+    if (!tex.image || !w || !h) return;
 
-    uploadImageRect(tex, x, y, w, h, data);
+    if (x + w > tex.width || y + h > tex.height) {
+        std::fprintf(
+            stderr, "[vulkan] updateTextureRect: %ux%u at (%u,%u) does not fit a %ux%u texture\n",
+            w, h, x, y, tex.width, tex.height
+        );
+        return;
+    }
+
+    const VkCommandBuffer cmd = uploadCommands();
+    if (!cmd) return;
+
+    VkBuffer     src    = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    if (!stageUpload(data, VkDeviceSize(w) * h * 4, src, offset)) return;
+
+    recordImageUpload(cmd, tex, src, offset, x, y, w, h, tex.layout);
 }
 
 
@@ -2391,14 +2626,12 @@ void VulkanRenderer::releaseTarget(const RenderTargetID id) {
 
 
 void VulkanRenderer::releaseVertexBuffer(const VertexBufferID id) { 
-    vmaDestroyBuffer(m_ctx.allocator(), m_vertexBuffers[id].buffer, m_vertexBuffers[id].allocation);
-    m_vertexBuffers[id] = GPUBuffer{};
+    destroyBufferNow(m_vertexBuffers[id]);
 }
 
 
 void VulkanRenderer::releaseIndexBuffer(const IndexBufferID id) {
-    vmaDestroyBuffer(m_ctx.allocator(), m_indexBuffers[id].buffer, m_indexBuffers[id].allocation);
-    m_indexBuffers[id] = GPUBuffer{};
+    destroyBufferNow(m_indexBuffers[id]);
 }
 
 

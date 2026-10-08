@@ -2,9 +2,14 @@
 
 #include <string>
 #include <bitset>
+#include <array>
+#include <functional>
+#include <vector>
 #include "common/Math.hpp"
 
 struct SDL_Window;
+struct SDL_Cursor;
+union SDL_Event;
 
 namespace valo {
 
@@ -72,6 +77,58 @@ enum class Key : uint16_t {
 };
 
 enum class MouseButton : uint8_t { Left = 1, Middle = 2, Right = 3, X1 = 4, X2 = 5, Count = 6 };
+
+// Values are SDL_Keymod bits.
+enum class KeyMod : uint16_t {
+    None    = 0x0000,
+    LShift  = 0x0001,
+    RShift  = 0x0002,
+    LCtrl   = 0x0040,
+    RCtrl   = 0x0080,
+    LAlt    = 0x0100,
+    RAlt    = 0x0200,
+    LGui    = 0x0400,
+    RGui    = 0x0800,
+
+    Shift   = LShift | RShift,
+    Ctrl    = LCtrl  | RCtrl,
+    Alt     = LAlt   | RAlt,
+    Gui     = LGui   | RGui,
+};
+
+inline constexpr KeyMod operator|(KeyMod a, KeyMod b) { return KeyMod(uint16_t(a) | uint16_t(b)); }
+inline constexpr KeyMod operator&(KeyMod a, KeyMod b) { return KeyMod(uint16_t(a) & uint16_t(b)); }
+inline constexpr bool   any(KeyMod m)                 { return m != KeyMod::None; }
+
+enum class CursorShape : uint8_t {
+    Arrow, Hand, Text, ResizeEW, ResizeNS, ResizeNWSE, ResizeNESW, Move, Crosshair, Wait, NotAllowed,
+    Count
+};
+
+enum class SystemTheme : uint8_t { Unknown, Light, Dark };
+
+enum class WindowEventType : uint8_t {
+    KeyDown, KeyUp, Text, MouseDown, MouseUp, MouseMove, Wheel, FocusGained, FocusLost, CloseRequested
+};
+
+struct WindowEvent {
+    WindowEventType type        = WindowEventType::KeyDown;
+    uint64_t        timestamp   = 0;                    // nanoseconds
+    KeyMod          mods        = KeyMod::None;
+    Vec2f           mouse       = {0.f, 0.f};           // pixels, at the time of the event
+
+    Key             key         = Key::Unknown;
+    bool            repeat      = false;
+    char32_t        symbol      = 0;                    // the layout's character for key, 0 if none
+
+    MouseButton     button      = MouseButton::Left;
+    uint8_t         clicks      = 0;
+
+    Vec2f           wheel       = {0.f, 0.f};
+    bool            precise     = false;                // not whole notches: a trackpad or high-res wheel
+
+    char            text[32]    = {};                   // UTF-8, for Text
+};
 
 class Window {
 public:
@@ -154,6 +211,29 @@ public:
     Vec2f scrollDelta() const   { return m_scrollDelta; }
     float getAspect() const;
 
+    const std::vector<WindowEvent>& events() const { return m_events; }
+    KeyMod modState() const;
+
+    void startTextInput();
+    void stopTextInput();
+    bool isTextInputActive() const;
+
+    std::string getClipboardText() const;
+    void setClipboardText(const std::string& text);
+
+    void setCursor(const CursorShape shape);
+
+    // called from inside the OS's modal resize loop as well, where the main loop is blocked
+    void setResizeCallback(std::function<void()> callback);
+
+    void* nativeHandle() const;
+
+    float getDisplayScale() const;
+    float getRefreshRate() const;
+    static SystemTheme getSystemTheme();
+    static std::string basePath();
+    static std::string prefPath(const std::string& org, const std::string& app);
+
     bool create(
         const std::string& title, 
         const Vec2u& size, 
@@ -170,11 +250,20 @@ private:
 
     Vec2f       m_mouseDelta        = {0.f, 0.f};
     Vec2f       m_scrollDelta       = {0.f, 0.f};
+    Vec2f       m_mouseLast         = {0.f, 0.f};
+    KeyMod      m_mods              = KeyMod::None;
+
+    std::vector<WindowEvent>        m_events;
+    std::function<void()>           m_onResize;
+    bool                            m_watching          = false;
+    std::array<SDL_Cursor*, size_t(CursorShape::Count)> m_cursors{};
 
     std::bitset<size_t(Key::Count)>         m_pressed, m_released;
     std::bitset<size_t(MouseButton::Count)> m_mousePressed, m_mouseReleased;
 
     void cleanup();
+    void watchResize(const bool on);
+    static bool resizeWatch(void* userdata, SDL_Event* event);
     friend class VALO;
 
     static int s_liveWindows;

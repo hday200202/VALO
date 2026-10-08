@@ -105,7 +105,7 @@ LayerID VALO::addLayer(
     const float clearDepth
 ) {
     m_layers.push_back({{}, target, clearColor, clearDepth});
-    LayerID layer = m_layers.size() - 1;
+    LayerID layer = LayerID(m_layers.size() - 1);
     m_layerOrder.push_back(layer);
     return layer;
 }

@@ -15,11 +15,34 @@ namespace valo {
 class Renderer;
 
 
-struct GPUBuffer {
+struct BufferSlot {
     VkBuffer        buffer      = VK_NULL_HANDLE;
     VmaAllocation   allocation  = VK_NULL_HANDLE;
+    void*           mapped      = nullptr;
+    VkDeviceSize    capacity    = 0;
     VkDeviceSize    size        = 0;
-    VtxLayout       layout;
+    uint64_t        version     = 0;
+};
+
+// static until its first update, then one mapped copy per frame in flight
+struct GPUBuffer {
+    VkBuffer                buffer      = VK_NULL_HANDLE;
+    VmaAllocation           allocation  = VK_NULL_HANDLE;
+    VkDeviceSize            size        = 0;
+    VtxLayout               layout;
+    VkBufferUsageFlags      usage       = 0;
+    bool                    live        = false;
+
+    std::vector<BufferSlot> slots;
+    std::vector<uint8_t>    latest;
+    uint64_t                version     = 0;
+};
+
+struct UploadSlot {
+    VkCommandBuffer cmd         = VK_NULL_HANDLE;
+    bool            open        = false;
+    BufferSlot      staging;
+    VkDeviceSize    used        = 0;
 };
 
 struct GPUProgram {
@@ -62,8 +85,12 @@ inline constexpr uint64_t packPipelineState(const RenderCommand& cmd) {
          |  (uint64_t(cmd.depthWrite)   << 12)
          |  (uint64_t(cmd.colorWrite)   << 13)
          |  (uint64_t(cmd.stencilTest)  << 14)
-         |  (uint64_t(cmd.stencilOp)    << 17)
-         |  (uint64_t(cmd.stencilRef)   << 20);
+         |  (uint64_t(cmd.stencilOp)    << 17);
+}
+
+// the reference is dynamic state, so a new clip depth reuses the same pipeline
+inline constexpr bool usesStencil(const RenderCommand& cmd) {
+    return cmd.stencilTest != StencilTest::Always || cmd.stencilOp != StencilOp::Keep;
 }
 
 
@@ -114,12 +141,28 @@ public:
 
     bool uploadImage(GPUTexture& tex, const uint32_t* data);
 
-    bool uploadImageRect(
+    void recordImageUpload(
+        const VkCommandBuffer cmd,
         GPUTexture& tex,
+        const VkBuffer src, const VkDeviceSize offset,
         const uint32_t x, const uint32_t y,
         const uint32_t w, const uint32_t h,
-        const uint32_t* data
+        const VkImageLayout from
     );
+
+    bool waitForSlot();
+    bool allocSlotBuffer(BufferSlot& slot, const VkDeviceSize bytes, const VkBufferUsageFlags usage);
+    void retireSlotBuffer(BufferSlot& slot);
+    bool writeSlot(GPUBuffer& buf, BufferSlot& slot);
+    bool updateDynamic(GPUBuffer& buf, const void* header, const size_t headerBytes, const void* data, const size_t bytes);
+    bool currentBuffer(GPUBuffer& buf, VkBuffer& out, VkDeviceSize& bytes);
+    void destroyBufferNow(GPUBuffer& buf);
+
+    bool            createUploadSlots();
+    void            destroyUploadSlots();
+    void            flushUploads();
+    VkCommandBuffer uploadCommands();
+    bool            stageUpload(const void* data, const VkDeviceSize bytes, VkBuffer& src, VkDeviceSize& offset);
 
     bool createImage(
         const uint32_t w, const uint32_t h,
@@ -233,6 +276,10 @@ private:
 
     std::vector<std::pair<GPUBuffer, uint64_t>> 
                                     m_retiredBuffers;
+
+    bool                            m_slotReady             = false;
+    VkCommandPool                   m_uploadPool            = VK_NULL_HANDLE;
+    std::vector<UploadSlot>         m_uploads;
 
     std::vector<GPUBuffer>          m_vertexBuffers;
     std::vector<GPUBuffer>          m_indexBuffers;

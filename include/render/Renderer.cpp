@@ -338,7 +338,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .createUniformBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_vulkan->createUniformBuffer(d, n); },
             .updateUniformBuffer = [](Renderer& r, UniformBufferID id, const void* d, const size_t n) { r.m_vulkan->updateUniformBuffer(id, d, n); },
             .createStorageBuffer = [](Renderer& r, const void* d, const size_t n) { return r.m_vulkan->createStorageBuffer(d, n); },
-            .updateStorageBuffer = [](Renderer& r, StorageBufferID id, const void* d, const size_t n) { r.m_software->updateStorageBuffer(id, d, n); },
+            .updateStorageBuffer = [](Renderer& r, StorageBufferID id, const void* d, const size_t n) { r.m_vulkan->updateStorageBuffer(id, d, n); },
             .createTexture = [](Renderer& r, uint32_t w, uint32_t h, const uint32_t* d, bool srgb, bool mips) { return r.m_vulkan->createTexture(w, h, d, srgb, mips); },
             .createTextureFromFile = [](Renderer& r, const std::string& p, bool srgb, bool mips) { return r.m_vulkan->createTextureFromFile(p, srgb, mips); },
             .updateTexture = [](Renderer& r, TextureID id, const uint32_t* d) { r.m_vulkan->updateTexture(id, d); },
@@ -351,7 +351,7 @@ Renderer::RenderBackend Renderer::fetchBackendFuncs() {
             .releaseIndexBuffer   = [](Renderer& r, IndexBufferID id)     { r.m_vulkan->releaseIndexBuffer(id); },
             .releaseUniformBuffer = [](Renderer& r, UniformBufferID id)   { r.m_vulkan->releaseUniformBuffer(id); },
             .releaseProgram       = [](Renderer& r, ProgramID id)         { r.m_vulkan->releaseProgram(id); },
-            .releaseStorageBuffer = [](Renderer& r, StorageBufferID id)   { r.m_software->releaseStorageBuffer(id); },
+            .releaseStorageBuffer = [](Renderer& r, StorageBufferID id)   { r.m_vulkan->releaseStorageBuffer(id); },
 
             .resize   = [](Renderer& r, uint32_t w, uint32_t h) { r.m_vulkan->resize(w, h); },
             .setVsync = [](Renderer& r, bool v) { r.m_vulkan->setVsync(v); },

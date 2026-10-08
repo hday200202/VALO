@@ -342,7 +342,9 @@ public:
     void set(const std::filesystem::file_time_type& fileTime, const TimeZone zone = systemTimeZone()) {
         using namespace std::chrono;
 
-        #if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
+        #if defined(_MSC_VER)
+        const auto sys = clock_cast<system_clock>(fileTime);
+        #elif defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
         const auto sys = file_clock::to_sys(fileTime);
         #else
         const auto sys = time_point_cast<system_clock::duration>(

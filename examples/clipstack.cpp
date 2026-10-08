@@ -20,6 +20,12 @@
 //   wheel         scroll the list
 //   c             toggle clipping (see what it's doing)
 //   escape        quit
+//
+// Flags
+//   --vulkan      run on the Vulkan backend
+//   --update      rewrite the quad's vertex and index buffers every frame
+//   --frames N    vsync off, run N frames, print the average frame time and exit
+//   --depth N     nest the whole scene inside extra clips so rows sit N deep
 
 #include <VALO.hpp>
 #include <cstring>
@@ -27,6 +33,8 @@
 #include <chrono>
 #include <string>
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 #include "shaders/roundrect.vert.hpp"
 #include "shaders/roundrect.frag.hpp"
@@ -41,14 +49,19 @@ using valo::Color;
 int main(int argc, char** argv) {
     // one scene, either backend: the software path resolves the shader
     // paths to registered C++ callbacks, the Vulkan path translates them
-    bool useVulkan = false;
-    for (int i = 1; i < argc; ++i)
+    bool useVulkan = false, update = false;
+    int timedFrames = 0, depth = 3;
+    for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--vulkan")) useVulkan = true;
+        if (!std::strcmp(argv[i], "--update")) update = true;
+        if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) timedFrames = std::atoi(argv[++i]);
+        if (!std::strcmp(argv[i], "--depth")  && i + 1 < argc) depth       = std::max(3, std::atoi(argv[++i]));
+    }
 
     valo::Window window("VALO - clip stack", {1280, 960},
         valo::WinFlags::Resize | valo::WinFlags::HiDPI
       | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
-    valo::VALO valo; valo::RenderConfig cfg; cfg.vsync = true;
+    valo::VALO valo; valo::RenderConfig cfg; cfg.vsync = timedFrames == 0;
     if (useVulkan) cfg.backend = valo::Backend::Vulkan;
     if (!valo.init(window, cfg)) return 1;
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {0.12f, 0.12f, 0.14f, 1.f});
@@ -74,8 +87,21 @@ int main(int argc, char** argv) {
 
     float scroll = 0.f; bool clipping = true;
     using clk = std::chrono::steady_clock; auto fpsStart = clk::now(); uint32_t fpsFrames = 0; int fps = 0;
+    const auto runStart = clk::now(); int frame = 0;
 
     while (window.pollEvents()) {
+        if (timedFrames && frame++ == timedFrames) {
+            const double ms = std::chrono::duration<double, std::milli>(clk::now() - runStart).count();
+            std::printf("%s%s: %.3f ms/frame over %d frames\n", useVulkan ? "vulkan" : "software",
+                        update ? " --update" : "", ms / timedFrames, timedFrames);
+            break;
+        }
+
+        if (update) {
+            valo.updateVertexBuffer(rect.verts, quad, 4);
+            valo.updateIndexBuffer(rect.indices, idx, 6);
+        }
+
         if (window.wasKeyPressed(valo::Key::Escape)) window.close();
         if (window.wasKeyPressed(valo::Key::C)) clipping = !clipping;
         if (window.wasKeyPressed(valo::Key::V)) valo.setVsync(!valo.getVsync());
@@ -95,6 +121,11 @@ int main(int argc, char** argv) {
         const Vec2f listSize = winSize - Vec2f{40.f, 90.f};
 
         valo.beginFrame();
+
+        // whole-window clips around everything, each a pixel inside the last
+        const int outer = clipping ? depth - 3 : 0;
+        for (int d = 0; d < outer; ++d)
+            clip({float(d), float(d)}, {float(sz.x) - 2.f * float(d), float(sz.y) - 2.f * float(d)}, 0.f, proj);
 
         // --- window frame (the outer clip) ---
         draw(winPos, winSize, {0.20f, 0.21f, 0.25f, 1.f}, 24.f, proj);
@@ -127,6 +158,7 @@ int main(int argc, char** argv) {
 
         if (clipping) valo.popClip();   // list
         if (clipping) valo.popClip();   // window
+        for (int d = 0; d < outer; ++d) valo.popClip();
 
         // something outside every clip, to prove the stack is fully unwound
         draw({30.f, float(sz.y) - 70.f}, {220.f, 40.f}, {0.4f, 0.75f, 0.45f, 1.f}, 20.f, proj);

@@ -19,7 +19,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     void*
 ) {
     const char* level = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) ? "ERROR" : "WARN";
-    std::fprintf(stderr, "[vulkan %s] %s\n", level, data->pMessage);
+    std::fprintf(stderr, "[vulkan %s] %s %s\n", level, data->pMessageIdName ? data->pMessageIdName : "", data->pMessage);
     return VK_FALSE;
 }
 
@@ -51,7 +51,18 @@ bool VulkanContext::init(Window& window, const bool validation) {
     if (useValidation) {
         layers.push_back(validationLayer);
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
     }
+
+    const VkValidationFeatureEnableEXT enables[] = {
+        VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+    };
+
+    VkValidationFeaturesEXT features{
+        .sType                          = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+        .enabledValidationFeatureCount  = 1,
+        .pEnabledValidationFeatures     = enables
+    };
 
     VkDebugUtilsMessengerCreateInfoEXT dbg{
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -67,6 +78,7 @@ bool VulkanContext::init(Window& window, const bool validation) {
 
         .pfnUserCallback = debugCallback
     };
+    features.pNext = &dbg;
 
     VkApplicationInfo app{
         .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -82,7 +94,7 @@ bool VulkanContext::init(Window& window, const bool validation) {
 
     VkInstanceCreateInfo ci{
         .sType                      = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext                      = useValidation ? &dbg : nullptr,
+        .pNext                      = useValidation ? &features : nullptr,
         .flags                      = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
         .pApplicationInfo           = &app,
         .enabledLayerCount          = uint32_t(layers.size()),

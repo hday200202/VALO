@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShaderProgram.hpp"
+#include "ShaderPath.hpp"
 
 #include <string>
 #include <vector>
@@ -109,37 +110,8 @@ inline bool registerShader(const char* file, const ShaderEntry& entry) {
     inline const bool valo_reg_##fn = ::valo::registerShader(__FILE__, ::valo::makeFragmentEntry(&fn));
 
 inline const ShaderEntry* findShader(const std::string& path) {
-    auto normalize = [](std::string s) {
-        for (auto& c : s) if (c == '\\') c = '/';
-
-        std::vector<std::string> parts;
-        for (size_t i = 0; i < s.size();) {
-            size_t j = s.find('/', i);
-            if (j == std::string::npos) j = s.size();
-
-            const std::string seg = s.substr(i, j - i);
-            if (seg == ".." && !parts.empty() && parts.back() != "..") parts.pop_back();
-            else if (seg != "." && !seg.empty()) parts.push_back(seg);
-
-            i = j + 1;
-        }
-
-        std::string out;
-        for (const auto& seg : parts) {
-            if (!out.empty()) out += '/';
-            out += seg;
-        }
-        return out;
-    };
-
-    const std::string want = normalize(path);
-
-    for (const auto& [file, entry] : shaderRegistry()) {
-        const std::string have = normalize(file);
-        if (have.size() >= want.size() && have.compare(have.size() - want.size(), want.size(), want) == 0)
-            return &entry;
-    }
-
+    for (const auto& [file, entry] : shaderRegistry())
+        if (shaderPathMatches(file, path)) return &entry;
     return nullptr;
 }
 

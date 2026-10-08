@@ -104,13 +104,14 @@ template <typename T> Vec2<T> lerp(const Vec2<T>& a, const Vec2<T>& b, const T t
 template <typename T> struct Vec3 {
     VALO_SWIZZLE_BEGIN
     union {
-        struct { T x = T(0), y = T(0), z = T(0); };
+        struct { T x, y, z; };
         Vec2<T> xy;
         struct { T _sx; Vec2<T> yz; };
     };
     VALO_SWIZZLE_END
 
-    constexpr Vec3() {}
+    // MSVC rejects default member initializers inside an anonymous struct in a union
+    constexpr Vec3() : x(T(0)), y(T(0)), z(T(0)) {}
     constexpr Vec3(const T x, const T y, const T z) : x(x), y(y), z(z) {}
     constexpr Vec3(const Vec2<T>& xy, const T z) : x(xy.x), y(xy.y), z(z) {}
     constexpr Vec3(const T x, const Vec2<T>& yz) : x(x), y(yz.x), z(yz.y) {}
@@ -188,7 +189,7 @@ template <typename T> Vec3<T> lerp(const Vec3<T>& a, const Vec3<T>& b, const T t
 template <typename T> struct Vec4 {
     VALO_SWIZZLE_BEGIN
     union {
-        struct { T x = T(0), y = T(0), z = T(0), w = T(0); };
+        struct { T x, y, z, w; };
         struct { T r, g, b, a; };
         Vec2<T> xy;
         Vec3<T> xyz;
@@ -198,7 +199,7 @@ template <typename T> struct Vec4 {
     };
     VALO_SWIZZLE_END
 
-    constexpr Vec4() {}
+    constexpr Vec4() : x(T(0)), y(T(0)), z(T(0)), w(T(0)) {}
     constexpr Vec4(const T x, const T y, const T z, const T w) : x(x), y(y), z(z), w(w) {}
     constexpr Vec4(const Vec2<T>& xy, const T z, const T w) : x(xy.x), y(xy.y), z(z), w(w) {}
     constexpr Vec4(const T x, const Vec2<T>& yz, const T w) : x(x), y(yz.x), z(yz.y), w(w) {}
@@ -284,7 +285,7 @@ template <typename T> Vec4<T> lerp(const Vec4<T>& a, const Vec4<T>& b, const T t
 
 inline uint32_t colorToRGBA32(const Color& c) {
     auto col = clamp(c, 0.f, 1.f);
-    uint8_t r = 255 * col.x, g = 255 * col.y, b = 255 * col.z, a = 255 * col.w;
+    uint8_t r = uint8_t(255 * col.x), g = uint8_t(255 * col.y), b = uint8_t(255 * col.z), a = uint8_t(255 * col.w);
     return (r << 24) | (g << 16) | (b << 8) | a;
 }
 
@@ -299,7 +300,7 @@ inline Color RGBA32ToColor(const uint32_t c) {
 
 inline uint32_t colorToABGR32(const Color& c) {
     auto col = clamp(c, 0.f, 1.f);
-    uint8_t r = 255 * col.x, g = 255 * col.y, b = 255 * col.z, a = 255 * col.w;
+    uint8_t r = uint8_t(255 * col.x), g = uint8_t(255 * col.y), b = uint8_t(255 * col.z), a = uint8_t(255 * col.w);
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 

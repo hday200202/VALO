@@ -180,7 +180,7 @@ void writePixel(
                 const Color dst = abgr32ToLinear(*px);
                 const float alpha = src.w;
                 Color out = src * alpha + dst * (1.f - alpha);
-                out.w = 1.f;
+                out.w = alpha + dst.w * (1.f - alpha);
                 *px = linearToABGR32Srgb(out);
                 break;
             }
@@ -189,7 +189,7 @@ void writePixel(
                 const Color dst = abgr32ToLinear(*px);
                 const float alpha = src.w;
                 Color out = dst + src * alpha;
-                out.w = 1.f;
+                out.w = dst.w;
                 *px = linearToABGR32Srgb(out);
                 break;
             }
@@ -209,7 +209,7 @@ void writePixel(
             const Color dst = target->getPixel(x, y);
             const float alpha = src.w;
             Color out = src * alpha + dst * (1.f - alpha);
-            out.w = 1.f;
+            out.w = alpha + dst.w * (1.f - alpha);
             target->setPixel(x, y, out);
             break;
         }
@@ -218,7 +218,7 @@ void writePixel(
             const Color dst = target->getPixel(x, y);
             const float alpha = src.w;
             Color out = dst + src * alpha;
-            out.w = 1.f;
+            out.w = dst.w;
             target->setPixel(x, y, out);
             break;
         }

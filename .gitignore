@@ -23,3 +23,7 @@ bench/
 *.spv
 *.vert
 *.frag
+
+# embedded at build time, so a build without valoc still has the GLSL
+!examples/shaders/roundrect.vert
+!examples/shaders/roundrect.frag
