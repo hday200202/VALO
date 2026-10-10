@@ -2,6 +2,9 @@
 
 #include <vector>
 #include <memory>
+// before the discard macro below: the random engines have discard() members,
+// which the macro would otherwise rewrite in any shader that includes <random>
+#include <random>
 #include "RenderTarget.hpp"
 #include "../RenderCommand.hpp"
 #include "../common/Math.hpp"
@@ -89,6 +92,12 @@ StorageView<T> storageBuffer(const uint32_t slot) {
     };
 }
 
+/*
+    Lets a shader write `discard;` as it would in GLSL. A macro is the only way
+    to give that statement an effect, and it rewrites every later `discard`
+    token, so anything with a member of that name has to be included first -
+    <random> is, above.
+*/
 #define discard valo::vDiscard()
 
 }

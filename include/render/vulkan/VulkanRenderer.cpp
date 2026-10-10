@@ -1177,10 +1177,14 @@ VkPipeline VulkanRenderer::createPipeline(
         .back               = stencilState
     };
 
+    /*
+        Additive is dst + src * srcAlpha, the same sum the software rasteriser
+        makes, so a fragment's alpha scales the light it adds on both backends.
+        Destination alpha is left alone either way.
+    */
     const VkPipelineColorBlendAttachmentState blendAttachment{
         .blendEnable                = cmd.blendmode != BlendMode::Opaque ? VK_TRUE : VK_FALSE,
-        .srcColorBlendFactor        = cmd.blendmode == BlendMode::Additive ? VK_BLEND_FACTOR_ONE
-                                                                           : VK_BLEND_FACTOR_SRC_ALPHA,
+        .srcColorBlendFactor        = VK_BLEND_FACTOR_SRC_ALPHA,
         .dstColorBlendFactor        = cmd.blendmode == BlendMode::Additive ? VK_BLEND_FACTOR_ONE
                                                                            : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         .colorBlendOp               = VK_BLEND_OP_ADD,

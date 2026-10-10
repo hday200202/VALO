@@ -60,6 +60,8 @@ struct Collect {
     std::vector<Struct>         structs;
     int                         bodyStatements = 0;
     CXCursor                    body = clang_getNullCursor();
+    std::string                 entryKey;       // startKey of the entry function
+    CXCursor                    entryFn = clang_getNullCursor();
     CXTranslationUnit           tu = nullptr;
 
     // everything the entry point can reach that GLSL also has to declare,
@@ -85,8 +87,17 @@ struct Collect {
         offset recorded is the enclosing function's, so it is emitted just
         before the code that uses it.
     */
-    struct Lambda { std::string name; CXCursor expr; unsigned hostOffset; };
+    struct Lambda { std::string name; CXCursor expr; std::string hostKey; };
     std::vector<Lambda> lambdas;
+
+    /*
+        startKey -> the order visitAll met each function and constant in. The
+        translation unit is walked in preprocessed order, so an included file's
+        declarations sit where its #include was - the order GLSL needs. A byte
+        offset cannot say that: it restarts at 0 in every file.
+    */
+    std::vector<std::pair<std::string, unsigned>> declOrder;
+    unsigned nextOrder = 1;
 
     /*
         `const Sampler samp;` declared once and reused. GLSL has no such object,
@@ -124,36 +135,56 @@ struct Collect {
 };
 
 
-// a cursor written in a shader file, rather than pulled in from VALO or ext
-bool isShaderSource(CXCursor c) {
+/*
+    The directory VALO's own headers live in, found from wherever
+    <render/ShaderRegistry.hpp> resolved. Anything under it is library code,
+    never translated.
+*/
+std::string g_libraryRoot;
+
+std::string cursorPath(CXCursor c) {
     CXFile file = nullptr;
     unsigned line = 0, col = 0, off = 0;
     clang_getSpellingLocation(clang_getCursorLocation(c), &file, &line, &col, &off);
-    if (!file) return false;
+    if (!file) return {};
 
     std::string path = str(clang_getFileName(file));
     for (char& ch : path) if (ch == '\\') ch = '/';
+    return path;
+}
 
-    /*
-        Only a shader file counts. Testing for library paths instead fails the
-        moment clang reports a relative one, and this is the rule the design
-        already asks for: a shader includes shader files and nothing else.
-    */
+bool hasShaderSuffix(const std::string& path) {
     auto endsWith = [&](const char* suffix) {
         const std::string s(suffix);
         return path.size() >= s.size()
             && path.compare(path.size() - s.size(), s.size(), s) == 0;
     };
-
     return endsWith(".vert.hpp") || endsWith(".frag.hpp");
 }
 
+// a cursor in a shader file proper: every helper in one is translated
+bool isShaderFile(CXCursor c) {
+    return hasShaderSuffix(cursorPath(c));
+}
 
-unsigned cursorOffset(CXCursor c) {
-    CXFile file = nullptr;
-    unsigned line = 0, col = 0, off = 0;
-    clang_getSpellingLocation(clang_getCursorLocation(c), &file, &line, &col, &off);
-    return off;
+/*
+    A cursor written by the project rather than pulled in from VALO, ext/ or
+    the system. Shader files always qualify; any other project header does
+    too, but its functions and constants are emitted only when the shader
+    actually reaches them (see pruneUnreached), so a shared common.hpp can
+    hold helpers without every unrelated line of C++ in it being translated.
+*/
+bool isShaderSource(CXCursor c) {
+    const std::string path = cursorPath(c);
+    if (path.empty()) return false;
+    if (hasShaderSuffix(path)) return true;
+
+    if (clang_Location_isInSystemHeader(clang_getCursorLocation(c))) return false;
+    if (path.rfind("ext/", 0) == 0 || path.find("/ext/") != std::string::npos) return false;
+    if (!g_libraryRoot.empty() && path.rfind(g_libraryRoot, 0) == 0) return false;
+
+    // without a library root nothing can be told apart, so keep the old rule
+    return !g_libraryRoot.empty();
 }
 
 
@@ -331,6 +362,8 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
             out->paramNames.push_back(str(clang_getCursorSpelling(arg)));
         }
 
+        out->entryKey = startKey(c);
+        out->entryFn  = c;
         clang_visitChildren(c, visitBody, out);
     }
 
@@ -350,6 +383,10 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
 
         if (!isEntry) out->helpers.push_back(c);
     }
+
+    if ((clang_getCursorKind(c) == CXCursor_FunctionDecl && clang_isCursorDefinition(c))
+        || clang_getCursorKind(c) == CXCursor_VarDecl)
+        if (isShaderSource(c)) out->declOrder.push_back({ startKey(c), out->nextOrder++ });
 
     /*
         Namespace scope only. Testing "parent is not a FunctionDecl" lets a
@@ -505,8 +542,10 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
                 && clang_getCursorKind(host) != CXCursor_TranslationUnit)
                 host = clang_getCursorSemanticParent(host);
 
-            const unsigned off = clang_Cursor_isNull(host) ? 0 : cursorOffset(host);
-            out->lambdas.push_back({ str(clang_getCursorSpelling(c)), lambda, off });
+            const std::string hostKey =
+                clang_Cursor_isNull(host) || clang_getCursorKind(host) != CXCursor_FunctionDecl
+                    ? std::string() : startKey(host);
+            out->lambdas.push_back({ str(clang_getCursorSpelling(c)), lambda, hostKey });
         }
     }
 
@@ -515,12 +554,109 @@ CXChildVisitResult visitAll(CXCursor c, CXCursor, CXClientData data) {
         clang_visitChildren(c, visitFields, &s);
 
         if (!s.name.empty()) {
-            if (isShaderSource(c)) out->shaderStructs.push_back(s.name);
+            if (isShaderFile(c)) out->shaderStructs.push_back(s.name);
             out->structs.push_back(std::move(s));
         }
     }
 
     return CXChildVisit_Recurse;
+}
+
+
+/*
+    A helper or constant from a plain project header is kept only when the
+    shader reaches it: from the entry point, from anything in a shader file
+    (all of which is emitted), or from another kept declaration. Unlike a
+    shader file, a plain header may be mostly C++ that GLSL could never take.
+*/
+void pruneUnreached(Collect& c, CXCursor entryFn) {
+    struct Walk {
+        Collect* c;
+        std::vector<std::string> reached;
+        std::vector<CXCursor>    queue;
+    } w{ &c, {}, {} };
+
+    auto candidate = [&](CXCursor d) {
+        for (CXCursor h : c.helpers) if (clang_equalCursors(h, d)) return true;
+        for (CXCursor g : c.globals) if (clang_equalCursors(g, d)) return true;
+        return false;
+    };
+
+    auto reach = [&](CXCursor d) {
+        const std::string key = startKey(d);
+        for (const auto& r : w.reached) if (r == key) return;
+        w.reached.push_back(key);
+        w.queue.push_back(d);
+    };
+
+    if (!clang_Cursor_isNull(entryFn)) w.queue.push_back(entryFn);
+    for (CXCursor h : c.helpers) if (isShaderFile(h)) reach(h);
+    for (CXCursor g : c.globals) if (isShaderFile(g)) reach(g);
+
+    struct Ctx { Walk* w; std::vector<CXCursor>* found; };
+    while (!w.queue.empty()) {
+        CXCursor next = w.queue.back();
+        w.queue.pop_back();
+
+        std::vector<CXCursor> found;
+        Ctx ctx{ &w, &found };
+        clang_visitChildren(next, [](CXCursor k, CXCursor, CXClientData d) {
+            const CXCursorKind kk = clang_getCursorKind(k);
+            if (kk == CXCursor_TypeRef || kk == CXCursor_DeclRefExpr
+                || kk == CXCursor_MemberRefExpr || kk == CXCursor_OverloadedDeclRef) {
+                CXCursor ref = clang_getCursorReferenced(k);
+                if (!clang_Cursor_isNull(ref)) {
+                    CXCursor def = clang_getCursorDefinition(ref);
+                    static_cast<Ctx*>(d)->found->push_back(clang_Cursor_isNull(def) ? ref : def);
+                }
+            }
+            return CXChildVisit_Recurse;
+        }, &ctx);
+
+        for (CXCursor f : found) {
+            if (candidate(f)) { reach(f); continue; }
+
+            // a struct from a plain header that kept code uses: shader files'
+            // structs are all emitted already, library ones by their own rule
+            if (clang_getCursorKind(f) == CXCursor_StructDecl && isShaderSource(f) && !isShaderFile(f)) {
+                const std::string name = str(clang_getCursorSpelling(f));
+                bool have = name.empty();
+                for (const auto& n : c.shaderStructs) if (n == name) have = true;
+                if (!have) c.shaderStructs.push_back(name);
+            }
+        }
+    }
+
+    auto keep = [&](CXCursor d) {
+        if (isShaderFile(d)) return true;
+        const std::string key = startKey(d);
+        for (const auto& r : w.reached) if (r == key) return true;
+        return false;
+    };
+
+    std::vector<CXCursor> helpers, globals;
+    for (CXCursor h : c.helpers) if (keep(h)) helpers.push_back(h);
+    for (CXCursor g : c.globals) if (keep(g)) globals.push_back(g);
+    c.helpers = std::move(helpers);
+    c.globals = std::move(globals);
+}
+
+
+// the directory <render/ShaderRegistry.hpp> was found under, with a trailing /
+std::string findLibraryRoot(CXTranslationUnit tu) {
+    std::string root;
+    clang_getInclusions(tu, [](CXFile f, CXSourceLocation*, unsigned, CXClientData d) {
+        auto* out = static_cast<std::string*>(d);
+        if (!out->empty()) return;
+
+        std::string p = str(clang_getFileName(f));
+        for (char& ch : p) if (ch == '\\') ch = '/';
+
+        const std::string tail = "render/ShaderRegistry.hpp";
+        if (p.size() >= tail.size() && p.compare(p.size() - tail.size(), tail.size(), tail) == 0)
+            *out = p.substr(0, p.size() - tail.size());
+    }, &root);
+    return root;
 }
 
 
@@ -1993,15 +2129,29 @@ std::string emitHelpers(
     struct Item { unsigned off; Kind kind; CXCursor cursor; std::string name; };
     std::vector<Item> items;
 
-    for (CXCursor g : c.globals) items.push_back({ cursorOffset(g), Kind::Global,   g, "" });
-    for (CXCursor h : c.helpers) items.push_back({ cursorOffset(h), Kind::Function, h, "" });
+    // twice the visit order, leaving the odd slot below each for its lambdas
+    auto orderOf = [&](const std::string& key) -> unsigned {
+        for (const auto& [k, n] : c.declOrder) if (k == key) return n * 2;
+        return 0;
+    };
 
-    // hostOffset, minus one, so a hoisted lambda sorts immediately above the
-    // function whose body declared it - and after anything that body calls
-    for (const auto& l : c.lambdas)
-        items.push_back({ l.hostOffset ? l.hostOffset - 1 : 0, Kind::Lambda, l.expr, l.name });
+    for (CXCursor g : c.globals) items.push_back({ orderOf(startKey(g)), Kind::Global,   g, "" });
+    for (CXCursor h : c.helpers) items.push_back({ orderOf(startKey(h)), Kind::Function, h, "" });
 
-    std::sort(items.begin(), items.end(),
+    // one below the host, so a hoisted lambda sorts immediately above the
+    // function whose body declared it - and after anything that body calls.
+    // A lambda in a helper that was pruned goes with it.
+    for (const auto& l : c.lambdas) {
+        if (!l.hostKey.empty()) {
+            bool hostEmitted = l.hostKey == c.entryKey;
+            for (CXCursor h : c.helpers) if (startKey(h) == l.hostKey) hostEmitted = true;
+            if (!hostEmitted) continue;
+        }
+        const unsigned host = l.hostKey.empty() ? 0 : orderOf(l.hostKey);
+        items.push_back({ host ? host - 1 : 0, Kind::Lambda, l.expr, l.name });
+    }
+
+    std::stable_sort(items.begin(), items.end(),
         [](const Item& a, const Item& b) { return a.off < b.off; });
 
     for (const Item& item : items) {
@@ -2773,11 +2923,15 @@ int main(int argc, char** argv) {
                 input.c_str());
             rc = 1;
         } else {
+            g_libraryRoot = findLibraryRoot(tu);
+
             Collect collected;
             collected.entry      = entry;
             collected.tu         = tu;
             collected.allEntries = entries;
             clang_visitChildren(root, visitAll, &collected);
+
+            pruneUnreached(collected, collected.entryFn);
             collectAutoTypes(root, collected);
             collectEnumValues(root, collected);
 

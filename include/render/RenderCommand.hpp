@@ -37,6 +37,7 @@ enum class ResourceKind {
 enum class Topology     { Points, Lines, Triangles };
 enum class CullMode     { None, Back, Front };
 enum class VtxWinding   { CCW, CW };
+// Alpha: src * a + dst * (1 - a).  Additive: dst + src * a, alpha untouched.
 enum class BlendMode    { Opaque, Alpha, Additive };
 enum class FillMode     { Solid, Wireframe };
 enum class StencilTest  { Always, Equal, NotEqual, Less, Greater };
