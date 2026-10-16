@@ -25,6 +25,7 @@ public:
 
 private:
     void workerLoop();
+    bool claim(const uint32_t generation, const uint32_t count, uint32_t& index);
 
     std::vector<std::thread>    m_workers;
     std::mutex                  m_mutex;
@@ -32,8 +33,8 @@ private:
     std::condition_variable     m_done;
 
     const Job*                  m_job           = nullptr;
-    std::atomic<uint32_t>       m_count         = 0;
-    std::atomic<uint32_t>       m_next          = 0;
+    uint32_t                    m_count         = 0;
+    std::atomic<uint64_t>       m_ticket        = 0;    // generation << 32 | next index
     uint32_t                    m_active        = 0;
     uint64_t                    m_generation    = 0;
     bool                        m_stop          = false;

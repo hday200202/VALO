@@ -128,13 +128,27 @@ void forEachBand(
     const uint32_t bands = std::max(1u, std::min(pool.size() * 8, height));
     const uint32_t rows  = (height + bands - 1) / bands;
 
+    // the calling thread takes bands too, and a batched band rebinds per triangle;
+    // put its bindings back so the rest of the current draw reads its own buffers
+    const auto targets      = detail::boundTargets;
+    const auto uniforms     = detail::boundUniforms;
+    const auto storage      = detail::boundStorage;
+    const auto storageBytes = detail::boundStorageBytes;
+
     pool.dispatch(bands, [&](uint32_t b) {
-        detail::boundTargets = ctx.targets;
-        detail::boundUniforms = ctx.uniforms;
+        detail::boundTargets      = ctx.targets;
+        detail::boundUniforms     = ctx.uniforms;
+        detail::boundStorage      = ctx.storage;
+        detail::boundStorageBytes = ctx.storageBytes;
         const int y0 = int(b * rows);
         const int y1 = int(std::min((b + 1) * rows, height));
         if (y0 < y1) fn(y0, y1);
     });
+
+    detail::boundTargets      = targets;
+    detail::boundUniforms     = uniforms;
+    detail::boundStorage      = storage;
+    detail::boundStorageBytes = storageBytes;
 }
 
 

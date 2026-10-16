@@ -14,6 +14,7 @@ namespace valo {
 // ========================================================================= */
 
 bool Renderer::init(const RenderConfig& cfg) {
+    if (m_backendFuncs.shutdown) shutdown();
     m_cfg = cfg;
 
     // init is what chooses the table, so it is never in the table itself
@@ -34,6 +35,14 @@ void Renderer::shutdown() {
     destroyAllQueued(true);
     m_backendFuncs.shutdown(*this);
     m_backendFuncs = {};
+
+    // the IDs belong to the backend that just went away
+    m_freeTargets.clear();
+    m_freeVertexBuffers.clear();
+    m_freeIndexBuffers.clear();
+    m_freePrograms.clear();
+    m_freeUniformBuffers.clear();
+    m_freeStorageBuffers.clear();
 }
 
 
@@ -77,6 +86,7 @@ RenderTargetID Renderer::createTarget(const uint32_t w, const uint32_t h, const 
 void Renderer::destroyTarget(const RenderTargetID target) {
     assert(target != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
     assert(validTarget(target) && "Renderer: invalid or already destroyed target");
+    if (target == BACKBUFFER || !validTarget(target)) return;
     m_destroyedTargets.push_back({target, m_frame});
 }
 
@@ -103,6 +113,7 @@ void Renderer::updateVertexBuffer(
 
 void Renderer::destroyVertexBuffer(const VertexBufferID buffer) {
     assert(validVerts(buffer) && "Renderer: invalid vertex buffer");
+    if (!validVerts(buffer)) return;
     m_destroyedVertexBuffers.push_back({buffer, m_frame});
 }
 
@@ -124,6 +135,7 @@ void Renderer::updateIndexBuffer(const IndexBufferID indices, const uint32_t* da
 
 void Renderer::destroyIndexBuffer(const IndexBufferID buffer) {
     assert(validIndices(buffer) && "Renderer: invalid index buffer");
+    if (!validIndices(buffer)) return;
     m_destroyedIndexBuffers.push_back({buffer, m_frame});
 }
 
@@ -145,6 +157,7 @@ void Renderer::updateUniformBuffer(const UniformBufferID buffer, const void* dat
 
 void Renderer::destroyUniformBuffer(const UniformBufferID buffer) {
     assert(validUniform(buffer) && "destroyUniformBuffer(): Uniform buffer ID out of range");
+    if (!validUniform(buffer)) return;
     m_destroyedUniformBuffers.push_back({buffer, m_frame});
 }
 
@@ -166,6 +179,7 @@ void Renderer::updateStorageBuffer(const StorageBufferID buffer, const void* dat
 
 void Renderer::destroyStorageBuffer(const StorageBufferID buffer) {
     assert(validStorage(buffer) && "destroyStorageBuffer(): Storage buffer ID out of range");
+    if (!validStorage(buffer)) return;
     m_destroyedStorageBuffers.push_back({buffer, m_frame});
 }
 
@@ -203,6 +217,7 @@ void Renderer::updateTexture(
 void Renderer::destroyTexture(const TextureID texture) {
     assert(texture != BACKBUFFER && "Renderer: cannot destroy the backbuffer");
     assert(validTarget(texture) && "Renderer: invalid or already destroyed texture");
+    if (texture == BACKBUFFER || !validTarget(texture)) return;
     m_destroyedTargets.push_back({texture, m_frame});
 }
 
@@ -245,6 +260,7 @@ ProgramID Renderer::createProgram(const std::string& vsPath, const std::string& 
 
 void Renderer::destroyProgram(const ProgramID program) {
     assert(validProgram(program) && "Renderer: invalid program");
+    if (!validProgram(program)) return;
     m_destroyedPrograms.push_back({program, m_frame});
 }
 

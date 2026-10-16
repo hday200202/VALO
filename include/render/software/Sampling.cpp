@@ -45,6 +45,9 @@ Color texture(const TextureID tex, const Vec2f& uv, const Sampler& sampler) {
 
     const RenderTarget& t = *(*detail::boundTargets)[tex];
 
+    // a window-tracking target is 0x0 while minimized; nothing to read, and the wrap would divide by zero
+    if (t.width() == 0 || t.height() == 0) return {0.f, 0.f, 0.f, 0.f};
+
     uint32_t level = 0;
     const auto& dv = detail::varyingDerivs;
 
@@ -128,6 +131,7 @@ float textureDepth(const TextureID tex, const Vec2f& uv) {
         || !(*detail::boundTargets)[tex]) return 0.f;   // reversed-Z: far plane
 
     const RenderTarget& t = *(*detail::boundTargets)[tex];
+    if (t.width() == 0 || t.height() == 0) return 0.f;
     float u = std::clamp<float>(uv.x, 0, 1) * (t.width() - 1);
     float v = std::clamp<float>(uv.y, 0, 1) * (t.height() - 1);
 

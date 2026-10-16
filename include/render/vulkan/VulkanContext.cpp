@@ -23,6 +23,34 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 
+bool hasInstanceExtension(const char* name) {
+    uint32_t n = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> exts(n);
+    vkEnumerateInstanceExtensionProperties(nullptr, &n, exts.data());
+    for (const auto& e : exts) if (!std::strcmp(e.extensionName, name)) return true;
+    return false;
+}
+
+// everything createLogicalDevice enables, so a device that would fail there is never picked
+bool supportsRequired(VkPhysicalDevice dev) {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(dev, &props);
+    if (props.apiVersion < VK_API_VERSION_1_3) return false;
+
+    VkPhysicalDeviceVulkan13Features f13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+    VkPhysicalDeviceVulkan12Features f12{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13 };
+    VkPhysicalDeviceFeatures2 f{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12 };
+    vkGetPhysicalDeviceFeatures2(dev, &f);
+
+    return f.features.fillModeNonSolid
+        && f13.synchronization2 && f13.dynamicRendering
+        && f12.descriptorIndexing && f12.shaderSampledImageArrayNonUniformIndexing
+        && f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending
+        && f12.descriptorBindingPartiallyBound && f12.descriptorBindingVariableDescriptorCount
+        && f12.runtimeDescriptorArray && f12.scalarBlockLayout;
+}
+
 bool hasLayer(const char* name) {
     uint32_t n = 0;
     vkEnumerateInstanceLayerProperties(&n, nullptr);
@@ -39,10 +67,10 @@ bool VulkanContext::init(Window& window, const bool validation) {
 
     std::vector<const char*> layers;
 
-    // Needed for MoltenVK
-    std::vector<const char*> extensions = {
-        VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-    };
+    // Needed for MoltenVK; a loader without it would refuse the instance outright
+    std::vector<const char*> extensions;
+    const bool portability = hasInstanceExtension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    if (portability) extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 
     const bool useValidation = validation && hasLayer(validationLayer);
     if (validation && !useValidation)
@@ -95,7 +123,7 @@ bool VulkanContext::init(Window& window, const bool validation) {
     VkInstanceCreateInfo ci{
         .sType                      = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pNext                      = useValidation ? &features : nullptr,
-        .flags                      = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR,
+        .flags                      = portability ? VkInstanceCreateFlags(VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) : 0u,
         .pApplicationInfo           = &app,
         .enabledLayerCount          = uint32_t(layers.size()),
         .ppEnabledLayerNames        = layers.data(),
@@ -200,12 +228,13 @@ bool VulkanContext::pickPhysicalDevice() {
         std::vector<VkExtensionProperties> exts(extCount);
         vkEnumerateDeviceExtensionProperties(dev, nullptr, &extCount, exts.data());
 
-        bool hasSwapchain = false, hasPortability = false;
+        bool hasSwapchain = false, hasPortability = false, hasPushDescriptor = false;
         for (const auto& ext : exts) {
-            if (!std::strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME))   hasSwapchain    = true;
-            if (!std::strcmp(ext.extensionName, "VK_KHR_portability_subset"))       hasPortability  = true;
+            if (!std::strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME))       hasSwapchain      = true;
+            if (!std::strcmp(ext.extensionName, "VK_KHR_portability_subset"))           hasPortability    = true;
+            if (!std::strcmp(ext.extensionName, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) hasPushDescriptor = true;
         }
-        if (!hasSwapchain) continue;
+        if (!hasSwapchain || !hasPushDescriptor || !supportsRequired(dev)) continue;
 
         uint32_t qCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
@@ -245,7 +274,7 @@ bool VulkanContext::pickPhysicalDevice() {
     }
 
     if (m_physical == VK_NULL_HANDLE) {
-        std::fprintf(stderr, "[vulkan] no device with graphics + present + swapchain\n");
+        std::fprintf(stderr, "[vulkan] no Vulkan 1.3 device with graphics + present + swapchain + push descriptors\n");
         return false;
     }
 

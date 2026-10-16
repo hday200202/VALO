@@ -169,6 +169,8 @@ void RenderTarget::update(const uint32_t* data) {
         data, 
         sizeof(uint32_t) * m_width * m_height
     );
+
+    if (!m_mips.empty()) generateMips();
 }
 
 
@@ -190,6 +192,9 @@ void RenderTarget::update(
             sizeof(uint32_t) * w
         );
     }
+
+    // mip 0 changed, so the rest of the chain is stale - the same rebuild Vulkan does
+    if (!m_mips.empty()) generateMips();
 }
 
 

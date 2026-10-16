@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
       | (useVulkan ? valo::WinFlags::Vulkan : valo::WinFlags::None));
     valo::VALO valo; valo::RenderConfig cfg; cfg.vsync = true;
     if (useVulkan) cfg.backend = valo::Backend::Vulkan;
+    for (int i = 1; i < argc; ++i) if (!std::strcmp(argv[i], "--validation")) cfg.validation = true;
     if (!valo.init(window, cfg)) return 1;
     valo.setLayerClearColor(valo::VALO::BASE_LAYER, {0.82f, 0.84f, 0.88f, 1.f});
 

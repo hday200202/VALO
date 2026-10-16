@@ -255,55 +255,46 @@ void rasterizePoint(
 
     const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
 
-    if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, screen.z, target->getDepth(px, py))) return;
-    if (!stencilTest(target, cmd, px, py)) return;
-
-    const bool ownsCenter = (py >= bandY0 && py < bandY1);
-
     detail::varyingDerivs.valid = false;
-
-    if (!program.fsThunk) {
-        if (ownsCenter) {
-            if (cmd.depthWrite) target->setDepth(px, py, screen.z);
-            stencilApply(target, cmd, px, py);
-        }
-        return;
-    }
 
     const int n    = std::max(1, int(size + 0.5f));
     const int half = n / 2;
     const int x0   = px - half, y0 = py - half;
 
-    float centerDepth = screen.z;
-    bool  centerLive  = false;
-
+    // every covered pixel is its own fragment, as on the GPU: tested, shaded and
+    // written by the one band that owns its row
     for (int y = y0; y < y0 + n; ++y) {
         if (y < bandY0 || y >= bandY1 || y < r.y0 || y > r.y1) continue;
         for (int x = x0; x < x0 + n; ++x) {
             if (x < r.x0 || x > r.x1) continue;
 
-            valo_Discard     = false;
-            valo_FragDepth   = screen.z;
-            valo_FragCoord   = { x + 0.5f, y + 0.5f, screen.z, 1.f / screen.w };
-            valo_FrontFacing = true;
-            valo_PointCoord  = { (x - x0 + 0.5f) / n, (y - y0 + 0.5f) / n };
+            if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, screen.z, target->getDepth(x, y))) continue;
+            if (!stencilTest(target, cmd, x, y)) continue;
 
-            const Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
-            if (valo_Discard) continue;
+            float depth = screen.z;
 
-            if (x == px && y == py) {
-                centerDepth = std::clamp(valo_FragDepth, 0.f, 1.f);
-                centerLive  = true;
+            if (program.fsThunk) {
+                valo_Discard     = false;
+                valo_FragDepth   = screen.z;
+                valo_FragCoord   = { x + 0.5f, y + 0.5f, screen.z, 1.f / screen.w };
+                valo_FrontFacing = true;
+                valo_PointCoord  = { (x - x0 + 0.5f) / n, (y - y0 + 0.5f) / n };
+
+                const Color color = program.fsThunk(program.fsFn, varys, cmd.uniforms);
+                if (valo_Discard) continue;
+
+                if (lateZ) {
+                    depth = std::clamp(valo_FragDepth, 0.f, 1.f);
+                    if (cmd.depthTest && !depthPasses(cmd.depthCompare, depth, target->getDepth(x, y))) continue;
+                }
+
+                if (cmd.colorWrite) writePixel(target, x, y, color, cmd.blendmode);
             }
 
-            if (cmd.colorWrite) writePixel(target, x, y, color, cmd.blendmode);
+            if (cmd.depthWrite) target->setDepth(x, y, depth);
+            stencilApply(target, cmd, x, y);
         }
     }
-
-    if (!ownsCenter || !centerLive) return;
-    if (lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, centerDepth, target->getDepth(px, py))) return;
-    if (cmd.depthWrite) target->setDepth(px, py, centerDepth);
-    stencilApply(target, cmd, px, py);
 }
 
 void rasterizeLine(
@@ -716,10 +707,14 @@ void drawLines(
             valo_VertexIndex = ib.indices[i + 1];
             b.pos = program.vsThunk(program.vsFn, v2, cmd.uniforms, b.vary);
 
-            if (a.pos.z < 0 && b.pos.z < 0) continue;
-            if ((a.pos.z < 0) != (b.pos.z < 0)) {
-                float t = a.pos.z / (a.pos.z - b.pos.z);
-                ClipVert& out = (a.pos.z < 0) ? a : b;
+            // near plane at z = w under reversed-Z, the same test clipNear uses
+            const float da = a.pos.w - a.pos.z;
+            const float db = b.pos.w - b.pos.z;
+
+            if (da < 0 && db < 0) continue;
+            if ((da < 0) != (db < 0)) {
+                float t = da / (da - db);
+                ClipVert& out = (da < 0) ? a : b;
                 out.pos = lerp(a.pos, b.pos, t);
 
                 for (uint32_t k = 0; k < program.varyingCount; ++k)
@@ -777,7 +772,7 @@ void drawPoints(
             a.pos = program.vsThunk(program.vsFn, v, cmd.uniforms, a.vary);
             const float size = valo_PointSize;
 
-            if (a.pos.z < 0) continue;
+            if (a.pos.w - a.pos.z < 0 || a.pos.w <= 0) continue;
 
             points.push_back({a, size});
             if (points.size() >= CHUNK) rasterChunk();

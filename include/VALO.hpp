@@ -194,11 +194,11 @@ private:
         Color clearColor = {0.f, 0.f, 0.f, 1.f};
         float clearDepth = 0.f;   // reversed depth: far plane
         bool dead = false;
+        std::vector<RenderCommand> clipStack;   // per layer: each layer's target has its own stencil
     };
 
     std::vector<Layer> m_layers;
     std::vector<LayerID> m_layerOrder;
-    std::vector<RenderCommand> m_clipStack;
     Renderer m_renderer;
 
     Clock m_dtClock;

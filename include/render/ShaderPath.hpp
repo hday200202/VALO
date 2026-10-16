@@ -28,12 +28,14 @@ inline std::string normalizeShaderPath(std::string s) {
     return out;
 }
 
-// a registered path matches any request it ends with, so "shaders/x.vert.hpp"
-// finds an entry registered under its full source path
+// a registered path matches any request it ends with at a '/', so "shaders/x.vert.hpp"
+// finds an entry registered under its full source path but "sky.vert.hpp" never finds gltfsky's
 inline bool shaderPathMatches(const std::string& registered, const std::string& requested) {
     const std::string have = normalizeShaderPath(registered);
     const std::string want = normalizeShaderPath(requested);
-    return have.size() >= want.size() && have.compare(have.size() - want.size(), want.size(), want) == 0;
+    if (want.empty() || have.size() < want.size()) return false;
+    if (have.compare(have.size() - want.size(), want.size(), want) != 0) return false;
+    return have.size() == want.size() || have[have.size() - want.size() - 1] == '/';
 }
 
 } // namespace valo

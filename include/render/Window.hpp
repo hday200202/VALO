@@ -247,6 +247,7 @@ private:
     bool        m_respectOSScale    = false;
     bool        m_resized           = false;
     bool        m_owned             = true;
+    bool        m_counted           = false;    // holds one of s_liveWindows
 
     Vec2f       m_mouseDelta        = {0.f, 0.f};
     Vec2f       m_scrollDelta       = {0.f, 0.f};
@@ -262,6 +263,8 @@ private:
     std::bitset<size_t(MouseButton::Count)> m_mousePressed, m_mouseReleased;
 
     void cleanup();
+    void acquireSDL();
+    void releaseSDL();
     void watchResize(const bool on);
     static bool resizeWatch(void* userdata, SDL_Event* event);
     friend class VALO;

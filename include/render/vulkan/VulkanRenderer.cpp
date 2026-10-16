@@ -47,10 +47,16 @@ bool VulkanRenderer::beginFrameIfNeeded() {
         m_frames.imageAvailable(frame), VK_NULL_HANDLE, &m_imageIndex
     );
 
+    // an out-of-date acquire signals nothing, so it can be retried on the new swapchain
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         m_needsRecreate = true;
-        recreateSwapchain();
-        return false;
+        if (!recreateSwapchain() || m_needsRecreate) return false;
+
+        r = vkAcquireNextImageKHR(
+            device, m_swapchain.handle(), UINT64_MAX,
+            m_frames.imageAvailable(frame), VK_NULL_HANDLE, &m_imageIndex
+        );
+        if (r == VK_ERROR_OUT_OF_DATE_KHR) { m_needsRecreate = true; return false; }
     }
     if (r == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
     else if (r != VK_SUCCESS) {
@@ -113,11 +119,11 @@ bool VulkanRenderer::bindTarget(
 
     const VkImageMemoryBarrier2 toAttachment{
         .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask           = toBackbuffer ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+        .srcStageMask           = toBackbuffer ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
                                       : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         .srcAccessMask          = toBackbuffer ? 0 : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         .dstStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
         // CLEAR overwrites the image, so UNDEFINED (which discards) is fine and
         // cheaper; LOAD has to name the layout the image is actually in
         .oldLayout              = !toBackbuffer           ? tex->layout
@@ -146,7 +152,7 @@ bool VulkanRenderer::bindTarget(
                                              : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         .dstStageMask           = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
                                 | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-        .dstAccessMask          = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask          = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
         .oldLayout              = db.layout,
         .newLayout              = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
@@ -623,7 +629,7 @@ bool VulkanRenderer::recreateSwapchain() {
 
 
 void VulkanRenderer::retireBuffer(GPUBuffer& buf) {
-    if (!buf.buffer) return;
+    if (!buf.buffer && buf.slots.empty()) { buf = GPUBuffer{}; return; }
 
     m_retiredBuffers.push_back({buf, m_owner->m_frame});
     buf = GPUBuffer{};
@@ -847,6 +853,35 @@ void VulkanRenderer::flushUploads() {
     }
 
     vkQueueWaitIdle(m_ctx.graphicsQueue());
+}
+
+
+// no frame to ride on: the uploads go alone, fenced by the slot so the next update waits for them
+void VulkanRenderer::submitPendingUploads() {
+    if (m_uploads.empty()) return;
+
+    UploadSlot& u = m_uploads[m_frameIndex];
+    if (!u.open) return;
+
+    vkEndCommandBuffer(u.cmd);
+    u.open = false;
+
+    const VkFence fence = m_frames.inFlight(m_frameIndex);
+    vkResetFences(m_ctx.device(), 1, &fence);
+
+    const VkCommandBufferSubmitInfo cmdInfo{
+        .sType          = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer  = u.cmd
+    };
+
+    const VkSubmitInfo2 submit{
+        .sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cmdInfo
+    };
+
+    vkQueueSubmit2(m_ctx.graphicsQueue(), 1, &submit, fence);
+    m_slotReady = false;
 }
 
 
@@ -2004,10 +2039,8 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
     if (hasIndices) {
         const uint32_t total = uint32_t(indexBytes / sizeof(uint32_t));
 
-        const uint32_t count =
-            cmd.indexCount == ALL_INDICES ?
-            (cmd.firstIndex < total ? total - cmd.firstIndex : 0) :
-            cmd.indexCount;
+        const uint32_t available = cmd.firstIndex < total ? total - cmd.firstIndex : 0;
+        const uint32_t count     = cmd.indexCount == ALL_INDICES ? available : std::min(cmd.indexCount, available);
 
         if (!count || !indexBuffer) return;
 
@@ -2016,11 +2049,11 @@ void VulkanRenderer::draw(const RenderCommand& cmd, const RenderTargetID target)
         return;
     }
 
-    const uint32_t count =
-        cmd.indexCount != ALL_INDICES ?
-        cmd.indexCount : hasVerts ?
-        uint32_t(vertexBytes / layout.stride()) :
-        0;
+    // without vertices there is nothing to clamp against: a vertex-pulling shader draws exactly what it asks for
+    const uint32_t total     = hasVerts ? uint32_t(vertexBytes / layout.stride()) : UINT32_MAX;
+    const uint32_t available = cmd.firstIndex < total ? total - cmd.firstIndex : 0;
+    const uint32_t count     = cmd.indexCount == ALL_INDICES ? (hasVerts ? available : 0)
+                                                             : std::min(cmd.indexCount, available);
 
     if (count) vkCmdDraw(buf, count, cmd.instanceCount, cmd.firstIndex, 0);
 }
@@ -2054,7 +2087,7 @@ void VulkanRenderer::blitToSwapchain(const VkCommandBuffer cmd, GPUTexture& tex)
         },
         {
             .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .srcStageMask           = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
             .srcAccessMask          = 0,
             .dstStageMask           = VK_PIPELINE_STAGE_2_BLIT_BIT,
             .dstAccessMask          = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -2146,7 +2179,10 @@ void VulkanRenderer::blitToSwapchain(const VkCommandBuffer cmd, GPUTexture& tex)
 
 
 void VulkanRenderer::show(const RenderTargetID target) {
-    if (!m_frameOpen) return;
+    if (!m_frameOpen) {
+        submitPendingUploads();
+        return;
+    }
 
     drainRetiredBuffers();
 
@@ -2198,7 +2234,7 @@ void VulkanRenderer::show(const RenderTargetID target) {
     const VkSemaphoreSubmitInfo waitSem{
         .sType                  = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .semaphore              = m_frames.imageAvailable(frame),
-        .stageMask              = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
+        .stageMask              = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT
     };
 
     const VkSemaphoreSubmitInfo signalSem{
@@ -2256,15 +2292,13 @@ void VulkanRenderer::show(const RenderTargetID target) {
     };
 
     const VkResult r = vkQueuePresentKHR(m_ctx.presentQueue(), &pi);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
-    else if (r != VK_SUCCESS) {
-        std::fprintf(stderr, "[vulkan] vkQueuePresentKHR failed (%d)\n", r);
-        return;
-    }
 
     m_frameIndex = (frame + 1) % m_frames.framesInFlight();
     m_slotReady  = false;
     ++m_owner->m_frame;
+
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
+    else if (r != VK_SUCCESS) std::fprintf(stderr, "[vulkan] vkQueuePresentKHR failed (%d)\n", r);
 }
 
 
@@ -2625,13 +2659,13 @@ void VulkanRenderer::releaseTarget(const RenderTargetID id) {
 }
 
 
-void VulkanRenderer::releaseVertexBuffer(const VertexBufferID id) { 
-    destroyBufferNow(m_vertexBuffers[id]);
+void VulkanRenderer::releaseVertexBuffer(const VertexBufferID id) {
+    if (id < m_vertexBuffers.size()) destroyBufferNow(m_vertexBuffers[id]);
 }
 
 
 void VulkanRenderer::releaseIndexBuffer(const IndexBufferID id) {
-    destroyBufferNow(m_indexBuffers[id]);
+    if (id < m_indexBuffers.size()) destroyBufferNow(m_indexBuffers[id]);
 }
 
 
@@ -2639,7 +2673,17 @@ void VulkanRenderer::releaseUniformBuffer(const UniformBufferID id) {
     if (id < m_uniformBuffers.size()) retireBuffer(m_uniformBuffers[id]); 
 }
 
-void VulkanRenderer::releaseProgram(const ProgramID id) { 
+void VulkanRenderer::releaseProgram(const ProgramID id) {
+    if (id >= m_programs.size()) return;
+
+    // past framesInFlight already (Renderer's deferred destroy), so no frame still uses them
+    size_t keep = 0;
+    for (size_t i = 0; i < m_pipelines.size(); ++i) {
+        if (m_pipelines[i].first.program == id) vkDestroyPipeline(m_ctx.device(), m_pipelines[i].second, nullptr);
+        else m_pipelines[keep++] = m_pipelines[i];
+    }
+    m_pipelines.resize(keep);
+
     if (m_programs[id].vs) vkDestroyShaderModule(m_ctx.device(), m_programs[id].vs, nullptr);
     if (m_programs[id].fs) vkDestroyShaderModule(m_ctx.device(), m_programs[id].fs, nullptr);
     m_programs[id] = GPUProgram{};

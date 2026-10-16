@@ -434,6 +434,72 @@ Things that worked only if you already knew the trick. All fixed unless marked.
       (`PI`, `SCENE_SLOT`, `ENCODE_BITS`, ...). `kD` in the PBR shaders stays:
       it is the diffuse term k_d, a variable, not a prefixed constant.
 
+## Review pass (2026-10-16)
+
+A full read of `include/` for defects that need fixing. All fixed.
+
+- [✅] **Window** - SDL's init count is now per object (`m_counted`), so
+      `Window()` + `create()`, move-assign, and a window that is never created
+      all keep `SDL_Quit` correct. `create()` no longer destroys a `fromSDL`
+      window, and `isFocusable()` tests focusability, not focus.
+- [✅] **Vulkan**
+      - Retiring an updated uniform or storage buffer leaked its per-frame
+        copies.
+      - `releaseProgram` now evicts the program's pipelines, so a reused ID no
+        longer draws with the old shaders.
+      - Swapchain barriers now chain to the acquire semaphore
+        (`COLOR_ATTACHMENT_OUTPUT`, and `BLIT` for the renderScale blit).
+      - `LOAD_OP_LOAD` attachments now get read access in their barrier, which
+        cleared a `READ_AFTER_WRITE` in `rendertarget` and `gltf`.
+      - Draw counts are clamped to the bound buffers.
+      - A resize on acquire retries once, so that frame's clears are not lost.
+      - Uploads made while frames are skipped (minimized) are submitted alone,
+        so the staging ring no longer grows.
+      - A failed present still advances the frame slot.
+      - Device selection requires 1.3, push descriptors and the features
+        `createLogicalDevice` enables.
+      - Portability enumeration is only requested when the loader has it.
+      - Stencil `Less` / `Greater` were reversed. Vulkan compares
+        `ref OP stored`, and VALO means `stored OP ref`.
+- [✅] **Core**
+      - Every `destroy*` early-returns on an invalid ID in release builds. A
+        double destroy used to hand the same ID out twice.
+      - `shutdown()` clears the free lists, and `init()` shuts down first, so
+        re-init is safe.
+      - The clip stack is per layer.
+      - Shader path matching needs a `/` boundary, so `sky.vert.hpp` no longer
+        finds `gltfsky.vert.hpp`.
+- [✅] **Software**
+      - Lines and points clip at `z = w`, the reversed-Z near plane, as
+        triangles do.
+      - Points are tested, shaded and written per pixel. That removes a
+        centre-pixel race between bands and stops late-Z points painting colour
+        over closer geometry.
+      - `forEachBand` hands workers the storage bindings, and restores the
+        calling thread's bindings after a flush in the middle of a draw.
+      - The thread pool claims indices against the dispatch generation, so a
+        late worker can't run a band twice.
+      - `updateTexture*` rebuilds the mip chain.
+      - Sampling a 0x0 target returns empty instead of dividing by zero.
+- [✅] **Math / glTF**
+      - `orthographic` had the z scale's sign flipped; it now maps near to 1
+        and far to 0 like `perspective`.
+      - `inverse()` only rejects an exactly singular matrix.
+      - Triangle strips and fans are converted to triangle lists.
+      - Only nodes the default scene reaches are drawn.
+
+*Verified:*
+- No errors or warnings under validation and sync validation for `clipstack`
+  (depth 20), `stencil`, `particles`, `rendertarget`, `gltf` and `showcase`.
+- ASan (MSVC) is clean for `particles`, `main`, `stencil`, `clipstack` and a
+  create/update/destroy harness, on both backends. That harness shows buffer
+  creates equal to destroys and VMA reporting everything freed.
+- Every example runs on both backends.
+- The MSVC subproject build is still warning-free.
+- A synthetic glTF checks the strip and fan winding and the scene filter.
+- `--validation` was added to `clipstack`, `stencil`, `particles` and
+  `rendertarget`.
+
 ## 2. Cleanup — housekeeping, never blocked the backend
 
 - [ ] **Shared pixel path** — the three rasterizers duplicate the per-pixel

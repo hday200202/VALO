@@ -174,7 +174,7 @@ template <typename T> struct Mat4 {
         return {{
             {     2/(r-l),            0,       0, 0},
             {           0,      2/(t-b),       0, 0},
-            {           0,            0, 1/(n-f), 0},
+            {           0,            0, 1/(f-n), 0},
             {-(r+l)/(r-l), -(t+b)/(t-b), f/(f-n), 1}
         }};
     }
@@ -214,7 +214,8 @@ template <typename T> struct Mat4 {
 
         T det = 0;
         for (int c = 0; c < 4; ++c) det += cols[c][0] * cof.cols[c][0];
-        if (std::abs(det) < T(1e-8)) return identity();
+        // exactly singular only: a tiny det is a legitimately small scale, not a failure
+        if (det == T(0)) return identity();
 
         Mat4 inv;
         for (int r = 0; r < 4; ++r)

@@ -51,7 +51,7 @@ void VALO::beginFrame() {
     m_renderer.destroyAllQueued();
     
     if (m_window && m_window->resized()) resize();
-    m_clipStack.clear();
+    for (Layer& l : m_layers) l.clipStack.clear();
     std::vector<RenderTargetID> cleared;
 
     for (auto& layer : m_layerOrder) {
@@ -71,10 +71,11 @@ void VALO::submit(
     assert(validLayer(layer) && "submit(): invalid or removed layer");
     if (!validLayer(layer)) return;
 
-    if (m_clipStack.empty()) { m_layers[layer].cmdQueue.push_back(cmd); return; }
+    const std::vector<RenderCommand>& clips = m_layers[layer].clipStack;
+    if (clips.empty()) { m_layers[layer].cmdQueue.push_back(cmd); return; }
     RenderCommand c = cmd;
     c.stencilTest   = StencilTest::Equal;
-    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilRef    = uint8_t(clips.size());
     c.stencilOp     = StencilOp::Keep;
     m_layers[layer].cmdQueue.push_back(c);
 }
@@ -116,6 +117,7 @@ void VALO::removeLayer(const LayerID layer) {
     if (!validLayer(layer)) return;
 
     m_layers[layer].dead = true;
+    m_layers[layer].clipStack.clear();
 
     auto it = std::find(m_layerOrder.begin(), m_layerOrder.end(), layer);
     if (it != m_layerOrder.end()) m_layerOrder.erase(it);
@@ -157,15 +159,17 @@ void VALO::pushClip(
     assert(validLayer(layer) && "pushClip(): invalid or removed layer");
     if (!validLayer(layer)) return;
 
+    std::vector<RenderCommand>& clips = m_layers[layer].clipStack;
+
     RenderCommand c = shape;
     c.colorWrite    = false;
     c.depthTest     = false;
     c.depthWrite    = false;
-    c.stencilTest   = m_clipStack.empty() ? StencilTest::Always : StencilTest::Equal;
-    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilTest   = clips.empty() ? StencilTest::Always : StencilTest::Equal;
+    c.stencilRef    = uint8_t(clips.size());
     c.stencilOp     = StencilOp::Incr;
     m_layers[layer].cmdQueue.push_back(c);
-    m_clipStack.push_back(c);
+    clips.push_back(c);
 }
 
 
@@ -173,14 +177,16 @@ void VALO::popClip(
     const LayerID layer
 ) {
     assert(validLayer(layer) && "popClip(): invalid or removed layer");
-    if (!validLayer(layer) || m_clipStack.empty()) return;
+    if (!validLayer(layer) || m_layers[layer].clipStack.empty()) return;
 
-    RenderCommand c = m_clipStack.back();
+    std::vector<RenderCommand>& clips = m_layers[layer].clipStack;
+
+    RenderCommand c = clips.back();
     c.stencilTest   = StencilTest::Equal;
-    c.stencilRef    = uint8_t(m_clipStack.size());
+    c.stencilRef    = uint8_t(clips.size());
     c.stencilOp     = StencilOp::Decr;
     m_layers[layer].cmdQueue.push_back(c);
-    m_clipStack.pop_back();
+    clips.pop_back();
 }
 
 

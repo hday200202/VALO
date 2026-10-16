@@ -161,9 +161,6 @@ inline Model loadModel(VALO& valo, const std::string& path) {
         model.materials.push_back(grey);
     }
 
-    Vec3f lo = { 1e30f,  1e30f,  1e30f};
-    Vec3f hi = {-1e30f, -1e30f, -1e30f};
-
     for (const GLTFNode& node : g.nodes) {
         if (node.mesh < 0 || size_t(node.mesh) >= g.meshes.size()) continue;
 
@@ -194,12 +191,6 @@ inline Model loadModel(VALO& valo, const std::string& path) {
             if (mm.alphaMode == uint32_t(AlphaMode::Blend))
                 d.cmd.blendmode = BlendMode::Alpha;
 
-            for (uint32_t k = prim.firstIndex; k < prim.firstIndex + prim.indexCount; ++k) {
-                const Vec3f p = (node.world * Vec4f(g.vertices[g.indices[k]].pos, 1.f)).xyz;
-                lo = min(lo, p);
-                hi = max(hi, p);
-            }
-
             model.draws.push_back(d);
         }
     }
@@ -213,8 +204,8 @@ inline Model loadModel(VALO& valo, const std::string& path) {
         });
 
     if (!model.draws.empty()) {
-        model.boundsMin = lo;
-        model.boundsMax = hi;
+        model.boundsMin = g.bounds.min;
+        model.boundsMax = g.bounds.max;
     }
 
     return model;

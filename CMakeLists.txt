@@ -328,6 +328,15 @@ elseif(VALO_BUILD_VALOC)
 endif()
 
 # ---------------------------------------------------------------------------
+# image-diff
+# ---------------------------------------------------------------------------
+if(PROJECT_IS_TOP_LEVEL)
+    add_executable(image-diff "${CMAKE_CURRENT_SOURCE_DIR}/tools/image-diff.cpp")
+    target_link_libraries(image-diff PRIVATE VALO::VALO)
+    set_target_properties(image-diff PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+endif()
+
+# ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
 if(VALO_BUILD_EXAMPLES)

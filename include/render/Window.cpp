@@ -10,6 +10,20 @@ namespace valo {
 
 int Window::s_liveWindows = 0;
 
+// each Window counts itself at most once, so SDL_Quit runs exactly when the last
+// window that started SDL goes away
+void Window::acquireSDL() {
+    if (m_counted) return;
+    if (s_liveWindows++ == 0) SDL_Init(SDL_INIT_VIDEO);
+    m_counted = true;
+}
+
+void Window::releaseSDL() {
+    if (!m_counted) return;
+    m_counted = false;
+    if (--s_liveWindows == 0) SDL_Quit();
+}
+
 namespace {
 
 constexpr uint16_t KEYMOD_BITS = 0x0FC3;
@@ -45,7 +59,7 @@ Window::Window(
     const WinFlags flags,
     const bool respectOSScale
 ) : m_respectOSScale(respectOSScale) {
-    if (s_liveWindows++ == 0) SDL_Init(SDL_INIT_VIDEO);
+    acquireSDL();
 
     m_window = SDL_CreateWindow(
         title.c_str(), 
@@ -65,7 +79,7 @@ Window::Window(
 
 Window::~Window() {
     cleanup();
-    if (--s_liveWindows == 0) SDL_Quit();
+    releaseSDL();
 }
 
 Window::Window(Window&& other) noexcept
@@ -74,6 +88,7 @@ Window::Window(Window&& other) noexcept
       m_respectOSScale(other.m_respectOSScale),
       m_resized(other.m_resized),
       m_owned(other.m_owned),
+      m_counted(other.m_counted),
       m_events(std::move(other.m_events)),
       m_onResize(std::move(other.m_onResize)),
       m_cursors(other.m_cursors) {
@@ -82,8 +97,8 @@ Window::Window(Window&& other) noexcept
     other.m_cursors = {};
     other.m_window  = nullptr;
     other.m_open    = false;
+    other.m_counted = false;
     watchResize(watching);
-    ++s_liveWindows;
 }
 
 Window& Window::operator=(Window&& other) noexcept {
@@ -103,6 +118,12 @@ Window& Window::operator=(Window&& other) noexcept {
         other.m_cursors  = {};
         other.m_window   = nullptr;
         other.m_open     = false;
+
+        // two counts collapse into one; this still holds it, so it can't reach zero
+        const bool mine = m_counted, theirs = other.m_counted;
+        other.m_counted = false;
+        m_counted       = mine || theirs;
+        if (mine && theirs) --s_liveWindows;
 
         watchResize(watching);
     }
@@ -470,7 +491,7 @@ void Window::setFocusable(const bool focusable) {
     SDL_SetWindowFocusable(m_window, focusable);
 }
 bool Window::isFocusable() const {
-    return SDL_GetWindowFlags(m_window) & SDL_WINDOW_INPUT_FOCUS;
+    return !(SDL_GetWindowFlags(m_window) & SDL_WINDOW_NOT_FOCUSABLE);
 }
 
 
@@ -518,7 +539,11 @@ bool Window::create(
     const WinFlags flags,
     const bool respectOSScale
 ) {
-    SDL_DestroyWindow(m_window);
+    if (m_window && m_owned) SDL_DestroyWindow(m_window);
+    m_window = nullptr;
+    m_owned  = true;
+
+    acquireSDL();
     m_respectOSScale = respectOSScale;
 
     m_window = SDL_CreateWindow(

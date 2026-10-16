@@ -14,6 +14,7 @@
 #include "../math/Mat.hpp"
 #include "../render/buffers/VertexBuffer.hpp"
 #include "../render/RenderCommand.hpp"
+#include "../math/Bounds.hpp"
 
 namespace valo {
 
@@ -120,6 +121,7 @@ struct GLTF {
     std::vector<GLTFMaterial>   materials;
     std::vector<GLTFImage>      images;
     std::vector<GLTFNode>       nodes;
+    Bounds                      bounds;
 };
 
 
@@ -331,7 +333,9 @@ inline GLTF parseGLTF(const std::string& path) {
 
         for (cgltf_size pi = 0; pi < m.primitives_count; ++pi) {
             const cgltf_primitive& p = m.primitives[pi];
-            if (p.type != cgltf_primitive_type_triangles) continue;     // points and lines
+            const bool strip = p.type == cgltf_primitive_type_triangle_strip;
+            const bool fan   = p.type == cgltf_primitive_type_triangle_fan;
+            if (p.type != cgltf_primitive_type_triangles && !strip && !fan) continue;  // points and lines
 
             const cgltf_accessor *pos = nullptr, *nrm = nullptr, *uv = nullptr, *tng = nullptr;
             for (cgltf_size a = 0; a < p.attributes_count; ++a) {
@@ -370,6 +374,23 @@ inline GLTF parseGLTF(const std::string& path) {
                 for (cgltf_size k = 0; k < n; ++k) local[k] = uint32_t(k);
             }
 
+            // strips and fans become plain triangles, wound the way the glTF spec defines them
+            if ((strip || fan) && local.size() >= 3) {
+                std::vector<uint32_t> tris;
+                tris.reserve((local.size() - 2) * 3);
+                for (size_t i = 0; i + 2 < local.size(); ++i) {
+                    if (strip) {
+                        const bool odd = i % 2 == 1;
+                        tris.insert(tris.end(), {local[i], local[i + (odd ? 2 : 1)], local[i + (odd ? 1 : 2)]});
+                    } else {
+                        tris.insert(tris.end(), {local[i + 1], local[i + 2], local[0]});
+                    }
+                }
+                local = std::move(tris);
+            } else if (strip || fan) {
+                local.clear();
+            }
+
             if (!nrm)       detail::computeNormals(verts, local.data(), local.size());
             if (!tng && uv) detail::computeTangents(verts, local.data(), local.size());
 
@@ -391,9 +412,25 @@ inline GLTF parseGLTF(const std::string& path) {
 
 
     /* ---- nodes: the ones that place a mesh, with their world transform --- */
+
+    // only what the default scene reaches; a file with no scenes shows every node
+    std::vector<bool> inScene(data->nodes_count, data->scenes_count == 0);
+    if (data->scenes_count > 0) {
+        const cgltf_scene& scene = data->scene ? *data->scene : data->scenes[0];
+        std::vector<const cgltf_node*> stack(scene.nodes, scene.nodes + scene.nodes_count);
+        while (!stack.empty()) {
+            const cgltf_node* nd = stack.back();
+            stack.pop_back();
+            const size_t ni = size_t(nd - data->nodes);
+            if (ni >= inScene.size() || inScene[ni]) continue;
+            inScene[ni] = true;
+            stack.insert(stack.end(), nd->children, nd->children + nd->children_count);
+        }
+    }
+
     for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
         const cgltf_node& nd = data->nodes[ni];
-        if (!nd.mesh) continue;
+        if (!nd.mesh || !inScene[ni]) continue;
 
         GLTFNode node;
         node.name = nd.name ? nd.name : "";
@@ -406,6 +443,14 @@ inline GLTF parseGLTF(const std::string& path) {
                 node.world.cols[c][r] = m[c * 4 + r];
 
         out.nodes.push_back(node);
+    }
+
+    for (const GLTFNode& node : out.nodes) {
+        if (node.mesh < 0 || size_t(node.mesh) >= out.meshes.size()) continue;
+
+        for (const GLTFPrimitive& prim : out.meshes[size_t(node.mesh)].primitives)
+            for (uint32_t k = prim.firstIndex; k < prim.firstIndex + prim.indexCount; ++k)
+                out.bounds.grow((node.world * Vec4f(out.vertices[out.indices[k]].pos, 1.f)).xyz);
     }
 
     return out;

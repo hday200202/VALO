@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
+#include <ostream>
 
 // Anonymous structs inside a union are a compiler extension (every compiler we
 // target supports them, ISO C++ does not). The swizzle unions below are wrapped
@@ -315,5 +316,14 @@ inline Color ABGR32ToColor(const uint32_t c) {
 
 template <typename T> T lerp(const T& a, const T& b, const T t)
 { return a + ((b - a) * t); }
+
+template <typename T> std::ostream& operator<<(std::ostream& os, const Vec2<T>& v)
+{ return os << "(" << v.x << ", " << v.y << ")"; }
+
+template <typename T> std::ostream& operator<<(std::ostream& os, const Vec3<T>& v)
+{ return os << "(" << v.x << ", " << v.y << ", " << v.z << ")"; }
+
+template <typename T> std::ostream& operator<<(std::ostream& os, const Vec4<T>& v)
+{ return os << "(" << v.x << ", " << v.y << ", " << v.z << ", " << v.w << ")"; }
 
 } // namespace valo

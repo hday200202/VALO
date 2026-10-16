@@ -33,6 +33,7 @@ int main(int argc, char** argv) {
     cfg.vsync       = true;
     cfg.renderScale = 1.f;
     if (useVulkan) cfg.backend = valo::Backend::Vulkan;
+    for (int i = 1; i < argc; ++i) if (!std::strcmp(argv[i], "--validation")) cfg.validation = true;
     if (!valo.init(window, cfg)) return 1;
 
     constexpr uint32_t STARS = 8000;

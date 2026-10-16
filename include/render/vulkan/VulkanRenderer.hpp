@@ -161,6 +161,7 @@ public:
     bool            createUploadSlots();
     void            destroyUploadSlots();
     void            flushUploads();
+    void            submitPendingUploads();
     VkCommandBuffer uploadCommands();
     bool            stageUpload(const void* data, const VkDeviceSize bytes, VkBuffer& src, VkDeviceSize& offset);
 
@@ -340,13 +341,15 @@ inline constexpr VkCullModeFlags vkCullOf(const CullMode m) {
 }
 
 
+// VALO's tests read "stored OP ref"; Vulkan evaluates "ref OP stored", so the
+// ordered pair swaps
 inline constexpr VkCompareOp vkStencilCompareOf(const StencilTest t) {
     switch (t) {
         case StencilTest::Always:   return VK_COMPARE_OP_ALWAYS;
         case StencilTest::Equal:    return VK_COMPARE_OP_EQUAL;
         case StencilTest::NotEqual: return VK_COMPARE_OP_NOT_EQUAL;
-        case StencilTest::Less:     return VK_COMPARE_OP_LESS;
-        case StencilTest::Greater:  return VK_COMPARE_OP_GREATER;
+        case StencilTest::Less:     return VK_COMPARE_OP_GREATER;
+        case StencilTest::Greater:  return VK_COMPARE_OP_LESS;
     }
     return VK_COMPARE_OP_ALWAYS;
 }
