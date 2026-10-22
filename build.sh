@@ -16,9 +16,10 @@
 #   no-vulkan      -> skip the Vulkan SDK entirely (software renderer only)
 #   rebuild-vulkan -> wipe ext/vulkan and re-download the SDK
 #   vulkan-full    -> keep the whole SDK instead of pruning it to ~520 MB
-#   deps           -> only fetch the header-only libraries and the Vulkan SDK,
-#                     then stop: no SDL3, no VALO build. For a parent project
-#                     that add_subdirectory()s VALO and provides SDL3 itself
+#   deps           -> only fetch SDL3's source, the header-only libraries and
+#                     the Vulkan SDK, then stop: nothing is built. For a parent
+#                     project that add_subdirectory()s VALO and builds SDL3
+#                     from ext/SDL3 itself
 #
 # SDL3 handling (vendored):
 #   1. ext/SDL3 missing            -> git clone SDL_TAG from SDL_REPO into ext/SDL3
@@ -143,9 +144,7 @@ JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 # ---------------------------------------------------------------------------
 # 1. Vendor SDL3 source
 # ---------------------------------------------------------------------------
-if [[ "$DEPS_ONLY" == "1" ]]; then
-    echo "==> deps: SDL3 is the parent project's, skipping"
-elif [[ ! -f "$SDL_SRC_DIR/CMakeLists.txt" ]]; then
+if [[ ! -f "$SDL_SRC_DIR/CMakeLists.txt" ]]; then
     echo "==> SDL3 not found in $SDL_SRC_DIR, cloning $SDL_TAG from $SDL_REPO"
     git clone --depth 1 --branch "$SDL_TAG" "$SDL_REPO" "$SDL_SRC_DIR"
 else
@@ -224,6 +223,19 @@ vulkan_need_7z() {
         echo "error: need 7z to unpack the Vulkan SDK; run 'pacman -Syu' then retry" >&2
         exit 1
     fi
+}
+
+# Removes a download scratch directory. Windows can briefly hold freshly
+# unpacked files open (Defender scanning them, an editor's file watcher), which
+# makes rm fail with "Device or resource busy", so retry for a few seconds and
+# never fail the build over it: nothing reads the scratch directory afterwards.
+remove_scratch() {
+    local dir="$1" i
+    for i in 1 2 3 4 5; do
+        rm -rf "$dir" 2>/dev/null && return 0
+        sleep 1
+    done
+    echo "==> note: could not remove $dir (files in use); it is safe to delete later" >&2
 }
 
 vulkan_prune() {
@@ -322,10 +334,13 @@ if [[ "$WITH_VULKAN" == "1" ]]; then
                 [[ -f "$VK_HDR" ]] || curl -fL "${VK_CURL_PROGRESS[@]}" \
                     "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/$VULKAN_HEADERS_TAG.tar.gz" \
                     -o "$VK_HDR"
-                rm -rf "$VK_TMP/headers"; mkdir -p "$VK_TMP/headers"
-                tar -xf "$VK_HDR" -C "$VK_TMP/headers" --strip-components=1
+                # A fresh directory per run, so a previous run's copy that is
+                # still held open can never block this one.
+                VK_HDR_DIR="$VK_TMP/headers-$$"
+                mkdir -p "$VK_HDR_DIR"
+                tar -xf "$VK_HDR" -C "$VK_HDR_DIR" --strip-components=1
                 mkdir -p "$VULKAN_DIR/Include"
-                cp -r "$VK_TMP/headers/include/." "$VULKAN_DIR/Include/"
+                cp -r "$VK_HDR_DIR/include/." "$VULKAN_DIR/Include/"
 
                 # The loader itself ships with the GPU driver rather than the
                 # SDK, so copy it in to keep ext/ self-contained. mingw links
@@ -351,7 +366,7 @@ if [[ "$WITH_VULKAN" == "1" ]]; then
         fi
 
         [[ "$PRUNE_VULKAN" == "1" ]] && vulkan_prune "$VK_SDK_ROOT"
-        rm -rf "$VK_TMP"
+        remove_scratch "$VK_TMP"
         echo "==> Vulkan SDK installed to $VK_SDK_ROOT ($(du -sh "$VULKAN_DIR" | cut -f1))"
     fi
 
@@ -409,7 +424,7 @@ else
 fi
 
 if [[ "$DEPS_ONLY" == "1" ]]; then
-    echo "==> deps: dependencies ready, VALO is built by the parent project"
+    echo "==> deps: dependencies ready, SDL3 and VALO are built by the parent project"
     exit 0
 fi
 
