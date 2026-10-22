@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: ./build.sh [release | debug | rdbi] [static | dynamic] [clean]
 #                   [rebuild-sdl] [no-vulkan | rebuild-vulkan | vulkan-full]
+#                   [deps]
 #
 # Everything is vendored: a fresh clone needs only a compiler, cmake and curl.
 # Nothing is installed system-wide and nothing is read from outside the repo.
@@ -15,6 +16,9 @@
 #   no-vulkan      -> skip the Vulkan SDK entirely (software renderer only)
 #   rebuild-vulkan -> wipe ext/vulkan and re-download the SDK
 #   vulkan-full    -> keep the whole SDK instead of pruning it to ~520 MB
+#   deps           -> only fetch the header-only libraries and the Vulkan SDK,
+#                     then stop: no SDL3, no VALO build. For a parent project
+#                     that add_subdirectory()s VALO and provides SDL3 itself
 #
 # SDL3 handling (vendored):
 #   1. ext/SDL3 missing            -> git clone SDL_TAG from SDL_REPO into ext/SDL3
@@ -101,6 +105,7 @@ REBUILD_SDL=0
 REBUILD_VULKAN=0
 WITH_VULKAN=1
 PRUNE_VULKAN=1
+DEPS_ONLY=0
 
 for arg in "$@"; do
     case "$(echo "$arg" | tr '[:upper:]' '[:lower:]')" in
@@ -114,6 +119,7 @@ for arg in "$@"; do
         no-vulkan)      WITH_VULKAN=0 ;;
         rebuild-vulkan) REBUILD_VULKAN=1 ;;
         vulkan-full)    PRUNE_VULKAN=0 ;;
+        deps)           DEPS_ONLY=1 ;;
         -h|--help)
             sed -n '2,30p' "$0"
             exit 0
@@ -121,7 +127,7 @@ for arg in "$@"; do
         *)
             echo "error: unknown argument '$arg'" >&2
             echo "usage: ./build.sh [release | debug | rdbi] [static | dynamic] [clean]" >&2
-            echo "                  [rebuild-sdl] [no-vulkan | rebuild-vulkan | vulkan-full]" >&2
+            echo "                  [rebuild-sdl] [no-vulkan | rebuild-vulkan | vulkan-full] [deps]" >&2
             exit 1
             ;;
     esac
@@ -137,7 +143,9 @@ JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 # ---------------------------------------------------------------------------
 # 1. Vendor SDL3 source
 # ---------------------------------------------------------------------------
-if [[ ! -f "$SDL_SRC_DIR/CMakeLists.txt" ]]; then
+if [[ "$DEPS_ONLY" == "1" ]]; then
+    echo "==> deps: SDL3 is the parent project's, skipping"
+elif [[ ! -f "$SDL_SRC_DIR/CMakeLists.txt" ]]; then
     echo "==> SDL3 not found in $SDL_SRC_DIR, cloning $SDL_TAG from $SDL_REPO"
     git clone --depth 1 --branch "$SDL_TAG" "$SDL_REPO" "$SDL_SRC_DIR"
 else
@@ -398,6 +406,11 @@ ENVEOF
     fi
 else
     echo "==> no-vulkan requested, skipping the Vulkan SDK"
+fi
+
+if [[ "$DEPS_ONLY" == "1" ]]; then
+    echo "==> deps: dependencies ready, VALO is built by the parent project"
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------

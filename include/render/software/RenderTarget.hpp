@@ -66,6 +66,51 @@ public:
 
     void generateMips();
 
+    /*
+        Multisampling, for the backbuffer (RenderConfig::msaa). Colour, depth and
+        stencil are kept per sample; the image itself - data(), what is shown and
+        sampled - is the resolve, made by resolve().
+
+        Colour is compressed per pixel the way GPU colour compression is: while
+        every sample of a pixel holds the same colour it lives once, in the
+        image, and only a pixel an edge has split keeps all of its samples. So a
+        fully covered pixel costs what it does without multisampling, and only
+        edges pay per sample.
+
+        The pixel-level depth and stencil accessors read sample 0 and write every
+        sample, which is what a line or point - drawn with full coverage - wants.
+    */
+    void     setSamples(const uint32_t samples);
+    uint32_t samples() const { return m_samples; }
+
+    // false once an edge has split the pixel's samples
+    bool     pixelUniform(const uint32_t x, const uint32_t y) const {
+        return m_uniform[size_t(y) * m_width + x] != 0;
+    }
+    uint32_t* sampleColors(const uint32_t x, const uint32_t y) {
+        return m_sampleColor.data() + (size_t(y) * m_width + x) * m_samples;
+    }
+    // copies the pixel's colour into each of its samples, so they can diverge
+    void     splitPixel(const uint32_t x, const uint32_t y);
+    // every sample holds `abgr` again, so the pixel is stored once
+    void     joinPixel(const uint32_t x, const uint32_t y, const uint32_t abgr);
+
+    float   getDepthSample(const uint32_t x, const uint32_t y, const uint32_t s) const {
+        return m_sampleDepth[(size_t(y) * m_width + x) * m_samples + s];
+    }
+    void    setDepthSample(const uint32_t x, const uint32_t y, const uint32_t s, const float value) {
+        m_sampleDepth[(size_t(y) * m_width + x) * m_samples + s] = value;
+    }
+    uint8_t getStencilSample(const uint32_t x, const uint32_t y, const uint32_t s) const {
+        return m_sampleStencil[(size_t(y) * m_width + x) * m_samples + s];
+    }
+    void    setStencilSample(const uint32_t x, const uint32_t y, const uint32_t s, const uint8_t value) {
+        m_sampleStencil[(size_t(y) * m_width + x) * m_samples + s] = value;
+    }
+
+    // averages every split pixel's samples into the image
+    void     resolveRows(const uint32_t y0, const uint32_t y1);
+
     uint32_t mipCount() const { return uint32_t(m_mips.size()) + 1; }
 
     const uint32_t* mipData(const uint32_t level) const {
@@ -90,6 +135,13 @@ private:
 
     // are m_pixels sRGB-encoded? see isSrgb()
     bool                                    m_srgb          = false;
+
+    // multisampling - see setSamples()
+    uint32_t                                m_samples       = 1;
+    std::vector<uint8_t>                    m_uniform       = {};
+    std::vector<uint32_t>                   m_sampleColor   = {};
+    std::vector<float>                      m_sampleDepth   = {};
+    std::vector<uint8_t>                    m_sampleStencil = {};
 };
 
 } // namespace valo

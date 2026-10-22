@@ -437,6 +437,58 @@ std::string Window::prefPath(const std::string& org, const std::string& app) {
     return out;
 }
 
+bool Window::isVideoReady() {
+    return SDL_WasInit(SDL_INIT_VIDEO) != 0;
+}
+
+float Window::primaryDisplayContentScale() {
+    if (!isVideoReady()) return 1.f;
+    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    const float s = display ? SDL_GetDisplayContentScale(display) : 0.f;
+    return s > 0.f ? s : 1.f;   // SDL reports 0 on failure
+}
+
+Vec2u Window::primaryDisplayBounds() {
+    if (!isVideoReady()) return {0, 0};
+    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    SDL_Rect bounds{0, 0, 0, 0};
+    if (!display || !SDL_GetDisplayBounds(display, &bounds)) return {0, 0};
+    return { static_cast<uint32_t>(bounds.w), static_cast<uint32_t>(bounds.h) };
+}
+
+float Window::primaryDisplayPixelDensity() {
+    if (!isVideoReady()) return 1.f;
+    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    return mode && mode->pixel_density > 0.f ? mode->pixel_density : 1.f;
+}
+
+float Window::primaryDisplayRefreshRate() {
+    if (!isVideoReady()) return 0.f;
+    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    return mode ? mode->refresh_rate : 0.f;
+}
+
+int Window::displayCount() {
+    if (!isVideoReady()) return 0;
+    int count = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&count);
+    if (!displays) return 0;
+    SDL_free(displays);
+    return count;
+}
+
+int Window::cpuCount() {
+    const int n = SDL_GetNumLogicalCPUCores();
+    return n > 0 ? n : 0;
+}
+
+int Window::systemRamMB() {
+    const int mb = SDL_GetSystemRAM();
+    return mb > 0 ? mb : 0;
+}
+
 bool Window::isKeyDown(const Key key) const {
     const bool* state = SDL_GetKeyboardState(nullptr);
     return state[size_t(key)];

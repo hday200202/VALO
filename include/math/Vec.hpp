@@ -284,9 +284,13 @@ template <typename T> Vec4<T> clamp(const Vec4<T>& v, const T lo, const T hi) {
 template <typename T> Vec4<T> lerp(const Vec4<T>& a, const Vec4<T>& b, const T t)
 { return a + ((b - a) * t); }
 
+// float -> 8-bit rounds to nearest, as a GPU's UNORM conversion does; truncating
+// instead darkens every channel by up to a level against the Vulkan backend
+inline uint8_t unormByte(const float v) { return uint8_t(255.f * v + 0.5f); }
+
 inline uint32_t colorToRGBA32(const Color& c) {
     auto col = clamp(c, 0.f, 1.f);
-    uint8_t r = uint8_t(255 * col.x), g = uint8_t(255 * col.y), b = uint8_t(255 * col.z), a = uint8_t(255 * col.w);
+    uint8_t r = unormByte(col.x), g = unormByte(col.y), b = unormByte(col.z), a = unormByte(col.w);
     return (r << 24) | (g << 16) | (b << 8) | a;
 }
 
@@ -301,7 +305,7 @@ inline Color RGBA32ToColor(const uint32_t c) {
 
 inline uint32_t colorToABGR32(const Color& c) {
     auto col = clamp(c, 0.f, 1.f);
-    uint8_t r = uint8_t(255 * col.x), g = uint8_t(255 * col.y), b = uint8_t(255 * col.z), a = uint8_t(255 * col.w);
+    uint8_t r = unormByte(col.x), g = unormByte(col.y), b = unormByte(col.z), a = unormByte(col.w);
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 

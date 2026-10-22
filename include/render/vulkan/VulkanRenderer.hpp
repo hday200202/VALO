@@ -57,6 +57,9 @@ struct DepthBuffer {
     VkImageLayout   layout      = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
+// the multisampled colour the backbuffer renders into and resolves from
+using ColorBuffer = DepthBuffer;
+
 struct GPUTexture {
     VkImage         image           = VK_NULL_HANDLE;
     VmaAllocation   allocation      = VK_NULL_HANDLE;
@@ -95,16 +98,18 @@ inline constexpr bool usesStencil(const RenderCommand& cmd) {
 
 
 struct PipelineKey {
-    ProgramID   program;
-    uint64_t    state;
-    VkFormat    colorFormat;
+    ProgramID               program;
+    uint64_t                state;
+    VkFormat                colorFormat;
+    VkSampleCountFlagBits   samples;
 
-    VtxLayout   layout;
+    VtxLayout               layout;
 
     bool operator==(const PipelineKey& o) const {
         return program == o.program
             && state   == o.state
             && colorFormat == o.colorFormat
+            && samples == o.samples
             && layout.getAttribs() == o.layout.getAttribs();
     }
 };
@@ -243,8 +248,9 @@ private:
     void                    drainRetiredBuffers(const bool force = false);
     std::vector<uint32_t>   loadSpirv(const std::string& path);
     VkShaderModule          createShaderModule(const std::vector<uint32_t>& spirv);
-    VkPipeline              createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout, const VkFormat colorFormat);
+    VkPipeline              createPipeline(const RenderCommand& cmd, const GPUProgram& prog, const VtxLayout& layout, const VkFormat colorFormat, const VkSampleCountFlagBits samples);
     VkPipeline              pipelineFor(const RenderCommand& cmd, const VtxLayout& layout, const VkFormat colorFormat);
+    VkSampleCountFlagBits   pickSampleCount(const uint8_t requested) const;
     VkFormat                pickDepthFormat() const;
     bool                    createDepthBuffers();
     void                    destroyDepthBuffers();
@@ -299,6 +305,9 @@ private:
     std::vector<std::pair<PipelineKey, VkPipeline>> 
                                     m_pipelines;
     std::vector<DepthBuffer>        m_depth;
+    std::vector<ColorBuffer>        m_msColor;              // one per frame in flight, when m_samples > 1
+    VkSampleCountFlagBits           m_samples               = VK_SAMPLE_COUNT_1_BIT;
+    VkSampleCountFlagBits           m_currentSamples        = VK_SAMPLE_COUNT_1_BIT;
     std::vector<VkImageLayout>      m_swapLayouts;
     VkDescriptorSetLayout           m_bindlessLayout        = VK_NULL_HANDLE;
     VkDescriptorPool                m_bindlessPool          = VK_NULL_HANDLE;

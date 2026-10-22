@@ -129,7 +129,13 @@ void SoftwareRenderer::show(const RenderTargetID target) {
 
     RenderTarget* tgt = m_targets[target].get();
 
-    if ((tgt->width() != m_texW) || (tgt->height() != m_texH)) 
+    // the samples become the image, the way a GPU resolves at the end of a pass
+    if (tgt->samples() > 1)
+        forEachBand(m_pool, tgt->height(), {&m_targets, nullptr}, [&](int y0, int y1) {
+            tgt->resolveRows(uint32_t(y0), uint32_t(y1));
+        });
+
+    if ((tgt->width() != m_texW) || (tgt->height() != m_texH))
         recreateTexture(tgt->width(), tgt->height());
 
     SDL_UpdateTexture(m_sdlTexture, NULL, tgt->data(), tgt->width() * 4);
@@ -148,6 +154,13 @@ bool SoftwareRenderer::init() {
     SDL_GetWindowSizeInPixels(m_owner->m_cfg.sdlWindow, &w, &h);
     m_targets.push_back(std::make_unique<RenderTarget>(uint32_t(w * m_owner->m_cfg.renderScale), uint32_t(h * m_owner->m_cfg.renderScale)));
     m_targets.back()->setSrgb(m_owner->m_cfg.srgbBackbuffer);
+
+    // RenderConfig::msaa, rounded down to a standard pattern and capped at 8:
+    // past that the per-sample work outgrows what the edges gain
+    uint32_t samples = 1;
+    for (const uint32_t s : {8u, 4u, 2u})
+        if (m_owner->m_cfg.msaa >= s) { samples = s; break; }
+    m_targets.back()->setSamples(samples);
 
     if (!m_sdlRenderer) {
         std::cout << "Renderer: " << SDL_GetError() << std::endl;

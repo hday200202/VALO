@@ -48,6 +48,17 @@ struct RenderConfig {
 
     uint16_t        maxFps          = 10000;
     uint8_t         framesInFlight  = 2;
+
+    /*
+        Multisampling for the backbuffer: 1 (off), 2, 4, 8 or 16 samples per
+        pixel, clamped down to what the device supports - the software
+        rasteriser stops at 8. Edges at fractional positions get partial
+        coverage instead of snapping to whole pixels, at the standard sample
+        positions both backends share. Only the window itself is multisampled:
+        render targets stay single-sampled, and so does a scaled backbuffer on
+        Vulkan.
+    */
+    uint8_t         msaa            = 1;
     float           renderScale     = 1.f;
 
     Backend         backend         = Backend::Software;

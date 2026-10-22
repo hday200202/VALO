@@ -234,6 +234,21 @@ public:
     static std::string basePath();
     static std::string prefPath(const std::string& org, const std::string& app);
 
+    /*
+        The primary display and the machine, with no window needed - an app can
+        size its first window from them. The display queries need SDL's video
+        subsystem, which the first Window brings up; before that they return the
+        fallback named beside each rather than failing.
+    */
+    static bool  isVideoReady();
+    static float primaryDisplayContentScale();    // 1 if unknown
+    static Vec2u primaryDisplayBounds();          // window points; 0x0 if unknown
+    static float primaryDisplayPixelDensity();    // 1 if unknown
+    static float primaryDisplayRefreshRate();     // 0 if unknown
+    static int   displayCount();                  // 0 before video is up
+    static int   cpuCount();                      // logical cores, 0 if unknown
+    static int   systemRamMB();                   // 0 if unknown
+
     bool create(
         const std::string& title, 
         const Vec2u& size, 

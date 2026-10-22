@@ -152,6 +152,16 @@ void forEachBand(
 }
 
 
+// blends `src` into the samples of (x, y) in `mask`; a full mask is writePixel
+void writeSamples(
+    RenderTarget* target,
+    const int x,
+    const int y,
+    const uint32_t mask,
+    const Color& src,
+    const BlendMode mode
+);
+
 void writePixel(
     RenderTarget* target, 
     const int x, 

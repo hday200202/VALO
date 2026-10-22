@@ -27,6 +27,65 @@ void stencilApply(RenderTarget* target, const RenderCommand& cmd, int x, int y) 
 }
 
 
+namespace {
+
+// the same tests and ops as above, against one sample of a multisampled target
+bool stencilTestSample(const RenderTarget* target, const RenderCommand& cmd, int x, int y, uint32_t s) {
+    if (cmd.stencilTest == StencilTest::Always) return true;
+    const uint8_t v = target->getStencilSample(x, y, s);
+    switch (cmd.stencilTest) {
+        case StencilTest::Equal:    return v == cmd.stencilRef;
+        case StencilTest::NotEqual: return v != cmd.stencilRef;
+        case StencilTest::Less:     return v <  cmd.stencilRef;
+        case StencilTest::Greater:  return v >  cmd.stencilRef;
+        default:                    return true;
+    }
+}
+
+void stencilApplySample(RenderTarget* target, const RenderCommand& cmd, int x, int y, uint32_t s) {
+    if (cmd.stencilOp == StencilOp::Keep) return;
+    const uint8_t v = target->getStencilSample(x, y, s);
+    switch (cmd.stencilOp) {
+        case StencilOp::Zero:    target->setStencilSample(x, y, s, 0);              break;
+        case StencilOp::Replace: target->setStencilSample(x, y, s, cmd.stencilRef); break;
+        case StencilOp::Incr:    target->setStencilSample(x, y, s, uint8_t(v + 1)); break;
+        case StencilOp::Decr:    target->setStencilSample(x, y, s, uint8_t(v - 1)); break;
+        default: break;
+    }
+}
+
+/*
+    The standard sample positions Vulkan and D3D share, in pixel units from the
+    pixel's top-left corner, so a multisampled edge covers the same samples on
+    both backends.
+*/
+const float SAMPLES_1[1][2]  = { {0.5f, 0.5f} };
+const float SAMPLES_2[2][2]  = { {0.75f, 0.75f}, {0.25f, 0.25f} };
+const float SAMPLES_4[4][2]  = { {0.375f, 0.125f}, {0.875f, 0.375f}, {0.125f, 0.625f}, {0.625f, 0.875f} };
+const float SAMPLES_8[8][2]  = {
+    {0.5625f, 0.3125f}, {0.4375f, 0.6875f}, {0.8125f, 0.5625f}, {0.3125f, 0.1875f},
+    {0.1875f, 0.8125f}, {0.0625f, 0.4375f}, {0.6875f, 0.9375f}, {0.9375f, 0.0625f}
+};
+const float SAMPLES_16[16][2] = {
+    {0.5625f, 0.5625f}, {0.4375f, 0.3125f}, {0.3125f, 0.625f},  {0.75f,   0.4375f},
+    {0.1875f, 0.375f},  {0.625f,  0.8125f}, {0.8125f, 0.6875f}, {0.6875f, 0.1875f},
+    {0.375f,  0.875f},  {0.5f,    0.0625f}, {0.25f,   0.125f},  {0.125f,  0.75f},
+    {0.0f,    0.5f},    {0.9375f, 0.25f},   {0.875f,  0.9375f}, {0.0625f, 0.0f}
+};
+
+const float (*samplePattern(const uint32_t n))[2] {
+    switch (n) {
+        case 2:  return SAMPLES_2;
+        case 4:  return SAMPLES_4;
+        case 8:  return SAMPLES_8;
+        case 16: return SAMPLES_16;
+        default: return SAMPLES_1;
+    }
+}
+
+} // namespace
+
+
 Viewport resolveViewport(const RenderTarget* target, const RenderCommand& cmd) {
     Viewport vp = cmd.viewport;
     if (vp.width == 0.f) vp.width = float(target->width());
@@ -160,71 +219,82 @@ int clipNear(
     return n;
 }
 
-void writePixel(
-    RenderTarget* target, 
-    const int x, 
-    const int y, 
-    const Color& src, 
-    const BlendMode mode
-) {
-    if (target->isSrgb()) {
-        uint32_t* const px = target->data() + (size_t(y) * target->width() + size_t(x));
-
-        switch (mode) {
-            case BlendMode::Opaque: {
-                *px = linearToABGR32Srgb(src);
-                break;
-            }
-
-            case BlendMode::Alpha: {
-                const Color dst = abgr32ToLinear(*px);
-                const float alpha = src.w;
-                Color out = src * alpha + dst * (1.f - alpha);
-                out.w = alpha + dst.w * (1.f - alpha);
-                *px = linearToABGR32Srgb(out);
-                break;
-            }
-
-            case BlendMode::Additive: {
-                const Color dst = abgr32ToLinear(*px);
-                const float alpha = src.w;
-                Color out = dst + src * alpha;
-                out.w = dst.w;
-                *px = linearToABGR32Srgb(out);
-                break;
-            }
-
-            default: break;
-        }
-        return;
-    }
-
+/*
+    One packed texel blended with a fragment. An sRGB target decodes the
+    destination, blends in linear and re-encodes; a plain one blends the stored
+    values as they are.
+*/
+uint32_t blendABGR(const uint32_t dstPacked, const Color& src, const BlendMode mode, const bool srgb) {
     switch (mode) {
-        case BlendMode::Opaque: {
-            target->setPixel(x, y, src); 
-            break;
-        }
+        case BlendMode::Opaque:
+            return srgb ? linearToABGR32Srgb(src) : colorToABGR32(src);
 
         case BlendMode::Alpha: {
-            const Color dst = target->getPixel(x, y);
+            const Color dst = srgb ? abgr32ToLinear(dstPacked) : ABGR32ToColor(dstPacked);
             const float alpha = src.w;
             Color out = src * alpha + dst * (1.f - alpha);
             out.w = alpha + dst.w * (1.f - alpha);
-            target->setPixel(x, y, out);
-            break;
+            return srgb ? linearToABGR32Srgb(out) : colorToABGR32(out);
         }
 
         case BlendMode::Additive: {
-            const Color dst = target->getPixel(x, y);
+            const Color dst = srgb ? abgr32ToLinear(dstPacked) : ABGR32ToColor(dstPacked);
             const float alpha = src.w;
             Color out = dst + src * alpha;
             out.w = dst.w;
-            target->setPixel(x, y, out);
-            break;
+            return srgb ? linearToABGR32Srgb(out) : colorToABGR32(out);
         }
 
-        default: break;
+        default: return dstPacked;
     }
+}
+
+
+// a fragment covering the whole pixel: on a multisampled target, every sample
+void writePixel(
+    RenderTarget* target,
+    const int x,
+    const int y,
+    const Color& src,
+    const BlendMode mode
+) {
+    const bool srgb = target->isSrgb();
+
+    if (target->samples() > 1 && !target->pixelUniform(x, y)) {
+        // an opaque write makes every sample the same again
+        if (mode == BlendMode::Opaque) {
+            target->joinPixel(x, y, blendABGR(0u, src, mode, srgb));
+            return;
+        }
+
+        uint32_t* c = target->sampleColors(x, y);
+        for (uint32_t s = 0; s < target->samples(); ++s) c[s] = blendABGR(c[s], src, mode, srgb);
+        return;
+    }
+
+    uint32_t* const px = target->data() + (size_t(y) * target->width() + size_t(x));
+    *px = blendABGR(*px, src, mode, srgb);
+}
+
+
+// a fragment covering only the samples in `mask`
+void writeSamples(
+    RenderTarget* target,
+    const int x,
+    const int y,
+    const uint32_t mask,
+    const Color& src,
+    const BlendMode mode
+) {
+    const uint32_t n    = target->samples();
+    const uint32_t full = n >= 32 ? ~0u : ((1u << n) - 1u);
+    if ((mask & full) == full) { writePixel(target, x, y, src, mode); return; }
+
+    target->splitPixel(x, y);
+    const bool srgb = target->isSrgb();
+    uint32_t* c = target->sampleColors(x, y);
+    for (uint32_t s = 0; s < n; ++s)
+        if (mask & (1u << s)) c[s] = blendABGR(c[s], src, mode, srgb);
 }
 
 
@@ -389,6 +459,140 @@ void rasterizeLine(
     }
 }
 
+/*
+    Multisampled triangles, the way a GPU does them without sample shading:
+    coverage, depth and stencil per sample at the standard positions, the
+    fragment shaded once per pixel at its centre (even when the centre itself is
+    outside, as non-centroid interpolation does), and the result written to every
+    covered sample that passed.
+*/
+void rasterizeTriangleMS(
+    RenderTarget* target,
+    const Program& program,
+    const RenderCommand& cmd,
+    const ScreenTri& tri,
+    const int bandY0, const int bandY1
+) {
+    const int ymin = std::max(tri.ymin, bandY0);
+    const int ymax = std::min(tri.ymax, bandY1 - 1);
+    if (ymin > ymax) return;
+
+    const uint32_t n = target->samples();
+    const float (*sp)[2] = samplePattern(n);
+    const bool lateZ = cmd.fragDepthWrite && program.fsThunk;
+
+    const Vec4f& s1 = tri.s[0]; const Vec4f& s2 = tri.s[1]; const Vec4f& s3 = tri.s[2];
+    const float sign = tri.sign;
+    const int xmin = tri.xmin, xmax = tri.xmax;
+    const float* varys[3] = { tri.vary[0], tri.vary[1], tri.vary[2] };
+
+    // edge functions step by these per pixel in x and in y
+    const float d1 = -(s2.y - s1.y) * sign, e1dy = (s2.x - s1.x) * sign;
+    const float d2 = -(s3.y - s2.y) * sign, e2dy = (s3.x - s2.x) * sign;
+    const float d3 = -(s1.y - s3.y) * sign, e3dy = (s1.x - s3.x) * sign;
+
+    const float dzdx = tri.dBdx[0] * s1.z + tri.dBdx[1] * s2.z + tri.dBdx[2] * s3.z;
+    const float dzdy = tri.dBdy[0] * s1.z + tri.dBdy[1] * s2.z + tri.dBdy[2] * s3.z;
+
+    // each sample's offset from the pixel centre, in edge-function and depth terms
+    float off1[16], off2[16], off3[16], offZ[16];
+    for (uint32_t s = 0; s < n; ++s) {
+        const float ox = sp[s][0] - 0.5f, oy = sp[s][1] - 0.5f;
+        off1[s] = d1 * ox + e1dy * oy;
+        off2[s] = d2 * ox + e2dy * oy;
+        off3[s] = d3 * ox + e3dy * oy;
+        offZ[s] = dzdx * ox + dzdy * oy;
+    }
+
+    auto& dv = detail::varyingDerivs;
+    for (int i = 0; i < 3; ++i) {
+        dv.vary[i] = tri.vary[i];
+        dv.w[i]    = tri.s[i].w;
+        dv.dBdx[i] = tri.dBdx[i];
+        dv.dBdy[i] = tri.dBdy[i];
+    }
+    dv.dDenDx = tri.dDenDx;
+    dv.dDenDy = tri.dDenDy;
+    dv.valid  = true;
+
+    auto inside = [&](float e, int edge) { return e > 0 || (e == 0 && tri.topLeft[edge]); };
+
+    for (int y = ymin; y <= ymax; ++y) {
+        Vec2f p0 = { xmin + 0.5f, y + 0.5f };
+        float e1 = (s2.xy-s1.xy).cross(p0-s1.xy) * sign;
+        float e2 = (s3.xy-s2.xy).cross(p0-s2.xy) * sign;
+        float e3 = (s1.xy-s3.xy).cross(p0-s3.xy) * sign;
+
+        for (int x = xmin; x <= xmax; ++x, e1 += d1, e2 += d2, e3 += d3) {
+            uint32_t covered = 0;
+            for (uint32_t s = 0; s < n; ++s)
+                if (inside(e1 + off1[s], 0) && inside(e2 + off2[s], 1) && inside(e3 + off3[s], 2))
+                    covered |= 1u << s;
+            if (!covered) continue;
+
+            // barycentrics at the centre, which may lie just outside the triangle
+            const float b1 = e2 * tri.invArea;
+            const float b2 = e3 * tri.invArea;
+            const float b3 = e1 * tri.invArea;
+            const float zc = b1 * s1.z + b2 * s2.z + b3 * s3.z;
+
+            uint32_t pass = 0;
+            for (uint32_t s = 0; s < n; ++s) {
+                if (!(covered & (1u << s))) continue;
+                const float z = zc + offZ[s];
+                if (z < 0.f || z > 1.f) continue;
+                if (!lateZ && cmd.depthTest && !depthPasses(cmd.depthCompare, z, target->getDepthSample(x, y, s))) continue;
+                if (!stencilTestSample(target, cmd, x, y, s)) continue;
+                pass |= 1u << s;
+            }
+            if (!pass) continue;
+
+            valo_FragDepth = zc;
+
+            Color color;
+            if (program.fsThunk) {
+                float invW = b1 * s1.w + b2 * s2.w + b3 * s3.w;
+                const float w = 1.f / invW;
+                float interp[MAX_VARYINGS];
+                for (uint32_t k = 0; k < program.varyingCount; ++k) {
+                    interp[k] =
+                        (b1*varys[0][k]*s1.w +
+                         b2*varys[1][k]*s2.w +
+                         b3*varys[2][k]*s3.w) * w;
+                }
+
+                valo_Discard = false;
+                valo_FragCoord = { x + 0.5f, y + 0.5f, zc, invW };
+                valo_FrontFacing = tri.frontFacing;
+
+                dv.interp = interp;
+                dv.invW   = invW;
+
+                color = program.fsThunk(program.fsFn, interp, cmd.uniforms);
+                if (valo_Discard) continue;
+            }
+
+            // a shader-written depth is one value for the whole pixel
+            const float fragDepth = std::clamp(valo_FragDepth, 0.f, 1.f);
+            if (lateZ && cmd.depthTest) {
+                for (uint32_t s = 0; s < n; ++s)
+                    if ((pass & (1u << s)) && !depthPasses(cmd.depthCompare, fragDepth, target->getDepthSample(x, y, s)))
+                        pass &= ~(1u << s);
+                if (!pass) continue;
+            }
+
+            for (uint32_t s = 0; s < n; ++s) {
+                if (!(pass & (1u << s))) continue;
+                if (cmd.depthWrite) target->setDepthSample(x, y, s, lateZ ? fragDepth : std::clamp(zc + offZ[s], 0.f, 1.f));
+                stencilApplySample(target, cmd, x, y, s);
+            }
+
+            if (cmd.colorWrite && program.fsThunk) writeSamples(target, x, y, pass, color, cmd.blendmode);
+        }
+    }
+}
+
+
 void rasterizeTriangle(
     RenderTarget* target,
     const Program& program,
@@ -396,6 +600,11 @@ void rasterizeTriangle(
     const ScreenTri& tri,
     const int bandY0, const int bandY1
 ) {
+    if (target->samples() > 1) {
+        rasterizeTriangleMS(target, program, cmd, tri, bandY0, bandY1);
+        return;
+    }
+
     const int ymin = std::max(tri.ymin, bandY0);
     const int ymax = std::min(tri.ymax, bandY1 - 1);
     if (ymin > ymax) return;

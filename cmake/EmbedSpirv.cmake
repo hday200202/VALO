@@ -1,7 +1,14 @@
-# cmake -DINPUT=<file.spv> -DOUTPUT=<file.cpp> -DKEY=<path createProgram is given> -P EmbedSpirv.cmake
+# cmake -DINPUT=<file.spv> -DOUTPUT=<file.cpp> -DKEY=<path createProgram is given>
+#       -DSYMBOL=<registration function name> -P EmbedSpirv.cmake
 #
 # Turns one SPIR-V binary into a .cpp that registers it with valo::registerSpirv,
 # so the Vulkan backend can create the program without touching the disk.
+#
+# Registration happens two ways. A static initializer does it for an executable,
+# whose objects are always linked. A static library's objects are only linked
+# when something references them, so the file also defines SYMBOL - an ordinary
+# function the per-target index (see ValoEmbedShaders.cmake) calls, which is
+# what pulls this object in. Either path registers once.
 
 file(READ "${INPUT}" HEX HEX)
 
@@ -30,7 +37,16 @@ const uint32_t SPIRV[] = {
     ${WORDS}
 };
 
-VALO_EMBED_SPIRV(SPIRV, \"${KEY}\")
+} // namespace
+
+void ${SYMBOL}() {
+    [[maybe_unused]] static const bool registered =
+        ::valo::registerSpirv(\"${KEY}\", SPIRV, sizeof(SPIRV) / sizeof(SPIRV[0]));
+}
+
+namespace {
+
+[[maybe_unused]] const bool autoRegistered = (${SYMBOL}(), true);
 
 } // namespace
 ")

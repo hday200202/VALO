@@ -117,6 +117,11 @@ bool VulkanRenderer::bindTarget(
     DepthBuffer& db = toBackbuffer ? m_depth[frame] : tex->depth;
     const bool depthFresh = (db.layout == VK_IMAGE_LAYOUT_UNDEFINED);
 
+    // a multisampled backbuffer renders into its own image and resolves into
+    // the swapchain's at the end of every rendering block
+    const bool msaa = toBackbuffer && m_samples != VK_SAMPLE_COUNT_1_BIT && frame < m_msColor.size();
+    ColorBuffer* ms = msaa ? &m_msColor[frame] : nullptr;
+
     const VkImageMemoryBarrier2 toAttachment{
         .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
         .srcStageMask           = toBackbuffer ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
@@ -167,22 +172,55 @@ bool VulkanRenderer::bindTarget(
         }
     };
 
-    VkImageMemoryBarrier2 barriers[2] = { toAttachment, toDepth };
+    VkImageMemoryBarrier2 barriers[3] = { toAttachment, toDepth, {} };
+    uint32_t barrierCount = 2;
+
+    if (ms) {
+        barriers[barrierCount++] = VkImageMemoryBarrier2{
+            .sType                  = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask           = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask          = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .oldLayout              = loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? VK_IMAGE_LAYOUT_UNDEFINED
+                                                                            : ms->layout,
+            .newLayout              = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED,
+            .image                  = ms->image,
+            .subresourceRange       = {
+                .aspectMask         = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel       = 0,
+                .levelCount         = 1,
+                .baseArrayLayer     = 0,
+                .layerCount         = 1
+            }
+        };
+    }
 
     const VkDependencyInfo depIn{
         .sType                      = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount    = 2,
+        .imageMemoryBarrierCount    = barrierCount,
         .pImageMemoryBarriers       = barriers
     };
     vkCmdPipelineBarrier2(cmd, &depIn);
 
+    /*
+        Multisampled: the samples live in the MS image, which is stored so a
+        block reopened later in the frame with LOAD keeps them, and every block
+        resolves into the swapchain image - so it is always up to date for the
+        present and for anything that reads the backbuffer.
+    */
     const VkRenderingAttachmentInfo color{
-        .sType          = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView      = colorView,
-        .imageLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp         = loadOp,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue     = { .color = {{clearColor.r, clearColor.g, clearColor.b, clearColor.a}} }
+        .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView          = ms ? ms->view : colorView,
+        .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .resolveMode        = ms ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+        .resolveImageView   = ms ? colorView : VK_NULL_HANDLE,
+        .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp             = loadOp,
+        .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue         = { .color = {{clearColor.r, clearColor.g, clearColor.b, clearColor.a}} }
     };
 
     const VkRenderingAttachmentInfo depth{
@@ -220,6 +258,8 @@ bool VulkanRenderer::bindTarget(
     m_currentTarget = target;
     m_currentColorFormat = colorFormat;
     m_currentExtent = extent;
+    m_currentSamples = ms ? m_samples : VK_SAMPLE_COUNT_1_BIT;
+    if (ms) ms->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     db.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     if (tex) tex->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
@@ -1121,7 +1161,8 @@ VkPipeline VulkanRenderer::createPipeline(
     const RenderCommand& cmd, 
     const GPUProgram& prog, 
     const VtxLayout& layout,
-    const VkFormat colorFormat
+    const VkFormat colorFormat,
+    const VkSampleCountFlagBits samples
 ) {
     const VkPipelineShaderStageCreateInfo stages[2]{
         {
@@ -1187,9 +1228,11 @@ VkPipeline VulkanRenderer::createPipeline(
         .lineWidth      = 1.f
     };
 
+    // shaded once per pixel and written to every covered sample, as a GPU
+    // does by default; only coverage is multisampled
     const VkPipelineMultisampleStateCreateInfo multisample{
         .sType                  = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples   = VK_SAMPLE_COUNT_1_BIT
+        .rasterizationSamples   = samples
     };
 
     const VkStencilOpState stencilState{
@@ -1287,7 +1330,7 @@ VkPipeline VulkanRenderer::createPipeline(
 
 
 VkPipeline VulkanRenderer::pipelineFor(const RenderCommand& cmd, const VtxLayout& layout, const VkFormat colorFormat) {
-    const PipelineKey key{ cmd.program, packPipelineState(cmd), colorFormat, layout };
+    const PipelineKey key{ cmd.program, packPipelineState(cmd), colorFormat, m_currentSamples, layout };
 
     for (const auto& [k, pipeline] : m_pipelines)
         if (k == key) return pipeline;
@@ -1297,7 +1340,7 @@ VkPipeline VulkanRenderer::pipelineFor(const RenderCommand& cmd, const VtxLayout
     const GPUProgram& prog = m_programs[cmd.program];
     if (!prog.vs || !prog.fs) return VK_NULL_HANDLE;
 
-    const VkPipeline pipeline = createPipeline(cmd, prog, layout, colorFormat);
+    const VkPipeline pipeline = createPipeline(cmd, prog, layout, colorFormat, m_currentSamples);
     if (pipeline) m_pipelines.push_back({key, pipeline});
 
     return pipeline;
@@ -1312,7 +1355,13 @@ void VulkanRenderer::destroyDepthBuffers() {
         if (d.image) vmaDestroyImage(m_ctx.allocator(), d.image, d.allocation);
     }
 
+    for (auto& c : m_msColor) {
+        if (c.view)  vkDestroyImageView(m_ctx.device(), c.view, nullptr);
+        if (c.image) vmaDestroyImage(m_ctx.allocator(), c.image, c.allocation);
+    }
+
     m_depth.clear();
+    m_msColor.clear();
 }
 
 
@@ -1508,7 +1557,7 @@ bool VulkanRenderer::createDepthBuffers() {
             .extent         = { extent.width, extent.height, 1 },
             .mipLevels      = 1,
             .arrayLayers    = 1,
-            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .samples        = m_samples,   // matches the backbuffer's colour
             .tiling         = VK_IMAGE_TILING_OPTIMAL,
             .usage          = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
             .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED
@@ -1541,7 +1590,74 @@ bool VulkanRenderer::createDepthBuffers() {
         }
     }
 
+    if (m_samples == VK_SAMPLE_COUNT_1_BIT) return true;
+
+    m_msColor.resize(m_frames.framesInFlight());
+
+    for (auto& c : m_msColor) {
+        const VkImageCreateInfo ici{
+            .sType          = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType      = VK_IMAGE_TYPE_2D,
+            .format         = m_swapchain.format(),
+            .extent         = { extent.width, extent.height, 1 },
+            .mipLevels      = 1,
+            .arrayLayers    = 1,
+            .samples        = m_samples,
+            .tiling         = VK_IMAGE_TILING_OPTIMAL,
+            .usage          = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED
+        };
+
+        const VmaAllocationCreateInfo aci{ .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE };
+
+        if (vmaCreateImage(m_ctx.allocator(), &ici, &aci, &c.image, &c.allocation, nullptr) != VK_SUCCESS) {
+            std::fprintf(stderr, "[vulkan] vmaCreateImage failed for the multisampled colour buffer\n");
+            return false;
+        }
+
+        const VkImageViewCreateInfo vci{
+            .sType              = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image              = c.image,
+            .viewType           = VK_IMAGE_VIEW_TYPE_2D,
+            .format             = m_swapchain.format(),
+            .subresourceRange   = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1
+            }
+        };
+
+        if (vkCreateImageView(m_ctx.device(), &vci, nullptr, &c.view) != VK_SUCCESS) {
+            std::fprintf(stderr, "[vulkan] vkCreateImageView failed for the multisampled colour buffer\n");
+            return false;
+        }
+    }
+
     return true;
+}
+
+
+/*
+    The highest sample count at or below the request that the device can use
+    for the backbuffer's colour, depth and stencil together. 1 is always one.
+*/
+VkSampleCountFlagBits VulkanRenderer::pickSampleCount(const uint8_t requested) const {
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(m_ctx.physicalDevice(), &props);
+
+    const VkSampleCountFlags usable = props.limits.framebufferColorSampleCounts
+                                    & props.limits.framebufferDepthSampleCounts
+                                    & props.limits.framebufferStencilSampleCounts;
+
+    const VkSampleCountFlagBits candidates[]{
+        VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_2_BIT
+    };
+    for (const auto c : candidates)
+        if (uint32_t(c) <= requested && (usable & c)) return c;
+
+    return VK_SAMPLE_COUNT_1_BIT;
 }
 
 
@@ -1858,6 +1974,10 @@ bool VulkanRenderer::init() {
 
     m_depthFormat = pickDepthFormat();
     if (m_depthFormat == VK_FORMAT_UNDEFINED) return false;
+
+    m_samples = pickSampleCount(m_owner->m_cfg.msaa);
+    if (m_samples != VK_SAMPLE_COUNT_1_BIT)
+        std::fprintf(stderr, "[vulkan] backbuffer multisampled x%u\n", uint32_t(m_samples));
 
     if (!createUploadSlots()) return false;
     return createDepthBuffers();
