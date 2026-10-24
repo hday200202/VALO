@@ -7,8 +7,16 @@ Everything lives in `include/render/vulkan/`, guarded on `VALO_HAS_VULKAN`, and
 touches nothing in `Renderer`. The interface split (PLAN.md 0c) stays parked until
 after this works.
 
-**Before running anything:** `source ext/vulkan/env.sh`. The vendored loader,
-MoltenVK ICD and validation layers are not in any system search path.
+**Running on macOS:** VALO automatically configures the vendored Vulkan loader,
+MoltenVK ICD and validation layer search path before creating a Vulkan window.
+After building, examples can run directly without sourcing `ext/vulkan/env.sh`.
+Explicit SDL loader hints and Vulkan driver/layer environment settings take
+precedence. Windows and Linux runtime setup is unchanged.
+
+The defaults use absolute SDK paths recorded by CMake. Reconfigure/rebuild if
+the checkout moves; distributing an app still requires packaging its Vulkan
+runtime. `source ext/vulkan/env.sh` remains useful for SDK tools such as
+`vulkaninfo`, which run outside VALO.
 
 ---
 

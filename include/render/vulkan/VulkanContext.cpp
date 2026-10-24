@@ -1,4 +1,5 @@
 #include "VulkanContext.hpp"
+#include "VulkanRuntime.hpp"
 
 #ifdef VALO_HAS_VULKAN
 
@@ -63,6 +64,9 @@ bool hasLayer(const char* name) {
 } // namespace
 
 bool VulkanContext::init(Window& window, const bool validation) {
+#ifdef __APPLE__
+    configureVulkanRuntime();
+#endif
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
 
     std::vector<const char*> layers;

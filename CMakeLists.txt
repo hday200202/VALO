@@ -259,6 +259,16 @@ target_compile_definitions(VALO ${VALO_DEFINITION_SCOPE}
     "VALO_GLSLC_PATH=\"${VALO_GLSLC_PATH}\""
 )
 
+# SDL otherwise tries MoltenVK directly on macOS, while VALO calls the Vulkan
+# loader. Both must use the loader, with the vendored ICD discoverable.
+if(APPLE AND VALO_HAS_VULKAN)
+    target_compile_definitions(VALO ${VALO_DEFINITION_SCOPE}
+        "VALO_VULKAN_LOADER_PATH=\"${VALO_VULKAN_LIB}\""
+        "VALO_VULKAN_ICD_PATH=\"${VALO_VULKAN_ROOT}/share/vulkan/icd.d/MoltenVK_icd.json\""
+        "VALO_VULKAN_LAYER_PATH=\"${VALO_VULKAN_ROOT}/share/vulkan/explicit_layer.d\""
+    )
+endif()
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ValoEmbedShaders.cmake")
 
 # ---------------------------------------------------------------------------

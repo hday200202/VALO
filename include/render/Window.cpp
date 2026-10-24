@@ -1,5 +1,6 @@
 #include "Window.hpp"
 #include <SDL3/SDL.h>
+#include "vulkan/VulkanRuntime.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -59,6 +60,9 @@ Window::Window(
     const WinFlags flags,
     const bool respectOSScale
 ) : m_respectOSScale(respectOSScale) {
+#if defined(__APPLE__) && defined(VALO_HAS_VULKAN)
+    if ((flags & WinFlags::Vulkan) != WinFlags::None) configureVulkanRuntime();
+#endif
     acquireSDL();
 
     m_window = SDL_CreateWindow(
@@ -595,6 +599,9 @@ bool Window::create(
     m_window = nullptr;
     m_owned  = true;
 
+#if defined(__APPLE__) && defined(VALO_HAS_VULKAN)
+    if ((flags & WinFlags::Vulkan) != WinFlags::None) configureVulkanRuntime();
+#endif
     acquireSDL();
     m_respectOSScale = respectOSScale;
 
