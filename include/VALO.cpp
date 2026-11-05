@@ -50,7 +50,12 @@ void VALO::beginFrame() {
 
     m_renderer.destroyAllQueued();
     
-    if (m_window && m_window->resized()) resize();
+    if (m_window && m_window->resized()) {
+        // Live resizing can present many frames within one event pump. Consume
+        // this notification once instead of rebuilding on every expose tick.
+        m_window->m_resized = false;
+        resize();
+    }
     for (Layer& l : m_layers) l.clipStack.clear();
     std::vector<RenderTargetID> cleared;
 

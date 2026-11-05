@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <SDL3/SDL_video.h>
 
 #include <stb_image.h>
 
@@ -28,6 +29,11 @@ bool VulkanRenderer::initDevice(Window& window, const uint32_t framesInFlight, c
 
 bool VulkanRenderer::beginFrameIfNeeded() {
     if (m_frameOpen) return true;
+
+    if (m_liveResizing && std::chrono::steady_clock::now() >= m_resizeUntil) {
+        m_liveResizing = false;
+        m_needsRecreate = true;
+    }
 
     const VkDevice device = m_ctx.device();
     const uint32_t frame = m_frameIndex;
@@ -637,8 +643,7 @@ bool VulkanRenderer::recreateSwapchain() {
 
     const uint32_t oldImageCount = m_swapchain.imageCount();
 
-    m_swapchain.shutdown();
-    if (!m_swapchain.init(m_ctx, m_window->getSize(), m_owner->m_cfg.vsync, m_owner->m_cfg.srgbBackbuffer)) {
+    if (!m_swapchain.init(m_ctx, m_window->getSize(), m_owner->m_cfg.vsync, m_owner->m_cfg.srgbBackbuffer, m_liveResizing)) {
         std::fprintf(stderr, "[vulkan] swapchain recreate failed\n");
         return false;
     }
@@ -2820,6 +2825,13 @@ void VulkanRenderer::releaseProgram(const ProgramID id) {
 
 void VulkanRenderer::resize(const uint32_t w, const uint32_t h) {
     (void)w; (void)h;
+    // Keep Wayland resize feedback moving without enabling tearing. Restore
+    // FIFO once the size settles; the application's VSync preference is intact.
+    const char* driver = SDL_GetCurrentVideoDriver();
+    if (driver && std::strcmp(driver, "wayland") == 0) {
+        m_liveResizing = true;
+        m_resizeUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    }
     m_needsRecreate = true;
 }
 

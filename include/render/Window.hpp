@@ -102,6 +102,7 @@ inline constexpr bool   any(KeyMod m)                 { return m != KeyMod::None
 
 enum class CursorShape : uint8_t {
     Arrow, Hand, Text, ResizeEW, ResizeNS, ResizeNWSE, ResizeNESW, Move, Crosshair, Wait, NotAllowed,
+    ResizeStart, ResizeEnd,
     Count
 };
 
@@ -173,6 +174,8 @@ public:
     void setBordered(const bool bordered);
     void setAlwaysOnTop(const bool alwaysOnTop);
 
+    // Return false to defer a native close request (for example, an unsaved document).
+    void setCloseRequestHandler(std::function<bool()> handler) { m_onCloseRequest = std::move(handler); }
     bool pollEvents();
 
     void grabMouse();
@@ -222,6 +225,9 @@ public:
     void setClipboardText(const std::string& text);
 
     void setCursor(const CursorShape shape);
+    std::string cursorDiagnostics() const;
+    void setCursorVisible(bool visible);
+    bool hasInputFocus() const;
 
     // called from inside the OS's modal resize loop as well, where the main loop is blocked
     void setResizeCallback(std::function<void()> callback);
@@ -271,8 +277,11 @@ private:
 
     std::vector<WindowEvent>        m_events;
     std::function<void()>           m_onResize;
+    std::function<bool()>           m_onCloseRequest;
     bool                            m_watching          = false;
+    bool                            m_pollingEvents     = false;
     std::array<SDL_Cursor*, size_t(CursorShape::Count)> m_cursors{};
+    CursorShape m_cursorShape = CursorShape::Arrow;
 
     std::bitset<size_t(Key::Count)>         m_pressed, m_released;
     std::bitset<size_t(MouseButton::Count)> m_mousePressed, m_mouseReleased;

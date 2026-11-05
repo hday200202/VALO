@@ -18,7 +18,7 @@ public:
     VulkanSwapchain(const VulkanSwapchain&) = delete;
     VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 
-    bool init(VulkanContext& ctx, const Vec2u& size, const bool vsync = true, const bool srgb = false);
+    bool init(VulkanContext& ctx, const Vec2u& size, const bool vsync = true, const bool srgb = false, const bool liveResize = false);
     void shutdown();
 
     VkSwapchainKHR handle() const { return m_swapchain; }

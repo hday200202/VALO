@@ -31,8 +31,8 @@ VkSurfaceFormatKHR chooseFormat(VkPhysicalDevice phys, VkSurfaceKHR surface, con
     return formats[0];
 }
 
-VkPresentModeKHR choosePresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface, const bool vsync) {
-    if (vsync) return VK_PRESENT_MODE_FIFO_KHR;
+VkPresentModeKHR choosePresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface, const bool vsync, const bool liveResize) {
+    if (vsync && !liveResize) return VK_PRESENT_MODE_FIFO_KHR;
 
     uint32_t n = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &n, nullptr);
@@ -40,30 +40,38 @@ VkPresentModeKHR choosePresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface, 
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &n, modes.data());
 
     for (auto m : modes)
-        if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) return m;
+        if (!vsync && m == VK_PRESENT_MODE_IMMEDIATE_KHR) return m;
 
+    // Wayland may offer MAILBOX without IMMEDIATE. It permits rendering
+    // ahead of the display without tearing instead of throttling via FIFO.
+    for (auto m : modes)
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR) return m;
+
+    if (!vsync)
+        std::fprintf(stderr, "[vulkan] VSync off requested, but neither IMMEDIATE nor MAILBOX is available\n");
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
 } // namespace
 
-bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsync, const bool srgb) {
+bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsync, const bool srgb, const bool liveResize) {
     m_ctx = &ctx;
 
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice(), ctx.surface(), &caps);
 
     const VkSurfaceFormatKHR surfaceFormat = chooseFormat(ctx.physicalDevice(), ctx.surface(), srgb);
-    const VkPresentModeKHR presentMode = choosePresentMode(ctx.physicalDevice(), ctx.surface(), vsync);
+    const VkPresentModeKHR presentMode = choosePresentMode(ctx.physicalDevice(), ctx.surface(), vsync, liveResize);
 
+    VkExtent2D extent{};
     if (caps.currentExtent.width != UINT32_MAX)
-        m_extent = caps.currentExtent;
+        extent = caps.currentExtent;
     else {
-        m_extent.width = std::clamp(size.x, caps.minImageExtent.width, caps.maxImageExtent.width);
-        m_extent.height = std::clamp(size.y, caps.minImageExtent.height, caps.maxImageExtent.height);
+        extent.width = std::clamp(size.x, caps.minImageExtent.width, caps.maxImageExtent.width);
+        extent.height = std::clamp(size.y, caps.minImageExtent.height, caps.maxImageExtent.height);
     }
 
-    if (m_extent.width == 0 || m_extent.height == 0) return false;
+    if (extent.width == 0 || extent.height == 0) return false;
 
     uint32_t imageCount = caps.minImageCount + 1;
     if (caps.maxImageCount > 0)
@@ -78,7 +86,7 @@ bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsy
         .minImageCount          = imageCount,
         .imageFormat            = surfaceFormat.format,
         .imageColorSpace        = surfaceFormat.colorSpace,
-        .imageExtent            = m_extent,
+        .imageExtent            = extent,
         .imageArrayLayers       = 1,
         .imageUsage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT 
                                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -89,13 +97,22 @@ bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsy
         .compositeAlpha         = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode            = presentMode,
         .clipped                = VK_TRUE,
-        .oldSwapchain           = VK_NULL_HANDLE
+        .oldSwapchain           = m_swapchain
     };
 
-    if (vkCreateSwapchainKHR(ctx.device(), &ci, nullptr, &m_swapchain) != VK_SUCCESS) {
+    VkSwapchainKHR replacement = VK_NULL_HANDLE;
+    if (vkCreateSwapchainKHR(ctx.device(), &ci, nullptr, &replacement) != VK_SUCCESS) {
         std::fprintf(stderr, "[vulkan] vkCreateSwapchainKHR failed\n");
         return false;
     }
+
+    // Establish the replacement before retiring the old presentation buffers.
+    // Destroying the old chain first can stall Wayland waiting for the
+    // compositor to release the last displayed frame during a live resize.
+    shutdown();
+    m_ctx = &ctx;
+    m_swapchain = replacement;
+    m_extent = extent;
 
     m_format = surfaceFormat.format;
 
@@ -130,7 +147,8 @@ bool VulkanSwapchain::init(VulkanContext& ctx, const Vec2u& size, const bool vsy
     std::fprintf(
         stderr, "[vulkan] swapchain %ux%u, %u images, %s\n",
         m_extent.width, m_extent.height, n,
-        presentMode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" : "IMMEDIATE"
+        presentMode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" :
+        presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE"
     );
     
     return true;

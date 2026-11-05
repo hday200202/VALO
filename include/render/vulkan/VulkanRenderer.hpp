@@ -2,6 +2,8 @@
 
 #ifdef VALO_HAS_VULKAN
 
+#include <chrono>
+
 #include "VulkanContext.hpp"
 #include "VulkanSwapchain.hpp"
 #include "VulkanFrames.hpp"
@@ -273,6 +275,8 @@ private:
     RenderTargetID                  m_scaledBackbuffer      = 0;
     float                           m_appliedScale          = 1.f;
     bool                            m_needsRecreate         = false;
+    bool                            m_liveResizing          = false;
+    std::chrono::steady_clock::time_point m_resizeUntil{};
 
     uint32_t                        m_pushConstantSize      = 0;
     std::vector<ProgramID>          m_oversizedUniforms;    // reported once each

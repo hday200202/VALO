@@ -1,4 +1,5 @@
 #include "Window.hpp"
+#include "CursorGlyph.hpp"
 #include <SDL3/SDL.h>
 #include "vulkan/VulkanRuntime.hpp"
 
@@ -6,8 +7,14 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <sstream>
 
 namespace valo {
+#if defined(__APPLE__)
+bool applyMacWindowCursor(void* native, CursorShape shape, bool visible);
+void focusMacWindow(void* native);
+std::string macWindowCursorDiagnostics(void* native);
+#endif
 
 int Window::s_liveWindows = 0;
 
@@ -50,7 +57,22 @@ const SDL_SystemCursor SYSTEM_CURSORS[size_t(CursorShape::Count)] = {
     SDL_SYSTEM_CURSOR_CROSSHAIR,
     SDL_SYSTEM_CURSOR_WAIT,
     SDL_SYSTEM_CURSOR_NOT_ALLOWED,
+    SDL_SYSTEM_CURSOR_W_RESIZE,
+    SDL_SYSTEM_CURSOR_E_RESIZE,
 };
+
+SDL_Cursor* bracketCursor(bool start) {
+    constexpr int size = 24, stride = size / 8;
+    std::array<Uint8, size * stride> data{}, mask{};
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x) {
+            const auto bit = Uint8(0x80u >> (x % 8));
+            if (detail::bracketOutline(start, x, y)) mask[y * stride + x / 8] |= bit;
+            if (detail::bracketInk(start, x, y)) data[y * stride + x / 8] |= bit;
+        }
+    // A white halo keeps the black bracket readable over any theme/clip color.
+    return SDL_CreateCursor(data.data(), mask.data(), size, size, start ? 7 : 16, 12);
+}
 
 } // namespace
 
@@ -234,6 +256,9 @@ void Window::setAlwaysOnTop(const bool alwaysOnTop) {
 }
 
 bool Window::pollEvents() {
+    if (m_pollingEvents) return m_open;
+    m_pollingEvents = true;
+    struct PollScope { bool& active; ~PollScope() { active = false; } } pollScope{m_pollingEvents};
     m_resized     = false;
     m_mouseDelta  = {0.f, 0.f};
     m_scrollDelta = {0.f, 0.f};
@@ -259,6 +284,8 @@ bool Window::pollEvents() {
         switch (e.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                if (m_onCloseRequest && !m_onCloseRequest())
+                    break;
                 m_open = false;
                 push(WindowEventType::CloseRequested, e.common.timestamp);
                 break;
@@ -358,9 +385,36 @@ void Window::setCursor(const CursorShape shape) {
     assert(shape < CursorShape::Count && "setCursor(): invalid shape");
     if (shape >= CursorShape::Count) return;
 
+    m_cursorShape = shape;
     SDL_Cursor*& cursor = m_cursors[size_t(shape)];
+    if (!cursor && (shape == CursorShape::ResizeStart || shape == CursorShape::ResizeEnd))
+        cursor = bracketCursor(shape == CursorShape::ResizeStart);
     if (!cursor) cursor = SDL_CreateSystemCursor(SYSTEM_CURSORS[size_t(shape)]);
-    if (cursor) SDL_SetCursor(cursor);
+    if (!cursor) return;
+#if defined(__APPLE__)
+    if (applyMacWindowCursor(nativeHandle(), shape, SDL_CursorVisible())) {
+        if (SDL_GetCursor() != cursor) SDL_SetCursor(cursor);
+    }
+#else
+    if (SDL_GetMouseFocus() == m_window) {
+        // Native plugin windows can change the OS cursor without updating SDL's
+        // cached cursor. nullptr explicitly refreshes an unchanged SDL cursor.
+        if (SDL_GetCursor() == cursor) SDL_SetCursor(nullptr);
+        else SDL_SetCursor(cursor);
+    }
+#endif
+}
+std::string Window::cursorDiagnostics() const {
+    std::ostringstream out;
+    out << "sdlMouseFocus=" << (SDL_GetMouseFocus() == m_window)
+        << " sdlKeyboardFocus=" << (SDL_GetKeyboardFocus() == m_window)
+        << " visible=" << SDL_CursorVisible();
+    const auto mouse = mousePosition();
+    out << " mouse=" << mouse.x << ',' << mouse.y;
+#if defined(__APPLE__)
+    out << ' ' << macWindowCursorDiagnostics(const_cast<Window*>(this)->nativeHandle());
+#endif
+    return out.str();
 }
 
 void Window::setResizeCallback(std::function<void()> callback) {
@@ -377,13 +431,16 @@ void Window::watchResize(const bool on) {
 }
 
 bool Window::resizeWatch(void* userdata, SDL_Event* e) {
+    // SDL can invoke event watches on the thread which pushes an event. Only
+    // draw inside the main-thread event pump, never during layout or rendering.
+    if (!SDL_IsMainThread()) return true;
     auto* self = static_cast<Window*>(userdata);
-    if (!self->m_window || !self->m_onResize) return true;
+    if (!self->m_pollingEvents || !self->m_window || !self->m_onResize) return true;
 
     const bool sizeChanged = e->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
-    const bool redraw      = sizeChanged
-                          || e->type == SDL_EVENT_WINDOW_RESIZED
-                          || e->type == SDL_EVENT_WINDOW_EXPOSED;
+    // Logical-size notifications precede pixel-size notifications on HiDPI
+    // windows. Drawing both rebuilds the swapchain twice for the same size.
+    const bool redraw = sizeChanged || e->type == SDL_EVENT_WINDOW_EXPOSED;
 
     if (!redraw || e->window.windowID != SDL_GetWindowID(self->m_window)) return true;
 
@@ -518,6 +575,17 @@ void Window::setMousePositionLocal(const Vec2f& position) {
     SDL_WarpMouseInWindow(m_window, position.x / d, position.y / d);
 }
 
+void Window::setCursorVisible(bool visible) {
+    if (visible) SDL_ShowCursor(); else SDL_HideCursor();
+#if defined(__APPLE__)
+    applyMacWindowCursor(nativeHandle(), m_cursorShape, visible);
+#endif
+}
+
+bool Window::hasInputFocus() const {
+    return SDL_GetKeyboardFocus() == m_window;
+}
+
 void Window::grabMouse() {
     SDL_SetWindowRelativeMouseMode(m_window, true);
 }
@@ -542,7 +610,13 @@ bool Window::isKeyboardGrabbed() const {
     return SDL_GetWindowKeyboardGrab(m_window);
 }
 
-void Window::focus() { SDL_RaiseWindow(m_window); }
+void Window::focus() {
+    if (SDL_GetWindowFlags(m_window) & SDL_WINDOW_MINIMIZED) SDL_RestoreWindow(m_window);
+    SDL_RaiseWindow(m_window);
+#if defined(__APPLE__)
+    focusMacWindow(nativeHandle());
+#endif
+}
 void Window::setFocusable(const bool focusable) {
     SDL_SetWindowFocusable(m_window, focusable);
 }
