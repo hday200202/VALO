@@ -1,13 +1,10 @@
-# valo_embed_shaders(<target> SHADERS a.vert.hpp a.frag.hpp ... [INCLUDES dir ...])
+# valo_embed_shaders(<target> SHADERS a.vert.hpp a.frag.hpp ...)
 #
 # Compiles each shader to SPIR-V at build time and links it into <target>, so the
-# Vulkan backend creates the program from memory: no glslc, no valoc and no
-# files beside the executable at runtime. A path ending in .hpp is a C++ shader
-# whose GLSL sits beside it with the .hpp stripped; anything else is GLSL.
-#
-# valoc runs first, only when it was built and the GLSL is stale. Without it the
-# GLSL has to exist already. INCLUDES are extra -I paths for valoc, for shaders
-# that include headers outside VALO.
+# Vulkan backend creates the program from memory: no glslc and no files beside
+# the executable at runtime. A path ending in .hpp is a C++ shader whose GLSL
+# sits beside it with the .hpp stripped; anything else is GLSL. The GLSL has to
+# exist - VALO does not generate it.
 #
 # In an executable the shaders register themselves. A static library's objects
 # are only linked when referenced, so a library target calls the generated index
@@ -26,10 +23,11 @@ function(valo_embed_shaders target)
         message(FATAL_ERROR "valo_embed_shaders(${target}): glslc not found - fetch the Vulkan SDK with ./build.sh")
     endif()
 
-    set(valoc_includes)
-    foreach(dir IN LISTS VALO_VALOC_INCLUDES ARG_INCLUDES)
-        list(APPEND valoc_includes -I "${dir}")
-    endforeach()
+    # INCLUDES only ever fed the C++ to GLSL translator; still parsed so an old
+    # call's directories are not mistaken for shaders
+    if(ARG_INCLUDES)
+        message(WARNING "valo_embed_shaders(${target}): INCLUDES is ignored - VALO no longer translates shaders")
+    endif()
 
     # C identifiers derived from the target and each shader's file name
     string(MAKE_C_IDENTIFIER "${target}" target_id)
@@ -52,31 +50,19 @@ function(valo_embed_shaders target)
         set(symbol "valo_spirv_${target_id}_${name_id}")
         list(APPEND symbols "${symbol}")
 
-        set(translate)
-        set(byproducts BYPRODUCTS "${spv}")
-        set(depends "${source}" "${VALO_SHADER_INCLUDE_DIR}/valo.glsl")
-
-        # a byproduct, so a missing GLSL reruns the rule instead of failing it
-        if(TARGET valoc AND source MATCHES "\\.hpp$")
-            set(translate COMMAND $<TARGET_FILE:valoc> "${source}" -o "${glsl}" ${valoc_includes} --if-stale)
-            list(APPEND byproducts "${glsl}")
-            list(APPEND depends valoc)
-        elseif(EXISTS "${glsl}")
-            list(APPEND depends "${glsl}")
-        else()
-            message(FATAL_ERROR "valo_embed_shaders(${target}): ${glsl} does not exist and valoc was not built to make it")
+        if(NOT EXISTS "${glsl}")
+            message(FATAL_ERROR "valo_embed_shaders(${target}): no GLSL shader at ${glsl}")
         endif()
 
         add_custom_command(
             OUTPUT  "${cpp}"
-            ${byproducts}
-            ${translate}
+            BYPRODUCTS "${spv}"
             # glslc will not create its output directory, and the Makefile
             # generator does not create it for custom command outputs either
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${outdir}"
             COMMAND "${VALO_GLSLC}" -I "${VALO_SHADER_INCLUDE_DIR}" "${glsl}" -o "${spv}"
             COMMAND "${CMAKE_COMMAND}" -DINPUT=${spv} -DOUTPUT=${cpp} -DKEY=${source} -DSYMBOL=${symbol} -P "${VALO_EMBED_SPIRV_SCRIPT}"
-            DEPENDS ${depends}
+            DEPENDS "${glsl}" "${VALO_SHADER_INCLUDE_DIR}/valo.glsl"
             COMMENT "Embedding ${name}"
             VERBATIM
         )

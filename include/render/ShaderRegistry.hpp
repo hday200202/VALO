@@ -23,12 +23,10 @@
         VALO_FRAGMENT_SHADER(myFS)
 
     createProgram("dir/name.vert.hpp", "dir/name.frag.hpp") runs the C++ on the
-    software backend and a valoc translation of it on Vulkan, retranslated
-    whenever the shader or anything it includes changes. valoc refuses, naming
-    the line, whatever it would translate wrongly - a bool in a GPU-read
-    struct, a non-float varying, a buffer slot that is not a constant. Where
-    C++ and GLSL genuinely differ, VALO_GLSL(fn, "...") supplies one function's
-    GLSL by hand.
+    software backend. Vulkan loads the GLSL beside each file instead, the same
+    name with the .hpp stripped (dir/name.vert, dir/name.frag), and compiles it
+    with glslc whenever it is newer than its .spv. Writing that GLSL is up to
+    the shader's author; it includes valo.glsl for VALO's bindings.
 */
 
 namespace valo {
@@ -99,9 +97,6 @@ inline bool registerShader(const char* file, const ShaderEntry& entry) {
     shaderRegistry().push_back({file, entry});
     return true;
 }
-
-#define VALO_GLSL(fn, src) \
-    inline const char* valo_glsl_##fn = src;
 
 #define VALO_VERTEX_SHADER(fn) \
     inline const bool valo_reg_##fn = ::valo::registerShader(__FILE__, ::valo::makeVertexEntry(&fn));

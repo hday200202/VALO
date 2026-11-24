@@ -2,6 +2,7 @@
 # Usage: ./build.sh [release | debug | rdbi] [static | dynamic] [clean]
 #                   [rebuild-sdl] [no-vulkan | rebuild-vulkan | vulkan-full]
 #                   [deps]
+#        ./build.sh valoc [release | debug | rdbi] [clean]
 #
 # Everything is vendored: a fresh clone needs only a compiler, cmake and curl.
 # Nothing is installed system-wide and nothing is read from outside the repo.
@@ -20,6 +21,10 @@
 #                     the Vulkan SDK, then stop: nothing is built. For a parent
 #                     project that add_subdirectory()s VALO and builds SDL3
 #                     from ext/SDL3 itself
+#   valoc          -> build only valoc, the C++ to GLSL shader translator, into
+#                     bin/ (needs libclang). Never built otherwise, and VALO
+#                     does not use it: it is a tool for writing the GLSL beside
+#                     a C++ shader
 #
 # SDL3 handling (vendored):
 #   1. ext/SDL3 missing            -> git clone SDL_TAG from SDL_REPO into ext/SDL3
@@ -107,6 +112,7 @@ REBUILD_VULKAN=0
 WITH_VULKAN=1
 PRUNE_VULKAN=1
 DEPS_ONLY=0
+VALOC_ONLY=0
 
 for arg in "$@"; do
     case "$(echo "$arg" | tr '[:upper:]' '[:lower:]')" in
@@ -121,14 +127,16 @@ for arg in "$@"; do
         rebuild-vulkan) REBUILD_VULKAN=1 ;;
         vulkan-full)    PRUNE_VULKAN=0 ;;
         deps)           DEPS_ONLY=1 ;;
+        valoc)          VALOC_ONLY=1 ;;
         -h|--help)
-            sed -n '2,30p' "$0"
+            sed -n '2,35p' "$0"
             exit 0
             ;;
         *)
             echo "error: unknown argument '$arg'" >&2
             echo "usage: ./build.sh [release | debug | rdbi] [static | dynamic] [clean]" >&2
             echo "                  [rebuild-sdl] [no-vulkan | rebuild-vulkan | vulkan-full] [deps]" >&2
+            echo "       ./build.sh valoc [release | debug | rdbi] [clean]" >&2
             exit 1
             ;;
     esac
@@ -140,6 +148,26 @@ if command -v ninja >/dev/null 2>&1; then
 fi
 
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+
+# ---------------------------------------------------------------------------
+# valoc: its own CMake project, needing none of SDL3 or the Vulkan SDK
+# ---------------------------------------------------------------------------
+if [[ "$VALOC_ONLY" == "1" ]]; then
+    VALOC_BUILD_DIR="build/valoc-$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
+
+    if [[ "$CLEAN" == "1" ]]; then
+        echo "==> cleaning $VALOC_BUILD_DIR"
+        rm -rf "$VALOC_BUILD_DIR"
+    fi
+
+    echo "==> configuring valoc  type=$BUILD_TYPE  dir=$VALOC_BUILD_DIR"
+    cmake -S tools/valoc -B "$VALOC_BUILD_DIR" "${GENERATOR_ARGS[@]}" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+    cmake --build "$VALOC_BUILD_DIR" --parallel "$JOBS"
+
+    echo
+    echo "==> done: bin/valoc"
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Vendor SDL3 source

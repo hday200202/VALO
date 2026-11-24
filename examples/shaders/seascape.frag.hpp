@@ -20,7 +20,6 @@ constexpr float TAU             = 6.2831853f;
 
 constexpr int   ITER_GEOMETRY   = 3;
 constexpr int   ITER_FRAGMENT   = 5;
-constexpr float SEA_HEIGHT      = 0.6f;
 constexpr float SEA_CHOPPY      = 4.0f;
 constexpr float SEA_SPEED       = 0.8f;
 constexpr float SEA_FREQ        = 0.16f;
@@ -37,20 +36,6 @@ inline float seaSin(const float x) { return std::sin(x - TAU * std::floor(x / TA
 inline float seaCos(const float x) { return std::cos(x - TAU * std::floor(x / TAU)); }
 
 inline Vec3f seaReflect(const Vec3f& i, const Vec3f& n) { return i - n * (2.f * n.dot(i)); }
-
-// the original's `dir * fromEuler(ang)`: a row vector times the matrix, so each
-// component is the dot product with one column
-inline Vec3f seaRotate(const Vec3f& d, const Vec3f& ang) {
-    const float s1 = std::sin(ang.x), c1 = std::cos(ang.x);
-    const float s2 = std::sin(ang.y), c2 = std::cos(ang.y);
-    const float s3 = std::sin(ang.z), c3 = std::cos(ang.z);
-
-    const Vec3f m0 = Vec3f(c1 * c3 + s1 * s2 * s3, c1 * s2 * s3 + c3 * s1, -c2 * s3);
-    const Vec3f m1 = Vec3f(-c2 * s1, c1 * c2, s2);
-    const Vec3f m2 = Vec3f(c3 * s1 * s2 + c1 * s3, s1 * s3 - c1 * c3 * s2, c2 * c3);
-
-    return Vec3f(d.dot(m0), d.dot(m1), d.dot(m2));
-}
 
 // The original hashes with fract(sin(h) * 43758.5); h reaches the millions here,
 // where float can't hold it and the GPU computes it differently per call site, so
@@ -100,9 +85,9 @@ inline float seaOctave(const Vec2f& p, const float choppy) {
 }
 
 // the original's map (3 octaves, for tracing) and map_detailed (5, for normals)
-inline float seaMap(const Vec3f& p, const float seaTime, const int iterations) {
+inline float seaMap(const Vec3f& p, const float seaTime, const float height, const int iterations) {
     float freq   = SEA_FREQ;
-    float amp    = SEA_HEIGHT;
+    float amp    = height;
     float choppy = SEA_CHOPPY;
     Vec2f uv     = Vec2f(p.x * 0.75f, p.z);
 
@@ -120,7 +105,7 @@ inline float seaMap(const Vec3f& p, const float seaTime, const int iterations) {
     return p.y - h;
 }
 
-inline Vec3f seaColor(const Vec3f& p, const Vec3f& n, const Vec3f& l, const Vec3f& eye, const Vec3f& dist) {
+inline Vec3f seaColor(const Vec3f& p, const Vec3f& n, const Vec3f& l, const Vec3f& eye, const Vec3f& dist, const float height) {
     float fresnel = std::clamp(1.f - n.dot(eye * -1.f), 0.f, 1.f);
     fresnel = std::min(fresnel * fresnel * fresnel, 0.5f);
 
@@ -131,33 +116,33 @@ inline Vec3f seaColor(const Vec3f& p, const Vec3f& n, const Vec3f& l, const Vec3
 
     const float d2    = dist.dot(dist);
     const float atten = std::max(1.f - d2 * 0.001f, 0.f);
-    color = color + SEA_WATER_COLOR * ((p.y - SEA_HEIGHT) * 0.18f * atten);
+    color = color + SEA_WATER_COLOR * ((p.y - height) * 0.18f * atten);
 
     const float spec = seaSpecular(n, l, eye, 600.f / std::sqrt(d2));
     return color + Vec3f(spec, spec, spec);
 }
 
-inline Vec3f seaNormal(const Vec3f& p, const float eps, const float seaTime) {
-    const float h = seaMap(p, seaTime, ITER_FRAGMENT);
-    const float x = seaMap(Vec3f(p.x + eps, p.y, p.z), seaTime, ITER_FRAGMENT) - h;
-    const float z = seaMap(Vec3f(p.x, p.y, p.z + eps), seaTime, ITER_FRAGMENT) - h;
+inline Vec3f seaNormal(const Vec3f& p, const float eps, const float seaTime, const float height) {
+    const float h = seaMap(p, seaTime, height, ITER_FRAGMENT);
+    const float x = seaMap(Vec3f(p.x + eps, p.y, p.z), seaTime, height, ITER_FRAGMENT) - h;
+    const float z = seaMap(Vec3f(p.x, p.y, p.z + eps), seaTime, height, ITER_FRAGMENT) - h;
     return Vec3f(x, eps, z).normalized();
 }
 
 // bisection between a point above the surface and one below it
-inline Vec3f seaTrace(const Vec3f& ori, const Vec3f& dir, const float seaTime) {
+inline Vec3f seaTrace(const Vec3f& ori, const Vec3f& dir, const float seaTime, const float height) {
     float tm = 0.f;
     float tx = 1000.f;
-    float hx = seaMap(ori + dir * tx, seaTime, ITER_GEOMETRY);
+    float hx = seaMap(ori + dir * tx, seaTime, height, ITER_GEOMETRY);
     if (hx > 0.f) return ori + dir * tx;
 
-    float hm = seaMap(ori, seaTime, ITER_GEOMETRY);
+    float hm = seaMap(ori, seaTime, height, ITER_GEOMETRY);
     Vec3f p  = ori;
 
     for (int i = 0; i < NUM_STEPS; ++i) {
         const float tmid = seaMix(tm, tx, hm / (hm - hx));
         p = ori + dir * tmid;
-        const float hmid = seaMap(p, seaTime, ITER_GEOMETRY);
+        const float hmid = seaMap(p, seaTime, height, ITER_GEOMETRY);
 
         if (hmid < 0.f) { tx = tmid; hx = hmid; }
         else            { tm = tmid; hm = hmid; }
@@ -168,26 +153,22 @@ inline Vec3f seaTrace(const Vec3f& ori, const Vec3f& dir, const float seaTime) {
 }
 
 inline void seaFS(const SeaVaryings& in, const SeaUniforms& u) {
-    const float time    = u.time * 0.3f;
     const float seaTime = 1.f + u.time * SEA_SPEED;
 
-    const Vec2f uv = Vec2f(in.ndc.x * u.aspect, in.ndc.y);
+    const Vec2f uv  = Vec2f(in.ndc.x * u.aspect, in.ndc.y);
+    const Vec3f ori = u.ori;
 
-    const Vec3f ang = Vec3f(std::sin(time * 3.f) * 0.1f, std::sin(time) * 0.2f + 0.3f, time);
-    const Vec3f ori = Vec3f(0.f, 3.5f, time * 5.f);
+    // pinhole: the original's lens bulge warps the world as the view turns
+    const Vec3f dir = (u.cu * uv.x + u.cv * uv.y + u.cw * 2.f).normalized();
 
-    Vec3f dir = Vec3f(uv.x, uv.y, -2.f).normalized();
-    dir.z = dir.z + std::sqrt(uv.x * uv.x + uv.y * uv.y) * 0.14f;
-    dir = seaRotate(dir.normalized(), ang);
-
-    const Vec3f p     = seaTrace(ori, dir, seaTime);
+    const Vec3f p     = seaTrace(ori, dir, seaTime, u.seaHeight);
     const Vec3f dist  = p - ori;
-    const Vec3f n     = seaNormal(p, dist.dot(dist) * (0.1f / u.width), seaTime);
+    const Vec3f n     = seaNormal(p, dist.dot(dist) * (0.1f / u.width), seaTime, u.seaHeight);
     const Vec3f light = Vec3f(0.f, 1.f, 0.8f).normalized();
 
     const float t   = std::clamp(dir.y / -0.02f, 0.f, 1.f);
     const float sea = std::pow(t * t * (3.f - 2.f * t), 0.2f);
-    const Vec3f color = seaMix3(seaSky(dir), seaColor(p, n, light, dir, dist), sea);
+    const Vec3f color = seaMix3(seaSky(dir), seaColor(p, n, light, dir, dist, u.seaHeight), sea);
 
     valo_FragColor = Color(std::pow(color.x, 0.65f), std::pow(color.y, 0.65f), std::pow(color.z, 0.65f), 1.f);
 }

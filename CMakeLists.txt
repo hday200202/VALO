@@ -13,7 +13,6 @@ project(VALO
 # VALO_SHARED=OFF -> lib/libVALO.a     (static, default)
 option(VALO_SHARED          "Build VALO as a shared library" OFF)
 option(VALO_BUILD_EXAMPLES  "Build the example programs in examples/" ${PROJECT_IS_TOP_LEVEL})
-option(VALO_BUILD_VALOC     "Build valoc, the C++ to GLSL shader translator" ${PROJECT_IS_TOP_LEVEL})
 # OFF ignores ext/vulkan even when it is present, so ./build.sh no-vulkan
 # produces a genuinely Vulkan-free build rather than just skipping the download.
 option(VALO_VULKAN          "Use the vendored Vulkan SDK if present" ON)
@@ -238,15 +237,6 @@ add_library(VALO::VALO ALIAS VALO)
 find_program(VALO_GLSLC NAMES glslc HINTS "${VALO_VULKAN_ROOT}/Bin" "${VALO_VULKAN_ROOT}/bin")
 
 set(VALO_SHADER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/render/vulkan" CACHE INTERNAL "")
-set(VALO_VALOC_INCLUDES
-    "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples"
-    "${VALO_STB_DIR}"
-    "${VALO_TINYOBJ_DIR}"
-    "${VALO_CGLTF_DIR}"
-    "${VALO_SDL3_PREFIX}/include"
-    CACHE INTERNAL ""
-)
 
 if(VALO_SOURCES)
     set(VALO_DEFINITION_SCOPE PRIVATE)
@@ -260,7 +250,7 @@ else()
     set(VALO_GLSLC_PATH "glslc")
 endif()
 
-# the fallback translates and compiles at runtime; baked in so it does not
+# the fallback compiles GLSL at runtime; baked in so it does not
 # depend on the directory the app was launched from
 target_compile_definitions(VALO ${VALO_DEFINITION_SCOPE}
     "VALO_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
@@ -278,72 +268,6 @@ if(APPLE AND VALO_HAS_VULKAN)
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ValoEmbedShaders.cmake")
-
-# ---------------------------------------------------------------------------
-# valoc - the C++ shader to GLSL translator
-#
-# Optional on purpose: only shader authors need it. A shader embedded with
-# valo_embed_shaders has its GLSL committed, so it builds without libclang;
-# the rest translate at runtime, which needs valoc.
-# ---------------------------------------------------------------------------
-# the toolchain prefix, so an MSYS2 / Homebrew libclang is found without
-# the caller having to pass CMAKE_PREFIX_PATH
-get_filename_component(VALO_TOOLCHAIN_BIN "${CMAKE_CXX_COMPILER}" DIRECTORY)
-get_filename_component(VALO_TOOLCHAIN_ROOT "${VALO_TOOLCHAIN_BIN}" DIRECTORY)
-
-find_library(VALO_LIBCLANG
-    NAMES clang libclang
-    HINTS "${VALO_TOOLCHAIN_ROOT}/lib" "/opt/homebrew/opt/llvm/lib" "/usr/local/opt/llvm/lib"
-)
-
-find_path(VALO_LIBCLANG_INC clang-c/Index.h
-    HINTS "${VALO_TOOLCHAIN_ROOT}/include" "/opt/homebrew/opt/llvm/include" "/usr/local/opt/llvm/include"
-)
-
-if(VALO_BUILD_VALOC AND VALO_LIBCLANG AND VALO_LIBCLANG_INC)
-    add_executable(valoc "${CMAKE_CURRENT_SOURCE_DIR}/tools/valoc/main.cpp")
-    target_include_directories(valoc SYSTEM PRIVATE "${VALO_LIBCLANG_INC}")
-    target_link_libraries(valoc PRIVATE "${VALO_LIBCLANG}")
-    set_target_properties(valoc PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
-
-    # libclang cannot parse C++ without its own builtin headers (stddef.h,
-    # mm_malloc.h and friends), and they do not live on any normal include
-    # path - so the location is baked in rather than left to the caller.
-    # Derived from libclang's own location, not the compiler's: the compiler may
-    # be Apple clang in /usr/bin while libclang comes from Homebrew, and the
-    # builtin headers have to match the libclang actually doing the parsing.
-    get_filename_component(VALO_LIBCLANG_DIR "${VALO_LIBCLANG}" DIRECTORY)
-    file(GLOB VALO_CLANG_RESOURCE_DIRS
-        "${VALO_LIBCLANG_DIR}/clang/*/include"
-        "${VALO_TOOLCHAIN_ROOT}/lib/clang/*/include"
-    )
-    if(VALO_CLANG_RESOURCE_DIRS)
-        list(GET VALO_CLANG_RESOURCE_DIRS 0 VALO_CLANG_RESOURCE)
-        # -resource-dir wants the parent of include/, and letting clang place the
-        # builtins itself keeps them after libc++ in the search order. Passing the
-        # include dir as -I instead puts it first, and <cstddef> then finds the
-        # wrong stddef.h.
-        get_filename_component(VALO_CLANG_RESOURCE "${VALO_CLANG_RESOURCE}" DIRECTORY)
-        target_compile_definitions(valoc PRIVATE "VALOC_CLANG_RESOURCE=\"${VALO_CLANG_RESOURCE}\"")
-        message(STATUS "valoc: clang resource dir at ${VALO_CLANG_RESOURCE}")
-    else()
-        message(WARNING "valoc: clang builtin headers not found - parsing will fail")
-    endif()
-
-    # The shader headers include <vector>, <cmath> and so on, so libclang needs
-    # the same system include path the compiler uses. CMake already computed it
-    # for this toolchain; passing it through means valoc does not have to guess
-    # at SDK locations or shell out to the compiler at runtime.
-    set(VALO_VALOC_SYSINC "")
-    foreach(dir IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-        set(VALO_VALOC_SYSINC "${VALO_VALOC_SYSINC}${dir}|")
-    endforeach()
-    target_compile_definitions(valoc PRIVATE "VALOC_SYSTEM_INCLUDES=\"${VALO_VALOC_SYSINC}\"")
-
-    message(STATUS "valoc: libclang at ${VALO_LIBCLANG}")
-elseif(VALO_BUILD_VALOC)
-    message(STATUS "valoc: libclang not found - the shader translator will not be built")
-endif()
 
 # ---------------------------------------------------------------------------
 # image-diff

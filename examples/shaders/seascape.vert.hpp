@@ -7,7 +7,12 @@ namespace sea {
 using namespace valo;
 
 struct SeaVertex   { Vec2f ndc; };
-struct SeaUniforms { float time; float aspect; float width; float pad0; };
+struct SeaUniforms {
+    Vec3f ori;  float time;         // camera position
+    Vec3f cu;   float aspect;       // camera right
+    Vec3f cv;   float width;        // camera up
+    Vec3f cw;   float seaHeight;    // camera forward, wave amplitude
+};
 struct SeaVaryings { Vec2f ndc; };
 
 inline void seaVS(const SeaVertex& in, const SeaUniforms&, SeaVaryings& out) {
